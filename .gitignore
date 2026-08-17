@@ -1,0 +1,12 @@
+.pio
+.vscode/.browse.c_cpp.db*
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch
+*.exe
+*.o
+*.obj
+test/host/test_protocol
+test/host/test_protocol.exe
+__pycache__/
+.DS_Store
