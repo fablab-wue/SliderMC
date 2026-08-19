@@ -6,7 +6,7 @@ Highest priority: smooth, jerk-limited STEP generation. Protocol and UI traffic 
 
 | Task | Priority | Role |
 |------|----------|------|
-| `feed` (MotionFeed) | Highest | Sole owner of `planner_fill_fifo()`. Waits on the TX-not-full IRQ **only while the FIFO is full**; otherwise sleeps 1 ms, so it can never spin and starve `plan`/`proto` |
+| `feed` (MotionFeed) | Highest | Sole owner of `planner_fill_fifo()` (or `motion_path_fill_fifo()` while path-mode is active). Waits on the TX-not-full IRQ **only while the FIFO is full**; otherwise sleeps 1 ms, so it can never spin and starve `plan`/`proto` |
 | `plan` (Planner) | High | Switches, DIR pause, settle, underrun check, status (~200 Hz) — does **not** fill FIFO |
 | `proto` (Protocol) | Medium | USB CDC + UART 1 Mbaud RX/TX, verbose push, LED heartbeat (~67 Hz state patterns) / WDT |
 | `loop` | Idle | Idle delay only |
@@ -57,6 +57,38 @@ v_{\max}(d) = \sqrt{4 a d / \pi}
 API units mm / mm/s / mm/s²; internals use steps via `steps_per_mm`.
 
 Shared math (host-testable): `include/planner_math.h`, `src/motion/planner_math.cpp`.
+
+## Path playback (2nd planner)
+
+`PC`/`PD`/`PG`/`PN`/`PS` (see [PROTOCOL.md](PROTOCOL.md#p--path-host-authored-motion-path)) implement a host-authored motion
+path via a second, deliberately simpler planner in `src/motion/motion_path.cpp`,
+kept separate from the sine-ramp planner above.
+
+- **Buffer:** a flat `int16_t` array (`PATH_BUFFER_MAX` = 65536 samples, 128 KB,
+  static — no malloc), holding one signed µm delta-distance per fixed time
+  slice (`PS`, µs). `PD` appends; `PG` always plays from sample 0.
+- **Playback:** the `feed` task calls `motion_path_fill_fifo()` instead of
+  `planner_fill_fifo()` while path-mode is active. Each slice converts to a
+  step count (`steps_per_mm`) and a PIO delay (constant rate for that slice —
+  no ramp), chunked into ≤64-pulse words like the normal planner. A `0` sample
+  emits no word; the PIO naturally holds/stalls, giving an exact stand-still.
+- **Error diffusion:** both the distance→steps and slice-time→PIO-cycles
+  conversions keep a fractional carry (`motion_path_diffuse_steps` /
+  `motion_path_diffuse_cycles`, host-testable) so rounding per slice never
+  biases the total distance or total playback time. A stand-still slice's
+  owed time is carried forward and added ahead of the next real step word.
+- **Ending path-mode:** on buffer exhaustion, or on `MS`/`H` while active,
+  `motion_path_abort_to_planner()` hands the current position/velocity to
+  `planner_takeover_from_path()`, then the normal `planner_request_stop()` /
+  `planner_request_halt()` decelerates from that speed exactly like a live
+  move — path-mode never invents its own stop/halt ramp.
+- **Gating:** while `PG` is active, all other move/session commands are
+  rejected (`!E:busy`); only `MS`, `H`/`HT`, `PD` (live-move streaming), `PN`,
+  status queries, `Help`, and `CG` are allowed. Speed/accel limits are **not**
+  checked — the host is
+  trusted to deliver an already-limited path, same stance as elsewhere.
+
+Files: `include/motion_path.h`, `src/motion/motion_path.cpp`.
 
 ## Debug counters (`motion_diag`)
 

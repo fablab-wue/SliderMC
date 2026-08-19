@@ -233,9 +233,11 @@ class Sim:
             rem_mm = rem / SPMM
             vmax = vmax_for_distance(rem_mm, self.accel)
             cruise_cap = min(self.cruise, MAX_SPEED_MM_S)
+            need_brake = (not self.stopping and not reverse_decel and
+                          rem <= self.stop_rem_steps(abs(self.vel), self.accel, SPMM) + 4)
             if (self.stopping or reverse_decel):
                 v_cmd = 0.0
-            elif BRAKE_SCURVE and (self.braking or abs(self.vel) > vmax):
+            elif BRAKE_SCURVE and (self.braking or need_brake):
                 self.braking = True
                 v_cmd = 0.0
             elif not BRAKE_SCURVE and abs(self.vel) > vmax + 0.05:

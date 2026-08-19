@@ -6,6 +6,7 @@
 #include "protocol.h"
 #include "motion_diag.h"
 #include "config_store.h"
+#include "motion_path.h"
 
 #ifndef HOST_TEST
 
@@ -18,7 +19,24 @@ static TaskHandle_t g_feed_handle;
 static void task_motion_feed(void *arg) {
   (void)arg;
   for (;;) {
-    if (planner_feed_active()) {
+    if (motion_path_is_active()) {
+      /* Path-mode (2nd planner): fill until TX is full or path has nothing more. */
+      for (int i = 0; i < 32; ++i) {
+        if (pio_step_tx_room() == 0 || motion_path_fill_fifo() == 0) {
+          break;
+        }
+        if (!motion_path_is_active()) {
+          break;
+        }
+      }
+      if (pio_step_tx_room() == 0) {
+        pio_step_arm_tx_irq();
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2));
+      } else {
+        pio_step_disarm_tx_irq();
+        vTaskDelay(1);
+      }
+    } else if (planner_feed_active()) {
       /* Fill until TX is full or the planner has nothing more to queue. */
       for (int i = 0; i < 32; ++i) {
         if (pio_step_tx_room() == 0 || planner_fill_fifo() == 0) {

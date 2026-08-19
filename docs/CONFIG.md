@@ -67,6 +67,8 @@ Default is **3**.
 | `ramp_start_hz` | int | 1000 | First step rate leaving standstill |
 | `stop_approach_hz` | int | 400 | Minimum step rate on the last few steps near target (floor; 0 disables) |
 | `dir_change_pause_s` | float | 0.1 | Pause at 0 on reverse |
+| `path_buffer_size` | int | 64000 | `PD` sample capacity (1..65536); see [PROTOCOL.md](PROTOCOL.md#p--path-host-authored-motion-path) |
+| `init_path_slice_us` | int µs | 10000 | Default `PS` slice length (≥1000); session field set via `PS`; bare `PS` reloads this |
 
 ### Pin active levels
 

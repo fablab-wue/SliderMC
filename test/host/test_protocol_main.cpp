@@ -352,6 +352,92 @@ int main(void) {
   feed("GS\n");
   expect_contains("UART cmd still runs without terminal", "GS:55.00");
 
+  /* --- Path (PC/PD/PG/PN/PS) --- */
+  reset_out();
+  feed("SE 1\n");
+  feed("PC\n");
+  expect_empty("PC clears silently");
+  reset_out();
+  feed("PN\n");
+  expect_contains("PN 0 after clear", "PN:0");
+
+  reset_out();
+  feed("PD 12345\n");
+  feed("PD -32768\n");
+  expect_empty("PD appends silently");
+  reset_out();
+  feed("PN\n");
+  expect_contains("PN 2 after two PD", "PN:2");
+
+  reset_out();
+  feed("PD 32768\n");
+  expect_contains("PD above int16 range rejected", "!E:parse");
+  reset_out();
+  feed("PD -32769\n");
+  expect_contains("PD below int16 range rejected", "!E:parse");
+
+  reset_out();
+  feed("CS path_buffer_size 2\n");
+  feed("PD 1\n");
+  expect_contains("PD rejected once buffer_size reached", "!E:full");
+  feed("CS path_buffer_size 64000\n");
+
+  reset_out();
+  feed("PS 500\n");
+  expect_contains("PS below 1000us rejected", "!E:parse");
+  reset_out();
+  feed("PS 2000\n");
+  expect_empty("PS accepted at 2000us");
+  reset_out();
+  feed("PS\n");
+  expect_empty("PS bare resets to default silently");
+
+  reset_out();
+  feed("PC\n");
+  feed("PG\n");
+  expect_contains("PG rejected on empty buffer", "!E:empty");
+
+  reset_out();
+  feed("PD 100\n");
+  feed("SE 0\n");
+  feed("PG\n");
+  expect_contains("PG rejected when disabled", "!E:disabled");
+  feed("SE 1\n");
+
+  reset_out();
+  feed("PG\n");
+  expect_empty("PG accepted");
+
+  reset_out();
+  feed("MT 10\n");
+  expect_contains("MT rejected while path active", "!E:busy");
+  reset_out();
+  feed("SS 10\n");
+  expect_contains("SS rejected while path active", "!E:busy");
+  reset_out();
+  feed("PN\n");
+  expect_contains("PN allowed while path active", "PN:1");
+  reset_out();
+  feed("PC\n");
+  expect_contains("PC rejected while path active", "!E:busy");
+  reset_out();
+  feed("PG\n");
+  expect_contains("PG rejected while already active", "!E:busy");
+
+  reset_out();
+  feed("PD 200\n");
+  expect_empty("PD allowed while path active (live-move streaming)");
+  reset_out();
+  feed("PN\n");
+  expect_contains("PN reflects live-streamed PD", "PN:2");
+
+  reset_out();
+  feed("MS\n");
+  expect_empty("MS hands path off to planner and stops silently");
+  reset_out();
+  feed("MT 10\n");
+  expect_empty("MT accepted again once path-mode ended");
+
   if (g_fail) {
     std::fprintf(stderr, "\n%d test(s) failed\n", g_fail);
     return 1;

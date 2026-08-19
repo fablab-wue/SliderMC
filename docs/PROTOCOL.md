@@ -95,6 +95,7 @@ Hosts can treat the banner like GRBL’s welcome string: init finished, ready fo
 | `A` | Accelerating |
 | `B` | Decelerating / braking |
 | `H` | Homing |
+| `P` | Path playback active (`PG`) |
 | `L` | Hard-limit alarm |
 | `D` | Disabled |
 
@@ -185,6 +186,24 @@ Enable state: use `GE` (`GetEnable`). There is no `IsEnabled` command.
 | `MS` | `MoveStop` | — | Soft decelerate to stop; keeps enable; does not cancel waits. |
 
 `MH` / `MoveHome` failures: `!E:home cfg`, `!E:home travel`, `!E:home hard`. Soft-cancel with `MS`; emergency abort with `H`/`HT`/`Halt`.
+
+### P — Path (host-authored motion path)
+
+A 2nd, simpler planner for a host-authored motion path: fixed-size time slices, each carrying a signed distance in µm. `PG` plays the buffer at a constant per-slice rate (no accel/decel ramps — the host is trusted to pre-shape speed/accel); `MS`/`H` end path-mode and decelerate normally from the last path speed, same as a live move.
+
+| Short | Long | Args | Description |
+|-------|------|------|-------------|
+| `PC` | `PathClear` | — | Clear the path buffer (path count → 0); rejected with `!E:busy` while `PG` is active. |
+| `PD` | `PathData` | `um` | Append one signed 16-bit µm sample (-32768..32767); increments path count; `!E:parse` out of range, `!E:full` at `path_buffer_size`. Allowed even while `PG` is active (live-move streaming). |
+| `PG` | `PathGo` | — | Play the path buffer from sample 0 until path count is reached (then auto soft-stop) or `MS`/`H` is received; needs enable; `!E:disabled` / `!E:empty` / `!E:busy`. May be sent while `PD` is still being streamed in (live move). |
+| `PN` | `PathNumber` | — | Reply `PN:<count>` — number of samples currently in the buffer; allowed even while path-mode is active. |
+| `PS` | `PathSlice` | `us` or bare | Set the time-slice length in µs (≥1000); bare reloads `init_path_slice_us`; `!E:parse` below minimum, `!E:busy` while active. |
+
+A sample value of `0` means the axis stands still for that slice. Distance→steps and slice-time→PIO-cycles both use an error-diffusion accumulator so rounding never biases total distance or total playback time. `steps_per_mm` and PIO limits apply as usual; speed/accel limits are **not** checked — the host is expected to deliver an already speed/accel-limited path.
+
+While `PG` is active, all other move/session commands are rejected with `!E:busy` — allowed exceptions: `MS`, `H`/`HT`/`Halt`, `PD`/`PathData` (live-move streaming), `PN`/`PathNumber`, all `I*`/`G*`/`V*` queries, `IX`/`Pinout`, `Help`/`HL`/`$`, `CG`/`ConfigGet`. The buffer is retained after playback ends (naturally or via `MS`/`H`), so `PG` can replay the same data.
+
+Verbose / `?` while in path-mode (state letter `P`) report `#P <pos> <vel> <accel>`: `pos` and `vel` are live (`vel` is the rate of the most recently issued STEP word); `accel` is always `0` (path-mode plays each slice at a constant rate, with no ramp to measure); there is no target field.
 
 ### X — Extender outputs (silent)
 

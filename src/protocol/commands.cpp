@@ -4,6 +4,7 @@
 #include "board.h"
 #include "motion_api.h"
 #include "motion_diag.h"
+#include "motion_path.h"
 #include "config_defaults.h"
 #include "pins.h"
 #include "debug_hw.h"
@@ -213,6 +214,11 @@ static const HelpRow k_help_rows[] = {
     {"MR", "MoveRight", "Continuous jog +"},
     {"MH", "MoveHome", "Homing cycle"},
     {"MS", "MoveStop", "Soft decelerate"},
+    {"PC", "PathClear", "Clear path buffer"},
+    {"PD", "PathData", "Append um value (-32768..32767)"},
+    {"PG", "PathGo", "Play path buffer"},
+    {"PN", "PathNumber", "Path sample count"},
+    {"PS", "PathSlice", "Slice length us (>=1000); bare resets"},
     {"X0-9", "Ext0-9", "Ext out 0|1; bare toggles"},
     {"CS", "ConfigSet", "Set persistent config key"},
     {"CG", "ConfigGet", "Get config key(s)"},
@@ -222,8 +228,8 @@ static const HelpRow k_help_rows[] = {
     {"VA", "VersionAbout", "About string"},
     {"VF", "VersionFW", "Firmware version"},
     {"VP", "VersionProtocol", "Protocol version"},
+    {"VG", "VersionGPIO", "List PIN_*=GPIO lines (machine-readable, read-only)"},
     {"H/HT", "Halt", "Emergency halt; EN off; cancel waits"},
-    {"P", "Pins", "List pin assignments"},
     {"$ /HL", "Help", "List all commands"},
 };
 
@@ -322,7 +328,7 @@ static bool emo_command_allowed(const char *cmd) {
       match_any(cmd, &rest, "VP", "VersionProtocol", nullptr)) {
     return true;
   }
-  if (match_any(cmd, &rest, "P", "Pins", nullptr) ||
+  if (match_any(cmd, &rest, "VG", "VersionGPIO", nullptr) ||
       match_any(cmd, &rest, "IX", "Pinout", nullptr)) {
     return true;
   }
@@ -342,6 +348,57 @@ static bool emo_command_allowed(const char *cmd) {
   }
   if ((cmd[0] == 'E' || cmd[0] == 'e') && (cmd[1] == 'X' || cmd[1] == 'x') &&
       (cmd[2] == 'T' || cmd[2] == 't') && cmd[3] >= '0' && cmd[3] <= '9') {
+    return true;
+  }
+  return false;
+}
+
+/** Commands allowed while path-mode (PG) is active: safety/queries/stop/PD (live-move) only. */
+static bool path_command_allowed(const char *cmd) {
+  const char *rest = cmd;
+  if (match_any(cmd, &rest, "MS", "MoveStop", "Stop")) {
+    return true;
+  }
+  if (match_any(cmd, &rest, "HT", "Halt", "H")) {
+    return true;
+  }
+  if (match_any(cmd, &rest, "PD", "PathData", nullptr)) {
+    return true;
+  }
+  if (match_any(cmd, &rest, "PN", "PathNumber", nullptr)) {
+    return true;
+  }
+  if (match_any(cmd, &rest, "IM", "IsMoving", nullptr) ||
+      match_any(cmd, &rest, "IH", "IsHoming", nullptr) ||
+      match_any(cmd, &rest, "IL", "IsLimit", nullptr) ||
+      match_any(cmd, &rest, "IE", "IsError", nullptr) ||
+      match_any(cmd, &rest, "IP", "IsPosition", nullptr) ||
+      match_any(cmd, &rest, "IT", "IsTarget", nullptr) ||
+      match_any(cmd, &rest, "IR", "IsReady", nullptr) ||
+      match_any(cmd, &rest, "IW", "IsWaiting", nullptr) ||
+      match_any(cmd, &rest, "ID", "IsDiag", nullptr) ||
+      match_any(cmd, &rest, "IZ", "IsReset", nullptr) ||
+      match_any(cmd, &rest, "IX", "Pinout", nullptr)) {
+    return true;
+  }
+  if (match_any(cmd, &rest, "GS", "GetSpeed", nullptr) ||
+      match_any(cmd, &rest, "GA", "GetAccel", nullptr) ||
+      match_any(cmd, &rest, "GE", "GetEnable", nullptr) ||
+      match_any(cmd, &rest, "GT", "GetTerminal", nullptr) ||
+      match_any(cmd, &rest, "GV", "GetVerbose", nullptr) ||
+      match_any(cmd, &rest, "GD", "GetDebug", nullptr)) {
+    return true;
+  }
+  if (match_any(cmd, &rest, "VA", "VersionAbout", nullptr) ||
+      match_any(cmd, &rest, "VF", "VersionFW", nullptr) ||
+      match_any(cmd, &rest, "VP", "VersionProtocol", nullptr) ||
+      match_any(cmd, &rest, "VG", "VersionGPIO", nullptr)) {
+    return true;
+  }
+  if (match_any(cmd, &rest, "Help", "HL", nullptr) || starts_cmd(cmd, "$", &rest)) {
+    return true;
+  }
+  if (match_any(cmd, &rest, "CG", "ConfigGet", nullptr)) {
     return true;
   }
   return false;
@@ -377,6 +434,11 @@ bool protocol_exec_command(const char *cmd) {
 
   if (st.drv_error && !emo_command_allowed(cmd)) {
     protocol_error("emo", "active");
+    return false;
+  }
+
+  if (motion_path_is_active() && !path_command_allowed(cmd)) {
+    protocol_error("busy", "path active");
     return false;
   }
 
@@ -458,6 +520,9 @@ bool protocol_exec_command(const char *cmd) {
   }
 
   if (match_any(cmd, &rest, "MS", "MoveStop", "Stop")) {
+    if (motion_path_is_active()) {
+      motion_path_abort_to_planner();
+    }
     motion_stop();
     return false;
   }
@@ -482,6 +547,62 @@ bool protocol_exec_command(const char *cmd) {
       }
       protocol_error(code, "move rejected");
       return false;
+    }
+    return false;
+  }
+
+  /* --- P path (host-authored motion path) --- */
+  if (match_any(cmd, &rest, "PC", "PathClear", nullptr)) {
+    if (!motion_path_clear()) {
+      protocol_error("busy", "path active");
+    }
+    return false;
+  }
+
+  if (match_any(cmd, &rest, "PD", "PathData", nullptr)) {
+    int v;
+    if (!parse_int_arg(rest, &v) || v < -32768 || v > 32767) {
+      protocol_error("parse", "PD -32768..32767");
+      return false;
+    }
+    if (!motion_path_add((int16_t)v)) {
+      protocol_error("full", "path buffer full");
+    }
+    return false;
+  }
+
+  if (match_any(cmd, &rest, "PG", "PathGo", nullptr)) {
+    if (!st.enabled) {
+      protocol_error("disabled", "enable first");
+      return false;
+    }
+    if (motion_path_count() == 0) {
+      protocol_error("empty", "path buffer empty");
+      return false;
+    }
+    if (!motion_path_go()) {
+      protocol_error("busy", "path active");
+    }
+    return false;
+  }
+
+  if (match_any(cmd, &rest, "PN", "PathNumber", nullptr)) {
+    reply_query_int("PN", (int)motion_path_count());
+    return false;
+  }
+
+  if (match_any(cmd, &rest, "PS", "PathSlice", nullptr)) {
+    if (!*rest) {
+      session_reset_path_slice();
+      return false;
+    }
+    int us;
+    if (!parse_int_arg(rest, &us) || us < PATH_SLICE_US_MIN) {
+      protocol_error("parse", "PS >=1000");
+      return false;
+    }
+    if (!motion_path_set_slice_us((uint32_t)us)) {
+      protocol_error("busy", "path active");
     }
     return false;
   }
@@ -722,6 +843,62 @@ bool protocol_exec_command(const char *cmd) {
     reply_query("VP", MC_VERSION_PROTOCOL);
     return false;
   }
+  if (match_any(cmd, &rest, "VG", "VersionGPIO", nullptr)) {
+    char line[48];
+    snprintf(line, sizeof(line), "VG:PIN_DRV_STEP=%d", PIN_DRV_STEP);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_DRV_DIR=%d", PIN_DRV_DIR);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_DRV_EN=%d", PIN_DRV_EN);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_SW_HOME=%d", PIN_SW_HOME);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_DRV_ERROR=%d", PIN_DRV_ERROR);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_L=%d", PIN_SW_LIMIT_L);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_R=%d", PIN_SW_LIMIT_R);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_EXT_0=%d", PIN_EXT_0);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_EXT_1=%d", PIN_EXT_1);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_EXT_2=%d", PIN_EXT_2);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_EXT_3=%d", PIN_EXT_3);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_EXT_4=%d", PIN_EXT_4);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_EXT_5=%d", PIN_EXT_5);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_EXT_6=%d", PIN_EXT_6);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_EXT_7=%d", PIN_EXT_7);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_EXT_8=%d", PIN_EXT_8);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_EXT_9=%d", PIN_EXT_9);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_UART_TX=%d", PIN_UART_TX);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_UART_RX=%d", PIN_UART_RX);
+    protocol_writeln(line);
+#ifdef DEBUG_HW
+    snprintf(line, sizeof(line), "VG:PIN_DBG_FIFO=%d", PIN_DBG_FIFO);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_DBG_MOV=%d", PIN_DBG_MOV);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_DBG_MOV_CONST=%d", PIN_DBG_MOV_CONST);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_DBG_CMD=%d", PIN_DBG_CMD);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_DBG_IRQ=%d", PIN_DBG_IRQ);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_DBG_UNDERRUN=%d", PIN_DBG_UNDERRUN);
+    protocol_writeln(line);
+#endif
+    return false;
+  }
 
   /* --- C config --- */
   if (match_any(cmd, &rest, "CS", "ConfigSet", nullptr)) {
@@ -777,64 +954,10 @@ bool protocol_exec_command(const char *cmd) {
   /* --- Special --- */
   /* HT / Halt / H — emergency halt (Help is Help/HL/$ only). */
   if (match_any(cmd, &rest, "HT", "Halt", "H")) {
+    if (motion_path_is_active()) {
+      motion_path_abort_to_planner();
+    }
     motion_halt();
-    return false;
-  }
-
-  if (match_any(cmd, &rest, "P", "Pins", nullptr)) {
-    char line[48];
-    snprintf(line, sizeof(line), "P:PIN_DRV_STEP=%d", PIN_DRV_STEP);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_DRV_DIR=%d", PIN_DRV_DIR);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_DRV_EN=%d", PIN_DRV_EN);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_SW_HOME=%d", PIN_SW_HOME);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_DRV_ERROR=%d", PIN_DRV_ERROR);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_SW_LIMIT_L=%d", PIN_SW_LIMIT_L);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_SW_LIMIT_R=%d", PIN_SW_LIMIT_R);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_EXT_0=%d", PIN_EXT_0);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_EXT_1=%d", PIN_EXT_1);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_EXT_2=%d", PIN_EXT_2);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_EXT_3=%d", PIN_EXT_3);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_EXT_4=%d", PIN_EXT_4);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_EXT_5=%d", PIN_EXT_5);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_EXT_6=%d", PIN_EXT_6);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_EXT_7=%d", PIN_EXT_7);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_EXT_8=%d", PIN_EXT_8);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_EXT_9=%d", PIN_EXT_9);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_UART_TX=%d", PIN_UART_TX);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_UART_RX=%d", PIN_UART_RX);
-    protocol_writeln(line);
-#ifdef DEBUG_HW
-    snprintf(line, sizeof(line), "P:PIN_DBG_FIFO=%d", PIN_DBG_FIFO);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_DBG_MOV=%d", PIN_DBG_MOV);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_DBG_MOV_CONST=%d", PIN_DBG_MOV_CONST);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_DBG_CMD=%d", PIN_DBG_CMD);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_DBG_IRQ=%d", PIN_DBG_IRQ);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "P:PIN_DBG_UNDERRUN=%d", PIN_DBG_UNDERRUN);
-    protocol_writeln(line);
-#endif
     return false;
   }
 

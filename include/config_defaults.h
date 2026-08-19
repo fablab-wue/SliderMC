@@ -36,6 +36,14 @@
 #define CFG_DEFAULT_STOP_APPROACH_HZ 400
 #define CFG_DEFAULT_DIR_CHANGE_PAUSE_S 0.1f
 
+/* Path (PC/PD/PG/PN/PS): PATH_BUFFER_MAX is the compile-time static array size
+ * (65536 samples * 2 bytes = 128 KB); path_buffer_size is the runtime logical
+ * limit (<= PATH_BUFFER_MAX) settable via CS. */
+#define PATH_BUFFER_MAX 65536
+#define CFG_DEFAULT_PATH_BUFFER_SIZE 64000
+#define CFG_DEFAULT_INIT_PATH_SLICE_US 10000
+#define PATH_SLICE_US_MIN 1000
+
 #define CFG_LINE_MAX 160
 #define CFG_DEFAULT_VERBOSE_RATE_HZ 3
 #define CFG_KEY_MAX 32

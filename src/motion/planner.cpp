@@ -8,6 +8,7 @@
 #include "protocol.h"
 #include "protocol_internal.h"
 #include "config_defaults.h"
+#include "motion_path.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -849,17 +850,23 @@ int planner_fill_fifo(void) {
 
     float rem_mm = (float)rem / g_spmm;
     float vmax = planner_vmax_for_distance(rem_mm, g_accel_mm_s2);
+    bool need_brake = !g_stopping && !reverse_decel &&
+                      rem <= planner_stop_rem_steps(fabsf(g_vel_mm_s), g_accel_mm_s2, g_spmm) + 4;
     /*
      * Ramp target is either cruise or 0. Feeding it min(cruise, vmax) would
      * move the target every word as rem shrinks, restart the sine phase, and
      * leave the axis stuck near ramp_start_hz (seen as "higher ss → slower").
      * When remaining distance cannot support the current speed, brake to 0;
      * the vmax clamp below is the hard safety net for the issued word.
+     *
+     * Use the true stop-distance threshold here instead of a stale
+     * speed-vs-vmax trigger so the brake arc starts at the same geometric
+     * point that the accel arc ended, avoiding the visible accel/decel skew.
      */
     float v_cmd;
     if (g_stopping || reverse_decel) {
       v_cmd = 0.0f;
-    } else if (g_braking || fabsf(g_vel_mm_s) > vmax) {
+    } else if (g_braking || need_brake) {
       /* Braking point reached: commit to one ramp down to 0. Re-deriving it per
          word would restart the sine and flatten it into constant 2a/pi. */
       g_braking = true;
@@ -957,8 +964,33 @@ int planner_fill_fifo(void) {
       n = rem;
     }
 
-    /* Advance ramp by the real duration of the packed word (n pulses). */
-    float dt = (float)n / step_hz_est;
+    /* Compute the actual PIO delay for this word from the start-of-word
+       rate estimate and derive the real issued duration (dt) for the packed
+       pulses. Reuse that delay for the emitted word so phi advancement
+       matches the issued timing. */
+    uint32_t delay_cycles_for_word =
+        planner_hz_to_delay(step_hz_est, pio_step_sysclk_hz(), PIO_STEP_PERIOD_FIXED);
+    /* dt (seconds) = n * period; period = (fixed_overhead + delay_cycles)/sysclk */
+    double dt = (double)n * ((double)delay_cycles_for_word + (double)PIO_STEP_PERIOD_FIXED) /
+                (double)pio_step_sysclk_hz();
+    /* One refinement pass: estimate end-of-word velocity and recompute a
+       delay from the average rate, improving alignment between phi advance
+       and the issued PIO word without heavy iteration. */
+    if (!decel && g_ramp_active) {
+      double phi_est = planner_sine_advance_phi((double)g_ramp_phi, g_ramp_v0, g_ramp_v1, g_accel_mm_s2, dt);
+      double v_est = (double)planner_sine_vel(g_ramp_v0, g_ramp_v1, (float)phi_est);
+      double step_hz_est2 = fabs(v_est) * (double)g_spmm;
+      if (step_hz_est2 < 1.0) {
+        step_hz_est2 = (double)min_hz;
+      }
+      uint32_t delay2 = planner_hz_to_delay((float)step_hz_est2, pio_step_sysclk_hz(), PIO_STEP_PERIOD_FIXED);
+      double dt2 = (double)n * ((double)delay2 + (double)PIO_STEP_PERIOD_FIXED) / (double)pio_step_sysclk_hz();
+      /* Accept the refined dt if it differs noticeably. */
+      if (fabs(dt2 - dt) / (dt + 1e-12) > 0.02) {
+        dt = dt2;
+        delay_cycles_for_word = delay2;
+      }
+    }
     float v_prev = g_vel_mm_s;
     if (decel) {
       /*
@@ -983,7 +1015,7 @@ int planner_fill_fifo(void) {
         g_vel_mm_s = (float)sign * (v_app + dv * sinf(frac));
       }
     } else {
-      g_ramp_phi = planner_sine_advance_phi(g_ramp_phi, g_ramp_v0, g_ramp_v1, g_accel_mm_s2, dt);
+      g_ramp_phi = (float)planner_sine_advance_phi((double)g_ramp_phi, g_ramp_v0, g_ramp_v1, g_accel_mm_s2, dt);
       g_vel_mm_s = planner_sine_vel(g_ramp_v0, g_ramp_v1, g_ramp_phi);
       if (g_ramp_phi >= 1.0f) {
         g_vel_mm_s = g_ramp_v1;
@@ -1018,8 +1050,9 @@ int planner_fill_fifo(void) {
       step_hz = 1.0f;
     }
 
-    uint32_t delay =
-        planner_hz_to_delay(step_hz, pio_step_sysclk_hz(), PIO_STEP_PERIOD_FIXED);
+    /* Use the previously computed delay (based on start-of-word estimate)
+       so the PIO word duration aligns with the dt used above. */
+    uint32_t delay = delay_cycles_for_word;
     pio_step_set_dir(sign);
     if (!pio_step_put_word(delay, (uint8_t)n)) {
       /* TX full: work remains, so a dry FIFO later would be a real underrun. */
@@ -1185,6 +1218,18 @@ void planner_request_stop(void) {
 
 void planner_request_halt(void) { planner_halt(); }
 
+void planner_takeover_from_path(int64_t pos_steps, float vel_mm_s) {
+  g_pos_steps = pos_steps;
+  g_target_steps = pos_steps;
+  g_vel_mm_s = vel_mm_s;
+  g_last_sign = (vel_mm_s >= 0.0f) ? 1 : -1;
+  g_st.moving = true;
+  g_st.homing = false;
+  g_st.has_target = false;
+  reset_ramp();
+  refresh_state();
+}
+
 void planner_request_home(void) {
   if (!g_st.enabled || g_st.drv_error) {
     return;
@@ -1274,6 +1319,7 @@ void motion_init(void) {
   once = true;
   config_init_defaults();
   planner_init();
+  motion_path_init();
 }
 
 bool motion_enable(bool on) {
@@ -1385,7 +1431,13 @@ bool motion_set_soft_limits(bool min_en, float min_mm, bool max_en, float max_mm
   return true;
 }
 
-void motion_get_status(McStatus *out) { planner_get_status(out); }
+void motion_get_status(McStatus *out) {
+  if (motion_path_is_active()) {
+    motion_path_get_status(out);
+    return;
+  }
+  planner_get_status(out);
+}
 
 bool motion_is_busy(void) { return planner_is_busy(); }
 

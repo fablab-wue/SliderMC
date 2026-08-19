@@ -41,12 +41,14 @@ void session_sync_from_config(void) {
   g_session.accel_mm_s2 = g_cfg.init_accel_mm_s2;
   g_session.terminal = g_cfg.init_terminal;
   g_session.verbose = g_cfg.init_verbose;
+  g_session.path_slice_us = g_cfg.init_path_slice_us;
 }
 
 void session_reset_speed(void) { g_session.speed_mm_s = g_cfg.init_speed_mm_s; }
 void session_reset_accel(void) { g_session.accel_mm_s2 = g_cfg.init_accel_mm_s2; }
 void session_reset_terminal(void) { g_session.terminal = g_cfg.init_terminal; }
 void session_reset_verbose(void) { g_session.verbose = g_cfg.init_verbose; }
+void session_reset_path_slice(void) { g_session.path_slice_us = g_cfg.init_path_slice_us; }
 
 void config_init_defaults(void) {
   if (g_cfg_ready) {
@@ -85,6 +87,8 @@ void config_init_defaults(void) {
   g_cfg.ramp_start_hz = CFG_DEFAULT_RAMP_START_HZ;
   g_cfg.stop_approach_hz = CFG_DEFAULT_STOP_APPROACH_HZ;
   g_cfg.dir_change_pause_s = CFG_DEFAULT_DIR_CHANGE_PAUSE_S;
+  g_cfg.path_buffer_size = CFG_DEFAULT_PATH_BUFFER_SIZE;
+  g_cfg.init_path_slice_us = CFG_DEFAULT_INIT_PATH_SLICE_US;
   session_sync_from_config();
 }
 
@@ -321,6 +325,21 @@ bool config_set_key(const char *key, const char *value) {
     g_cfg.dir_change_pause_s = f;
     return true;
   }
+  if (icmp(key, "path_buffer_size") == 0) {
+    if (!parse_int(value, &i) || i < 1 || i > PATH_BUFFER_MAX) {
+      return false;
+    }
+    g_cfg.path_buffer_size = i;
+    return true;
+  }
+  if (icmp(key, "init_path_slice_us") == 0) {
+    if (!parse_int(value, &i) || i < PATH_SLICE_US_MIN) {
+      return false;
+    }
+    g_cfg.init_path_slice_us = i;
+    g_session.path_slice_us = i;
+    return true;
+  }
   return false;
 }
 
@@ -459,6 +478,14 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     snprintf(out, out_len, "%.3g", (double)c->dir_change_pause_s);
     return true;
   }
+  if (icmp(key, "path_buffer_size") == 0) {
+    snprintf(out, out_len, "%d", c->path_buffer_size);
+    return true;
+  }
+  if (icmp(key, "init_path_slice_us") == 0) {
+    snprintf(out, out_len, "%d", c->init_path_slice_us);
+    return true;
+  }
   return false;
 }
 
@@ -503,6 +530,8 @@ void config_foreach(config_foreach_fn fn, void *ctx) {
       "ramp_start_hz",
       "stop_approach_hz",
       "dir_change_pause_s",
+      "path_buffer_size",
+      "init_path_slice_us",
   };
   char val[CFG_VAL_MAX];
   for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {

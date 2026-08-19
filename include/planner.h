@@ -3,6 +3,7 @@
 #include "motion_api.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,6 +28,12 @@ void planner_request_stop(void);
 void planner_request_halt(void);
 void planner_request_home(void);
 void planner_soft_reset(void);
+
+/**
+ * Seed position/velocity from motion_path (2nd planner) before a following
+ * planner_request_stop()/planner_request_halt() decelerates from that speed.
+ */
+void planner_takeover_from_path(int64_t pos_steps, float vel_mm_s);
 
 /** True if signed move (neg=left, pos=right) is blocked by hard limit. */
 bool planner_hard_limit_blocks_sign(int sign);

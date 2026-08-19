@@ -1,5 +1,6 @@
 #include "motion_api.h"
 #include "config_store.h"
+#include "motion_path.h"
 
 #include <math.h>
 
@@ -28,6 +29,7 @@ void motion_init(void) {
   g_st.acc_mm_s2 = 0.0f;
   g_pending = false;
   g_eta_ms = 0;
+  motion_path_init();
 }
 
 static void refresh_state(void) {
@@ -234,6 +236,10 @@ bool motion_set_soft_limits(bool min_en, float min_mm, bool max_en, float max_mm
 }
 
 void motion_get_status(McStatus *out) {
+  if (motion_path_is_active()) {
+    motion_path_get_status(out);
+    return;
+  }
   if (out) {
     *out = g_st;
   }

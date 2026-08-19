@@ -41,8 +41,11 @@ float planner_sine_vel(float v0, float v1, float phi);
 /**
  * Advance phase for a sine ramp given peak accel a and |v1-v0|.
  * Returns new phi clamped to [0,1]. dt_s > 0.
+ *
+ * Use `double` for the phase accumulator to reduce single-precision
+ * accumulation error over many small dt steps.
  */
-float planner_sine_advance_phi(float phi, float v0, float v1, float accel_mm_s2, float dt_s);
+double planner_sine_advance_phi(double phi, float v0, float v1, float accel_mm_s2, double dt_s);
 
 /** Steps to bleed |vel| via sine stop-distance law (ceil); 0 if already stopped. */
 int planner_stop_rem_steps(float vel_mm_s, float accel_mm_s2, float steps_per_mm);

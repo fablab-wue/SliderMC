@@ -43,6 +43,9 @@ typedef struct {
   int ramp_start_hz;
   int stop_approach_hz;
   float dir_change_pause_s;
+
+  int path_buffer_size;    /* PD sample capacity (1..PATH_BUFFER_MAX) */
+  int init_path_slice_us;  /* default PS slice length (>=1000 us) */
 } McConfig;
 
 /* Live session values for S/G commands (not written to mc.ini by S-commands). */
@@ -51,6 +54,7 @@ typedef struct {
   float accel_mm_s2;
   int terminal;
   int verbose;
+  int path_slice_us;
 } McSession;
 
 void config_init_defaults(void);
@@ -65,6 +69,7 @@ void session_reset_speed(void);
 void session_reset_accel(void);
 void session_reset_terminal(void);
 void session_reset_verbose(void);
+void session_reset_path_slice(void);
 
 /* Returns true on success. */
 bool config_set_key(const char *key, const char *value);

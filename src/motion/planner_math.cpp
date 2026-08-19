@@ -92,20 +92,20 @@ float planner_sine_vel(float v0, float v1, float phi) {
   return v0 + (v1 - v0) * w;
 }
 
-float planner_sine_advance_phi(float phi, float v0, float v1, float accel_mm_s2,
-                               float dt_s) {
-  float dv = fabsf(v1 - v0);
-  if (dv < 1e-6f || accel_mm_s2 < 1e-6f || dt_s <= 0.0f) {
-    return 1.0f;
+double planner_sine_advance_phi(double phi, float v0, float v1, float accel_mm_s2,
+                               double dt_s) {
+  double dv = fabs((double)v1 - (double)v0);
+  if (dv < 1e-6 || accel_mm_s2 < 1e-6f || dt_s <= 0.0) {
+    return 1.0;
   }
   /* Duration of half-sine accel: T = pi * |dv| / (2 a) */
-  float T = (float)M_PI * dv / (2.0f * accel_mm_s2);
-  if (T < 1e-6f) {
-    return 1.0f;
+  double T = (double)M_PI * dv / (2.0 * (double)accel_mm_s2);
+  if (T < 1e-6) {
+    return 1.0;
   }
   phi += dt_s / T;
-  if (phi > 1.0f) {
-    phi = 1.0f;
+  if (phi > 1.0) {
+    phi = 1.0;
   }
   return phi;
 }

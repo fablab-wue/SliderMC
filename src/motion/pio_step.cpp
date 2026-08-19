@@ -295,8 +295,13 @@ bool pio_step_put_word(uint32_t delay_cycles, uint8_t n_pulses) {
     g_shadow[g_shadow_n].steps = n_pulses;
     g_shadow[g_shadow_n].delay = delay;
     ++g_shadow_n;
+    g_pending_steps += n_pulses;
+  } else {
+    /* Shadow buffer full: avoid incrementing pending_steps without a shadow
+       entry. Fail the write so caller can reduce packing and retry. */
+    pio_unlock();
+    return false;
   }
-  g_pending_steps += n_pulses;
   motion_diag_note_fifo_level(pio_sm_get_tx_fifo_level(g_pio, (uint)g_sm));
   pio_unlock();
   return true;

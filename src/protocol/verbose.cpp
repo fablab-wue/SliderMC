@@ -28,6 +28,8 @@ char protocol_state_letter(void) {
     return 'D';
   case MC_STATE_HOMING:
     return 'H';
+  case MC_STATE_PATH:
+    return 'P';
   case MC_STATE_ACCELERATING:
     return 'A';
   case MC_STATE_DECELERATING:

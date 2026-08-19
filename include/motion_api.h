@@ -16,6 +16,7 @@ typedef enum {
   MC_STATE_HARD_LIMIT,
   MC_STATE_ERROR,
   MC_STATE_LOCKED,
+  MC_STATE_PATH,
 } McState;
 
 typedef struct {
