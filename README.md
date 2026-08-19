@@ -1,33 +1,75 @@
 # SliderMC
 
-C++ / FreeRTOS motor controller for the Raspberry Pi Pico (STEP/DIR axis).
+**Deterministic motion firmware for DIY motorized camera sliders** — C++ / FreeRTOS on Raspberry Pi Pico, STEP/DIR axis with PIO timing.
 
-This repository is independent of the MicroPython UI project (`SliderCtrl`).
+## About
 
-> IMPORTANT: Docs and manuals moved to repository **SliderDOC** - https://github.com/fablab-wue/SliderDoc
+**SliderMC** is the **motion controller** for the open **motorized camera slider** system. It owns everything timing-critical: STEP/DIR pulses, sine ramps, homing, soft and hard limits, and EMO / driver-error handling — so the UI panel ([SliderCtrl](https://github.com/fablab-wue/SliderCtrl)) can focus on knobs, buttons, and OLED without stealing motion cycles.
+
+This is a **DIY project with pro-grade motion firmware**. Live retarget, mm-based API, and open protocol put you on par with many closed commercial controllers for **features and transparency** — paired with SliderCtrl for operator UX on set. Rail quality, motor choice, and mechanical build remain yours.
+
+The same motion firmware is the **electronics half of the construction kit**: one STEP/DIR axis with homing and limits — linear slider rail, mini-dolly, rotating head, or turntable depending on your mechanics and `mc.ini` setup.
+
+Docs and manuals: **[SliderDoc](https://github.com/fablab-wue/SliderDoc)**.
+
+> Documentation: [SliderDoc](https://github.com/fablab-wue/SliderDoc)
+
+---
 
 ## Features
 
-- Retarget during movement
-- Sine ramp acceleration / deceleration
-- **API units:** mm, mm/s, mm/s²  
-- **Links:** USB CDC (debug + CLI) and UART @ 1 Mbaud (UI controller)
-- 10 optional output pins (port extentder)
+**Open motion stack, set-ready behaviour.** Dedicated RP2040 runs the planner and PIO step engine; the UIC talks millimetres over UART at 1 Mbaud.
+
+### Motion quality
+
+- **Live retarget** during movement — change target or speed without stopping the shoot  
+- **Sine ramp** acceleration and deceleration — smooth starts and stops  
+- **Homing**, soft travel limits, hard-limit alarms, **`DRV_ERROR` / EMO** interlock  
+- **Path playback** — host-authored motion paths for advanced moves  
+- **API units:** mm, mm/s, mm/s² (steps handled internally)
+
+### Maker / pro transparency
+
+- **Open ASCII protocol** on UART + USB CDC CLI — bench-test and script without a panel  
+- **Persistent config** (`mc.ini` on LittleFS) · host-side protocol tests in `test/host/`  
+- **10 extender outputs** for accessories · UI load fully isolated on the UIC Pico  
+- **Replaceable UIC** — same motion board, different panel firmware or fork  
 
 ### Step timing limits (theoretical)
 
-- Maximum step frequency: ≈259kHz (≈800mm/s @320P/mm)
-- Minimum step frequency: ≈0.75Hz (≈2.3µm/s ≈0.14mm/min ≈8mm/h @320P/mm)
-- Step timing precision 20ns by PIO
+Proof points for motion firmware depth:
+
+- Maximum step frequency: ≈259 kHz (≈800 mm/s @ 320 P/mm)  
+- Minimum step frequency: ≈0.75 Hz (≈2.3 µm/s @ 320 P/mm)  
+- Step timing precision: ~20 ns via PIO  
+
+Competitive context: [architecture/compare.md](https://github.com/fablab-wue/SliderDoc/blob/main/architecture/compare.md).
+
+---
 
 ## Quick start (VS Code)
 
-1. Install [VS Code](https://code.visualstudio.com/) and the **PlatformIO IDE** extension.
-2. **File → Open Folder** → this repository (`SliderMC`), not SliderCtrl.
-3. PlatformIO: **Build** / **Upload** (env `pico`).
-4. Open the serial monitor for the USB CLI.
+1. Install [VS Code](https://code.visualstudio.com/) and the **PlatformIO IDE** extension.  
+2. **File → Open Folder** → this repository (`SliderMC`), not SliderCtrl.  
+3. PlatformIO: **Build** / **Upload** (env `pico`).  
+4. Open the serial monitor for the USB CLI (press Enter to unlock, then type commands).
 
-Details: [docs/BUILD.md](docs/BUILD.md). On Windows, if Upload fails with `Please specify upload_port`, install the WinUSB driver for **RP2 Boot (Interface 1)** via Zadig — see [BUILD.md](docs/BUILD.md#windows-upload-picotool--upload_port-error).
+Details: [mc/build.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/build.md). On Windows, if Upload fails with `Please specify upload_port`, install the WinUSB driver for **RP2 Boot (Interface 1)** via Zadig — see [Windows upload section](https://github.com/fablab-wue/SliderDoc/blob/main/mc/build.md#windows-upload-picotool--upload_port-error).
+
+---
+
+## Documentation (SliderDoc)
+
+| Topic | Document |
+|-------|----------|
+| Build / flash | [mc/build.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/build.md) |
+| Protocol | [contract/protocol.md](https://github.com/fablab-wue/SliderDoc/blob/main/contract/protocol.md) |
+| Config keys | [mc/config.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/config.md) |
+| GPIO map | [mc/pins.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/pins.md) |
+| Motion / planner | [mc/motion.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/motion.md) |
+| UIC (panel) | [SliderCtrl](https://github.com/fablab-wue/SliderCtrl) · [uic/](https://github.com/fablab-wue/SliderDoc/blob/main/uic/README.md) |
+
+---
 
 ## Repository layout
 
@@ -42,6 +84,8 @@ test/host/   Host-side protocol tests
 scripts/     Host tests + GitHub repo helper
 ```
 
+---
+
 ## Host protocol tests
 
 Requires `g++` or `clang++` on PATH:
@@ -49,6 +93,8 @@ Requires `g++` or `clang++` on PATH:
 ```powershell
 powershell -File scripts/run_host_tests.ps1
 ```
+
+---
 
 ## Status
 

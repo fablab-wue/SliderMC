@@ -19,7 +19,7 @@
 
 #if defined(BOARD_RP2040_ZERO)
 
-/* Waveshare RP2040-Zero — see docs/PINS.md / docs/img/rp2040zero_pinout_mc.png */
+/* Waveshare RP2040-Zero — see SliderDoc mc/pins.md / assets/img/rp2040zero_pinout_mc.png */
 #define PIN_EXT_0 0
 #define PIN_EXT_1 1
 #define PIN_EXT_2 2
