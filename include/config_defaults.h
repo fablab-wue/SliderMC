@@ -6,13 +6,17 @@
 #define CFG_DEFAULT_INIT_ACCEL_MM_S2 200.0f
 #define CFG_DEFAULT_MAX_SPEED_MM_S 100.0f
 #define CFG_DEFAULT_MAX_ACCEL_MM_S2 300.0f
-#define CFG_DEFAULT_STEPS_PER_MM 320.0f
+#define CFG_DEFAULT_STEPS_PER_UNIT 320.0f
 #define CFG_DEFAULT_SLIDER_MIN_MM 0.0f
 #define CFG_DEFAULT_SLIDER_MAX_MM 600.0f
 #define CFG_DEFAULT_INIT_VERBOSE 0
 #define CFG_DEFAULT_INIT_TERMINAL 0
 #define CFG_DEFAULT_INIT_DEBUG_LEVEL 3
 #define CFG_DEFAULT_WDT_USE 1
+#define CFG_DEFAULT_AXIS2_USE 0
+#define CFG_NAME_MAX 32 /* device name for welcome banner (incl. NUL) */
+#define CFG_UNIT_NAME_MAX 8 /* unit label for UIC, e.g. "mm" / "deg" (incl. NUL) */
+#define CFG_DEFAULT_UNIT_NAME "mm"
 
 /* Pin active level: 0 = low-active, 1 = high-active */
 #define CFG_DEFAULT_DRV_STEP_ACTIVE 1
@@ -25,7 +29,7 @@
 #define CFG_DEFAULT_SW_LIMIT_R_ACTIVE 0
 #define CFG_DEFAULT_SW_LIMIT_L_USE 0
 #define CFG_DEFAULT_SW_LIMIT_R_USE 0
-#define CFG_DEFAULT_EXT_ACTIVE 1 /* EXT_0..9_active default (high-active) */
+#define CFG_DEFAULT_EXT_ACTIVE 1 /* EXT_0..5_active default (high-active) */
 
 #define CFG_DEFAULT_HOME_MODE 0
 #define CFG_DEFAULT_HOME_MOVE_OUT_MM 3.0f
@@ -37,10 +41,10 @@
 #define CFG_DEFAULT_DIR_CHANGE_PAUSE_S 0.1f
 
 /* Path (PC/PD/PG/PN/PS): PATH_BUFFER_MAX is the compile-time static array size
- * (65536 samples * 2 bytes = 128 KB); path_buffer_size is the runtime logical
- * limit (<= PATH_BUFFER_MAX) settable via CS. */
-#define PATH_BUFFER_MAX 65536
-#define CFG_DEFAULT_PATH_BUFFER_SIZE 64000
+ * per axis (32768 * 2 bytes * 2 axes ≈ 128 KB). path_buffer_size is the runtime
+ * logical limit (<= PATH_BUFFER_MAX) settable via CS. */
+#define PATH_BUFFER_MAX 32768
+#define CFG_DEFAULT_PATH_BUFFER_SIZE 32000
 #define CFG_DEFAULT_INIT_PATH_SLICE_US 10000
 #define PATH_SLICE_US_MIN 1000
 

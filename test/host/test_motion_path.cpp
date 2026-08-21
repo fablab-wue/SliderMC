@@ -24,14 +24,14 @@ int main(void) {
   /* --- error-diffusion: steps track distance over many slices --- */
   {
     double step_err = 0.0;
-    float steps_per_mm = 320.0f;
+    float steps_per_unit = 320.0f;
     int16_t distance_um = 333; /* 0.333 mm -> 106.56 steps/slice, non-integer */
     int32_t total_steps = 0;
     const int n = 10000;
     for (int i = 0; i < n; ++i) {
-      total_steps += motion_path_diffuse_steps(distance_um, steps_per_mm, &step_err);
+      total_steps += motion_path_diffuse_steps(distance_um, steps_per_unit, &step_err);
     }
-    double expected = (double)distance_um / 1000.0 * steps_per_mm * n;
+    double expected = (double)distance_um / 1000.0 * steps_per_unit * n;
     expect_true("step diffusion converges", std::fabs((double)total_steps - expected) < 1.0);
   }
 
@@ -68,7 +68,10 @@ int main(void) {
     expect_true("add 3", motion_path_add(0));
     expect_true("count is 3", motion_path_count() == 3);
     expect_true("add 4 rejected (full)", !motion_path_add(1));
-    config_set_key("path_buffer_size", "64000");
+    expect_true("clear for dual", motion_path_clear());
+    expect_true("add2", motion_path_add2(10, -20));
+    expect_true("count after add2", motion_path_count() == 1);
+    config_set_key("path_buffer_size", "32000");
   }
 
   /* --- slice: min bound + bare reset --- */

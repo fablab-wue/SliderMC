@@ -48,7 +48,7 @@ float planner_sine_vel(float v0, float v1, float phi);
 double planner_sine_advance_phi(double phi, float v0, float v1, float accel_mm_s2, double dt_s);
 
 /** Steps to bleed |vel| via sine stop-distance law (ceil); 0 if already stopped. */
-int planner_stop_rem_steps(float vel_mm_s, float accel_mm_s2, float steps_per_mm);
+int planner_stop_rem_steps(float vel_mm_s, float accel_mm_s2, float steps_per_unit);
 
 /**
  * True when a new target sign opposes travel and speed is still significant —

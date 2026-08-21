@@ -1,5 +1,7 @@
 #pragma once
 
+#include "config_defaults.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -12,14 +14,17 @@ typedef struct {
   float init_accel_mm_s2;
   float max_speed_mm_s;
   float max_accel_mm_s2;
-  float steps_per_mm;
-  float slider_min_mm; /* NAN = disabled */
+  float steps_per_unit; /* steps per user unit (mm, deg, …) */
+  float slider_min_mm; /* NAN = disabled; value in user units */
   float slider_max_mm; /* NAN = disabled */
   int init_verbose;
   int verbose_rate_hz; /* verbose `#…` push rate (1..200; proto task polls at 200 Hz) */
   int init_terminal; /* Terminal Mode (local echo) */
   int init_debug_level;
   int wdt_use; /* 1 = arm RP2040 WDT (2 s) from protocol heartbeat */
+  int axis2_use; /* 1 = enable 2nd STEP/DIR axis (Pico only) */
+  char name[CFG_NAME_MAX]; /* optional device name for welcome banner; empty = omit */
+  char unit_name[CFG_UNIT_NAME_MAX]; /* UIC label for user units; default "mm" */
 
   /* Pin active level: 0 = low-active / asserted at 0, 1 = high-active */
   int drv_step_active;
@@ -32,13 +37,32 @@ typedef struct {
   int sw_limit_r_active;
   int sw_limit_l_use; /* 1 = poll PIN_SW_LIMIT_L as hard limit */
   int sw_limit_r_use;
-  int ext_active[10]; /* EXT_0..9_active: 0=low-active, 1=high-active */
+  int ext_active[4]; /* EXT_0..3_active: 0=low-active, 1=high-active */
 
   /* Homing: 0=off, 1=SW_HOME left, 2=SW_HOME right, 3=LIMIT_L, 4=LIMIT_R */
   int home_mode;
   float home_move_out_mm;
   float home_speed_mm_s;
   float home_accel_mm_s2;
+
+  /* Axis 2 mirrors (used when axis2_use=1 and PIN_AXIS2_SUPPORTED) */
+  float steps_per_unit_2;
+  float slider_min_mm_2;
+  float slider_max_mm_2;
+  int drv_step_active_2;
+  int drv_dir_active_2;
+  int drv_en_active_2;
+  int drv_error_active_2;
+  int sw_home_active_2;
+  int sw_home_use_2;
+  int sw_limit_l_active_2;
+  int sw_limit_r_active_2;
+  int sw_limit_l_use_2;
+  int sw_limit_r_use_2;
+  int home_mode_2;
+  float home_move_out_mm_2;
+  float home_speed_mm_s_2;
+  float home_accel_mm_s2_2;
 
   int ramp_start_hz;
   int stop_approach_hz;
@@ -58,6 +82,8 @@ typedef struct {
 } McSession;
 
 void config_init_defaults(void);
+/** Force all McConfig fields to compile-time defaults and sync session. */
+void config_reset_to_defaults(void);
 McConfig *config_get(void);
 McSession *session_get(void);
 
@@ -81,6 +107,12 @@ void config_foreach(config_foreach_fn fn, void *ctx);
 
 bool config_slider_min_enabled(void);
 bool config_slider_max_enabled(void);
+
+/**
+ * True only if axis2_use && PIN_AXIS2_SUPPORTED.
+ * On unsupported boards, clears a stray axis2_use=1 and returns false.
+ */
+bool config_axis2_enabled(void);
 
 /* True if gpio_level (0/1) matches the pin's active setting. */
 bool config_pin_asserted(int gpio_level, int active);

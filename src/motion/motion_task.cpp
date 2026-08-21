@@ -16,20 +16,29 @@
 
 static TaskHandle_t g_feed_handle;
 
+static bool any_tx_full(void) {
+  if (pio_step_tx_room(0) == 0) {
+    return true;
+  }
+  if (config_axis2_enabled() && pio_step_tx_room(1) == 0) {
+    return true;
+  }
+  return false;
+}
+
 static void task_motion_feed(void *arg) {
   (void)arg;
   for (;;) {
     if (motion_path_is_active()) {
-      /* Path-mode (2nd planner): fill until TX is full or path has nothing more. */
       for (int i = 0; i < 32; ++i) {
-        if (pio_step_tx_room() == 0 || motion_path_fill_fifo() == 0) {
+        if (any_tx_full() || motion_path_fill_fifo() == 0) {
           break;
         }
         if (!motion_path_is_active()) {
           break;
         }
       }
-      if (pio_step_tx_room() == 0) {
+      if (any_tx_full()) {
         pio_step_arm_tx_irq();
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2));
       } else {
@@ -37,21 +46,32 @@ static void task_motion_feed(void *arg) {
         vTaskDelay(1);
       }
     } else if (planner_feed_active()) {
-      /* Fill until TX is full or the planner has nothing more to queue. */
+      /* Fill each axis that has TX room independently. Do not stop the pass
+       * just because one FIFO is full — the other may still be draining. */
       for (int i = 0; i < 32; ++i) {
-        if (pio_step_tx_room() == 0 || planner_fill_fifo() == 0) {
+        const bool want0 =
+            planner_feed_active_axis(0) && pio_step_tx_room(0) > 0;
+        const bool want1 = config_axis2_enabled() &&
+                           planner_feed_active_axis(1) &&
+                           pio_step_tx_room(1) > 0;
+        if (!want0 && !want1) {
+          break;
+        }
+        int emitted = 0;
+        if (want0) {
+          emitted += planner_fill_fifo(0);
+        }
+        if (want1) {
+          emitted += planner_fill_fifo(1);
+        }
+        if (emitted == 0) {
           break;
         }
         if (!planner_feed_active()) {
           break;
         }
       }
-      /*
-       * TXNFULL is level-triggered: arming it while the FIFO has room re-fires
-       * immediately. Only wait on it when the FIFO is actually full, otherwise
-       * sleep — this task outranks `plan`/`proto`, so it must never spin.
-       */
-      if (pio_step_tx_room() == 0) {
+      if (any_tx_full()) {
         pio_step_arm_tx_irq();
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2));
       } else {
@@ -59,11 +79,9 @@ static void task_motion_feed(void *arg) {
         vTaskDelay(1);
       }
     } else if (planner_is_moving()) {
-      /* DIR-change pause: an armed TX IRQ on an empty FIFO would spin here. */
       pio_step_disarm_tx_irq();
       vTaskDelay(pdMS_TO_TICKS(2));
     } else {
-      /* Block until a move kicks the feed task (or rare timeout). */
       pio_step_disarm_tx_irq();
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
     }
@@ -102,10 +120,10 @@ static void task_protocol(void *arg) {
   (void)arg;
   ProtocolIo io = {proto_write_both, proto_write_debug, nullptr};
   protocol_init(io);
-  board_heartbeat_init(); /* LED + optional WDT before unlock wait */
-  board_wait_unlock_newline(); /* unlock: LF from UIC UART or USB CDC */
+  board_heartbeat_init();
+  board_wait_unlock_newline();
   protocol_send_banner();
-  board_heartbeat_ready(); /* McState LED patterns from here */
+  board_heartbeat_ready();
   motion_diag_boot_report();
 
   TickType_t last = xTaskGetTickCount();

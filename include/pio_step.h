@@ -8,11 +8,13 @@ extern "C" {
 #endif
 
 /**
- * PIO STEP generator.
+ * PIO STEP generator (per-axis SM).
  *
  * Word = delay[25:0] | (repeat[5:0] << 26); repeat R → R+1 pulses.
  * High phase ~1.5 µs @ 125 MHz (allows ≥300 kHz with short delay).
- * Polarity from config DRV_STEP_active via pio_step_reconfigure().
+ * Polarity from config DRV_STEP_active / _2 via pio_step_reconfigure().
+ *
+ * axis: 0 = primary, 1 = optional 2nd axis (when config_axis2_enabled).
  */
 
 #define PIO_STEP_REPEAT_SHIFT 26
@@ -31,37 +33,37 @@ typedef struct {
 void pio_step_init(void);
 bool pio_step_reconfigure(void);
 
-void pio_step_start(void);
-void pio_step_stop_hard(void);
-void pio_step_stop_soft(void);
+void pio_step_start(int axis);
+void pio_step_stop_hard(int axis);
+void pio_step_stop_soft(int axis);
 
 /** Non-blocking put; false if TX full. Advances shadow bookkeeping. */
-bool pio_step_put_word(uint32_t delay_cycles, uint8_t n_pulses);
+bool pio_step_put_word(int axis, uint32_t delay_cycles, uint8_t n_pulses);
 
-unsigned pio_step_tx_level(void);
-unsigned pio_step_tx_room(void);
-bool pio_step_tx_empty(void);
-bool pio_step_is_stalled(void);
+unsigned pio_step_tx_level(int axis);
+unsigned pio_step_tx_room(int axis);
+bool pio_step_tx_empty(int axis);
+bool pio_step_is_stalled(int axis);
 
 /** Drop a pending TXSTALL flag (e.g. after an intentional idle gap). */
-void pio_step_clear_stall(void);
+void pio_step_clear_stall(int axis);
 
-int pio_step_pending_steps(void);
+int pio_step_pending_steps(int axis);
 
-/** Set DIR GPIO for positive (+mm) travel sense using DRV_DIR_active. */
-void pio_step_set_dir(int sign_pos);
+/** Set DIR GPIO for positive (+mm) travel sense using DRV_DIR_active / _2. */
+void pio_step_set_dir(int axis, int sign_pos);
 
 uint32_t pio_step_sysclk_hz(void);
 
 void pio_step_set_feed_task(void *task_handle); /* TaskHandle_t */
 
 /**
- * Re-enable the TX-not-full interrupt. The handler masks it (level source), so
- * the feed task must arm it again right before it blocks.
+ * Re-enable the TX-not-full interrupt for all active SMs. The handler masks
+ * level sources, so the feed task must arm again right before it blocks.
  */
 void pio_step_arm_tx_irq(void);
 
-/** Mask TX-not-full IRQ (defensive; also done inside the ISR). */
+/** Mask TX-not-full IRQ on all active SMs. */
 void pio_step_disarm_tx_irq(void);
 
 /** Wake the feed task (e.g. when a move starts while it was idle-blocked). */

@@ -10,10 +10,10 @@ extern "C" {
 
 void board_gpio_init(void);
 
-/** Set extender output 0..9: on=true → active level from EXT_n_active. */
+/** Set extender output 0..5: on=true → active level from EXT_n_active. */
 bool board_ext_set(int index, bool on);
 
-/** Current logical on/off for extender output 0..9. */
+/** Current logical on/off for extender output 0..5. */
 bool board_ext_get(int index);
 
 void board_uart_init(void);
