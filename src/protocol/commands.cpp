@@ -11,6 +11,8 @@
 #include "version.h"
 
 #include <ctype.h>
+#include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -84,6 +86,77 @@ static bool parse_float_arg(const char *s, float *out) {
     return false;
   }
   *out = v;
+  return true;
+}
+
+/** True for skip tokens: none, N, _, * (case-insensitive for none/N). NOT bare '-'. */
+static bool is_axis_skip_token(const char *s) {
+  if (!s || !*s) {
+    return false;
+  }
+  if (s[0] == '_' || s[0] == '*') {
+    return s[1] == 0;
+  }
+  if ((s[0] == 'n' || s[0] == 'N') && s[1] == 0) {
+    return true;
+  }
+  if ((s[0] == 'n' || s[0] == 'N') && (s[1] == 'o' || s[1] == 'O') &&
+      (s[2] == 'n' || s[2] == 'N') && (s[3] == 'e' || s[3] == 'E') && s[4] == 0) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Parse one or two float args for MT/M. Skip token → NAN (idle that axis).
+ * Returns false on parse error. *have_second set if a 2nd token was present.
+ */
+static bool parse_move_args(const char *s, float *a, float *b, bool *have_second) {
+  *have_second = false;
+  *b = NAN;
+  while (*s == ' ' || *s == '\t') {
+    ++s;
+  }
+  if (!*s) {
+    return false;
+  }
+  char tok1[CFG_VAL_MAX];
+  char tok2[CFG_VAL_MAX];
+  tok1[0] = tok2[0] = 0;
+  size_t i = 0;
+  while (*s && *s != ' ' && *s != '\t' && i + 1 < sizeof(tok1)) {
+    tok1[i++] = *s++;
+  }
+  tok1[i] = 0;
+  while (*s == ' ' || *s == '\t') {
+    ++s;
+  }
+  if (*s) {
+    *have_second = true;
+    i = 0;
+    while (*s && *s != ' ' && *s != '\t' && i + 1 < sizeof(tok2)) {
+      tok2[i++] = *s++;
+    }
+    tok2[i] = 0;
+    while (*s == ' ' || *s == '\t') {
+      ++s;
+    }
+    if (*s) {
+      return false; /* trailing junk */
+    }
+  }
+  if (is_axis_skip_token(tok1)) {
+    *a = NAN;
+  } else if (!parse_float_arg(tok1, a)) {
+    return false;
+  }
+  if (*have_second) {
+    if (is_axis_skip_token(tok2)) {
+      *b = NAN;
+    } else if (!parse_float_arg(tok2, b)) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -201,7 +274,8 @@ static const HelpRow k_help_rows[] = {
     {"IH", "IsHoming", "Homing? 0|1"},
     {"IL", "IsLimit", "At soft-limit position?"},
     {"IE", "IsError", "DRV_ERROR? 0|1"},
-    {"IP", "IsPosition", "Position mm"},
+    {"IP", "IsPosition", "Position mm (1 or 2)"},
+    {"IA", "IsAxis", "Axis count 1|2"},
     {"IT", "IsTarget", "Target mm or -"},
     {"IR", "IsReady", "Ready for motion? 0|1"},
     {"IW", "IsWaiting", "Wait active? 0|1"},
@@ -219,9 +293,11 @@ static const HelpRow k_help_rows[] = {
     {"PG", "PathGo", "Play path buffer"},
     {"PN", "PathNumber", "Path sample count"},
     {"PS", "PathSlice", "Slice length us (>=1000); bare resets"},
-    {"X0-9", "Ext0-9", "Ext out 0|1; bare toggles"},
+    {"X0-3", "Ext0-3", "Ext out 0|1; bare toggles"},
     {"CS", "ConfigSet", "Set persistent config key"},
+    {"CR", "ConfigReset", "Reset all config to defaults"},
     {"CG", "ConfigGet", "Get config key(s)"},
+    {"RB", "Reboot", "Soft MCU reset (no power cycle)"},
     {"W", "Wait", "Delay sec (default 1)"},
     {"WM", "WaitMoving", "Wait until move done"},
     {"WH", "WaitHoming", "Wait until home done"},
@@ -257,7 +333,7 @@ static int pin_index_cmp(const void *a, const void *b) {
 }
 
 static void cmd_pinout_index(void) {
-  PinIndexRow rows[32];
+  PinIndexRow rows[40];
   size_t n = 0;
 
 #define PIN_IX_ADD(gpio, nam, dsc)                                             \
@@ -274,12 +350,6 @@ static void cmd_pinout_index(void) {
   PIN_IX_ADD(PIN_EXT_1, "EXT_1", "Extender output 1 (X1)");
   PIN_IX_ADD(PIN_EXT_2, "EXT_2", "Extender output 2 (X2)");
   PIN_IX_ADD(PIN_EXT_3, "EXT_3", "Extender output 3 (X3)");
-  PIN_IX_ADD(PIN_EXT_4, "EXT_4", "Extender output 4 (X4)");
-  PIN_IX_ADD(PIN_EXT_5, "EXT_5", "Extender output 5 (X5)");
-  PIN_IX_ADD(PIN_EXT_6, "EXT_6", "Extender output 6 (X6)");
-  PIN_IX_ADD(PIN_EXT_7, "EXT_7", "Extender output 7 (X7)");
-  PIN_IX_ADD(PIN_EXT_8, "EXT_8", "Extender output 8 (X8)");
-  PIN_IX_ADD(PIN_EXT_9, "EXT_9", "Extender output 9 (X9)");
   PIN_IX_ADD(PIN_DRV_STEP, "DRV_STEP", "STEP to driver");
   PIN_IX_ADD(PIN_DRV_DIR, "DRV_DIR", "DIR to driver");
   PIN_IX_ADD(PIN_DRV_EN, "DRV_EN", "Driver enable");
@@ -287,16 +357,27 @@ static void cmd_pinout_index(void) {
   PIN_IX_ADD(PIN_SW_HOME, "SW_HOME", "Home / reference switch");
   PIN_IX_ADD(PIN_SW_LIMIT_L, "SW_LIMIT_L", "Hard limit left");
   PIN_IX_ADD(PIN_SW_LIMIT_R, "SW_LIMIT_R", "Hard limit right");
+  if (config_axis2_enabled()) {
+    PIN_IX_ADD(PIN_DRV_STEP2, "DRV_STEP2", "STEP axis2");
+    PIN_IX_ADD(PIN_DRV_DIR2, "DRV_DIR2", "DIR axis2");
+    PIN_IX_ADD(PIN_DRV_EN2, "DRV_EN2", "Enable axis2");
+    PIN_IX_ADD(PIN_DRV_ERROR2, "DRV_ERROR2", "Fault / E-stop axis2");
+    PIN_IX_ADD(PIN_SW_HOME2, "SW_HOME2", "Home switch axis2");
+    PIN_IX_ADD(PIN_SW_LIMIT_L2, "SW_LIMIT_L2", "Hard limit left axis2");
+    PIN_IX_ADD(PIN_SW_LIMIT_R2, "SW_LIMIT_R2", "Hard limit right axis2");
+  }
   PIN_IX_ADD(PIN_UART_TX, "UART_TX", "UART TX to UIC (1 Mbaud)");
   PIN_IX_ADD(PIN_UART_RX, "UART_RX", "UART RX from UIC (1 Mbaud)");
   PIN_IX_ADD(PIN_LED, "LED", "Status / heartbeat LED");
 #ifdef DEBUG_HW
-  PIN_IX_ADD(PIN_DBG_FIFO, "DBG_FIFO", "Scope: TX FIFO non-empty");
-  PIN_IX_ADD(PIN_DBG_MOV, "DBG_MOV", "Scope: moving or homing");
-  PIN_IX_ADD(PIN_DBG_MOV_CONST, "DBG_MOV_CONST", "Scope: cruise (equal delays)");
-  PIN_IX_ADD(PIN_DBG_CMD, "DBG_CMD", "Scope: command handler busy");
-  PIN_IX_ADD(PIN_DBG_IRQ, "DBG_IRQ", "Scope: PIO TX-not-full IRQ pulse");
-  PIN_IX_ADD(PIN_DBG_UNDERRUN, "DBG_UNDERRUN", "Scope: FIFO underrun pulse");
+  if (dbg_hw_allowed()) {
+    PIN_IX_ADD(PIN_DBG_FIFO, "DBG_FIFO", "Scope: TX FIFO non-empty");
+    PIN_IX_ADD(PIN_DBG_MOV, "DBG_MOV", "Scope: moving or homing");
+    PIN_IX_ADD(PIN_DBG_MOV_CONST, "DBG_MOV_CONST", "Scope: cruise (equal delays)");
+    PIN_IX_ADD(PIN_DBG_CMD, "DBG_CMD", "Scope: command handler busy");
+    PIN_IX_ADD(PIN_DBG_IRQ, "DBG_IRQ", "Scope: PIO TX-not-full IRQ pulse");
+    PIN_IX_ADD(PIN_DBG_UNDERRUN, "DBG_UNDERRUN", "Scope: FIFO underrun pulse");
+  }
 #endif
 #undef PIN_IX_ADD
 
@@ -319,6 +400,9 @@ static bool emo_command_allowed(const char *cmd) {
   if (match_any(cmd, &rest, "IE", "IsError", nullptr)) {
     return true;
   }
+  if (match_any(cmd, &rest, "IA", "Axis", "IsAxis")) {
+    return true;
+  }
   if (match_any(cmd, &rest, "ID", "IsDiag", nullptr) ||
       match_any(cmd, &rest, "IZ", "IsReset", nullptr)) {
     return true;
@@ -336,18 +420,22 @@ static bool emo_command_allowed(const char *cmd) {
     return true;
   }
   if (match_any(cmd, &rest, "CS", "ConfigSet", nullptr) ||
+      match_any(cmd, &rest, "CR", "ConfigReset", nullptr) ||
       match_any(cmd, &rest, "CG", "ConfigGet", nullptr)) {
     return true;
   }
   if (match_any(cmd, &rest, "HT", "Halt", "H")) {
     return true;
   }
-  /* X0..X9 / Ext0..Ext9 */
-  if ((cmd[0] == 'X' || cmd[0] == 'x') && cmd[1] >= '0' && cmd[1] <= '9') {
+  if (match_any(cmd, &rest, "RB", "Reboot", nullptr)) {
+    return true;
+  }
+  /* X0..X3 / Ext0..Ext3 */
+  if ((cmd[0] == 'X' || cmd[0] == 'x') && cmd[1] >= '0' && cmd[1] <= '3') {
     return true;
   }
   if ((cmd[0] == 'E' || cmd[0] == 'e') && (cmd[1] == 'X' || cmd[1] == 'x') &&
-      (cmd[2] == 'T' || cmd[2] == 't') && cmd[3] >= '0' && cmd[3] <= '9') {
+      (cmd[2] == 'T' || cmd[2] == 't') && cmd[3] >= '0' && cmd[3] <= '3') {
     return true;
   }
   return false;
@@ -362,6 +450,9 @@ static bool path_command_allowed(const char *cmd) {
   if (match_any(cmd, &rest, "HT", "Halt", "H")) {
     return true;
   }
+  if (match_any(cmd, &rest, "RB", "Reboot", nullptr)) {
+    return true;
+  }
   if (match_any(cmd, &rest, "PD", "PathData", nullptr)) {
     return true;
   }
@@ -373,6 +464,7 @@ static bool path_command_allowed(const char *cmd) {
       match_any(cmd, &rest, "IL", "IsLimit", nullptr) ||
       match_any(cmd, &rest, "IE", "IsError", nullptr) ||
       match_any(cmd, &rest, "IP", "IsPosition", nullptr) ||
+      match_any(cmd, &rest, "IA", "Axis", "IsAxis") ||
       match_any(cmd, &rest, "IT", "IsTarget", nullptr) ||
       match_any(cmd, &rest, "IR", "IsReady", nullptr) ||
       match_any(cmd, &rest, "IW", "IsWaiting", nullptr) ||
@@ -404,13 +496,12 @@ static bool path_command_allowed(const char *cmd) {
   return false;
 }
 
-/** Match Xn / Extn; return channel 0..9 or -1. */
+/** Match Xn / Extn; return channel 0..3 or -1. */
 static int match_ext_cmd(const char *cmd, const char **rest_out) {
   const char *rest = cmd;
-  static const char *k_x[] = {"X0", "X1", "X2", "X3", "X4", "X5", "X6", "X7", "X8", "X9"};
-  static const char *k_ext[] = {"Ext0", "Ext1", "Ext2", "Ext3", "Ext4",
-                                "Ext5", "Ext6", "Ext7", "Ext8", "Ext9"};
-  for (int i = 0; i < 10; ++i) {
+  static const char *k_x[] = {"X0", "X1", "X2", "X3"};
+  static const char *k_ext[] = {"Ext0", "Ext1", "Ext2", "Ext3"};
+  for (int i = 0; i < PIN_EXT_COUNT; ++i) {
     if (starts_cmd(cmd, k_x[i], &rest) || starts_cmd(cmd, k_ext[i], &rest)) {
       *rest_out = rest;
       return i;
@@ -457,12 +548,23 @@ bool protocol_exec_command(const char *cmd) {
       }
       return false;
     }
+    /* EXT 4+ removed (PIN_EXT_COUNT=4). */
+    if (starts_cmd(cmd, "X4", &rest) || starts_cmd(cmd, "X5", &rest) ||
+        starts_cmd(cmd, "X6", &rest) || starts_cmd(cmd, "X7", &rest) ||
+        starts_cmd(cmd, "X8", &rest) || starts_cmd(cmd, "X9", &rest) ||
+        starts_cmd(cmd, "Ext4", &rest) || starts_cmd(cmd, "Ext5", &rest) ||
+        starts_cmd(cmd, "Ext6", &rest) || starts_cmd(cmd, "Ext7", &rest) ||
+        starts_cmd(cmd, "Ext8", &rest) || starts_cmd(cmd, "Ext9", &rest)) {
+      protocol_error("parse", "Xn 0..3 only");
+      return false;
+    }
   }
 
   /* --- M motion (longer prefixes before M) --- */
   if (match_any(cmd, &rest, "MT", "MoveTo", nullptr)) {
-    float x;
-    if (!parse_float_arg(rest, &x)) {
+    float a = 0.0f, b = NAN;
+    bool have2 = false;
+    if (!parse_move_args(rest, &a, &b, &have2)) {
       protocol_error("parse", "MT args");
       return false;
     }
@@ -470,7 +572,24 @@ bool protocol_exec_command(const char *cmd) {
       protocol_error("disabled", "enable first");
       return false;
     }
-    if (!motion_move_to(x)) {
+    bool ok;
+    if (have2 && config_axis2_enabled()) {
+      /* Dest == current → that axis idles (only the other moves). */
+      McStatus cur;
+      motion_get_status(&cur);
+      if (!isnan(a) && fabsf(a - cur.pos_mm) < 1e-4f) {
+        a = NAN;
+      }
+      if (!isnan(b) && fabsf(b - cur.pos_mm_2) < 1e-4f) {
+        b = NAN;
+      }
+      ok = motion_move_to2(a, b);
+    } else if (!isnan(a)) {
+      ok = motion_move_to(a);
+    } else {
+      ok = true; /* skip-only */
+    }
+    if (!ok) {
       motion_get_status(&st);
       const char *code = "soft";
       if (st.drv_error) {
@@ -489,7 +608,18 @@ bool protocol_exec_command(const char *cmd) {
       protocol_error("disabled", "enable first");
       return false;
     }
-    if (!motion_jog(-1)) {
+    int mask = 0;
+    if (*rest) {
+      int v = 0;
+      if (!parse_int_arg(rest, &v) || v < 0 || v > 2) {
+        protocol_error("parse", "ML 0|1|2");
+        return false;
+      }
+      if (config_axis2_enabled()) {
+        mask = v;
+      }
+    }
+    if (!motion_jog(-1, mask)) {
       motion_get_status(&st);
       protocol_error(st.hard_limit ? "hard" : "soft", "jog rejected");
     }
@@ -501,7 +631,18 @@ bool protocol_exec_command(const char *cmd) {
       protocol_error("disabled", "enable first");
       return false;
     }
-    if (!motion_jog(+1)) {
+    int mask = 0;
+    if (*rest) {
+      int v = 0;
+      if (!parse_int_arg(rest, &v) || v < 0 || v > 2) {
+        protocol_error("parse", "MR 0|1|2");
+        return false;
+      }
+      if (config_axis2_enabled()) {
+        mask = v;
+      }
+    }
+    if (!motion_jog(+1, mask)) {
       motion_get_status(&st);
       protocol_error(st.hard_limit ? "hard" : "soft", "jog rejected");
     }
@@ -513,7 +654,14 @@ bool protocol_exec_command(const char *cmd) {
       protocol_error("disabled", "enable first");
       return false;
     }
-    if (!motion_home()) {
+    int axis = 1;
+    if (*rest) {
+      if (!parse_int_arg(rest, &axis) || (axis != 1 && axis != 2)) {
+        protocol_error("parse", "MH 1|2");
+        return false;
+      }
+    }
+    if (!motion_home(axis)) {
       protocol_error("home", "cfg");
     }
     return false;
@@ -528,8 +676,9 @@ bool protocol_exec_command(const char *cmd) {
   }
 
   if (match_any(cmd, &rest, "M", "Move", "MoveBy")) {
-    float x;
-    if (!parse_float_arg(rest, &x)) {
+    float a = 0.0f, b = NAN;
+    bool have2 = false;
+    if (!parse_move_args(rest, &a, &b, &have2)) {
       protocol_error("parse", "M args");
       return false;
     }
@@ -537,7 +686,22 @@ bool protocol_exec_command(const char *cmd) {
       protocol_error("disabled", "enable first");
       return false;
     }
-    if (!motion_move_by(x)) {
+    bool ok;
+    if (have2 && config_axis2_enabled()) {
+      McStatus cur;
+      motion_get_status(&cur);
+      float t0 = isnan(a) ? NAN : (cur.pos_mm + a);
+      float t1 = isnan(b) ? NAN : (cur.pos_mm_2 + b);
+      if (!isnan(t1) && fabsf(b) < 1e-6f) {
+        t1 = NAN; /* zero delta = idle */
+      }
+      ok = motion_move_to2(t0, t1);
+    } else if (!isnan(a)) {
+      ok = motion_move_by(a);
+    } else {
+      ok = true;
+    }
+    if (!ok) {
       motion_get_status(&st);
       const char *code = "soft";
       if (st.drv_error) {
@@ -560,12 +724,61 @@ bool protocol_exec_command(const char *cmd) {
   }
 
   if (match_any(cmd, &rest, "PD", "PathData", nullptr)) {
-    int v;
-    if (!parse_int_arg(rest, &v) || v < -32768 || v > 32767) {
+    float a = 0.0f, b = 0.0f;
+    bool have2 = false;
+    int16_t ia = 0, ib = 0;
+    /* PD a [b]: skip → 0; single arg → (a, 0) */
+    while (*rest == ' ' || *rest == '\t') {
+      ++rest;
+    }
+    if (!*rest) {
       protocol_error("parse", "PD -32768..32767");
       return false;
     }
-    if (!motion_path_add((int16_t)v)) {
+    char tok1[CFG_VAL_MAX];
+    char tok2[CFG_VAL_MAX];
+    tok1[0] = tok2[0] = 0;
+    size_t ti = 0;
+    while (*rest && *rest != ' ' && *rest != '\t' && ti + 1 < sizeof(tok1)) {
+      tok1[ti++] = *rest++;
+    }
+    tok1[ti] = 0;
+    while (*rest == ' ' || *rest == '\t') {
+      ++rest;
+    }
+    if (*rest) {
+      have2 = true;
+      ti = 0;
+      while (*rest && *rest != ' ' && *rest != '\t' && ti + 1 < sizeof(tok2)) {
+        tok2[ti++] = *rest++;
+      }
+      tok2[ti] = 0;
+    }
+    if (is_axis_skip_token(tok1)) {
+      ia = 0;
+    } else {
+      int v;
+      if (!parse_int_arg(tok1, &v) || v < -32768 || v > 32767) {
+        protocol_error("parse", "PD -32768..32767");
+        return false;
+      }
+      ia = (int16_t)v;
+    }
+    if (have2) {
+      if (is_axis_skip_token(tok2)) {
+        ib = 0;
+      } else {
+        int v;
+        if (!parse_int_arg(tok2, &v) || v < -32768 || v > 32767) {
+          protocol_error("parse", "PD -32768..32767");
+          return false;
+        }
+        ib = (int16_t)v;
+      }
+    }
+    (void)a;
+    (void)b;
+    if (!motion_path_add2(ia, ib)) {
       protocol_error("full", "path buffer full");
     }
     return false;
@@ -741,7 +954,17 @@ bool protocol_exec_command(const char *cmd) {
   }
   if (match_any(cmd, &rest, "IP", "IsPosition", nullptr)) {
     motion_get_status(&st);
-    reply_query_float("IP", st.pos_mm);
+    if (config_axis2_enabled()) {
+      char buf[48];
+      snprintf(buf, sizeof(buf), "IP:%.2f %.2f\n", (double)st.pos_mm, (double)st.pos_mm_2);
+      protocol_write(buf);
+    } else {
+      reply_query_float("IP", st.pos_mm);
+    }
+    return false;
+  }
+  if (match_any(cmd, &rest, "IA", "Axis", "IsAxis")) {
+    reply_query_int("IA", config_axis2_enabled() ? 2 : 1);
     return false;
   }
   if (match_any(cmd, &rest, "IT", "IsTarget", nullptr)) {
@@ -859,6 +1082,22 @@ bool protocol_exec_command(const char *cmd) {
     protocol_writeln(line);
     snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_R=%d", PIN_SW_LIMIT_R);
     protocol_writeln(line);
+    if (config_axis2_enabled()) {
+      snprintf(line, sizeof(line), "VG:PIN_DRV_STEP2=%d", PIN_DRV_STEP2);
+      protocol_writeln(line);
+      snprintf(line, sizeof(line), "VG:PIN_DRV_DIR2=%d", PIN_DRV_DIR2);
+      protocol_writeln(line);
+      snprintf(line, sizeof(line), "VG:PIN_DRV_EN2=%d", PIN_DRV_EN2);
+      protocol_writeln(line);
+      snprintf(line, sizeof(line), "VG:PIN_DRV_ERROR2=%d", PIN_DRV_ERROR2);
+      protocol_writeln(line);
+      snprintf(line, sizeof(line), "VG:PIN_SW_HOME2=%d", PIN_SW_HOME2);
+      protocol_writeln(line);
+      snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_L2=%d", PIN_SW_LIMIT_L2);
+      protocol_writeln(line);
+      snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_R2=%d", PIN_SW_LIMIT_R2);
+      protocol_writeln(line);
+    }
     snprintf(line, sizeof(line), "VG:PIN_EXT_0=%d", PIN_EXT_0);
     protocol_writeln(line);
     snprintf(line, sizeof(line), "VG:PIN_EXT_1=%d", PIN_EXT_1);
@@ -867,35 +1106,25 @@ bool protocol_exec_command(const char *cmd) {
     protocol_writeln(line);
     snprintf(line, sizeof(line), "VG:PIN_EXT_3=%d", PIN_EXT_3);
     protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_EXT_4=%d", PIN_EXT_4);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_EXT_5=%d", PIN_EXT_5);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_EXT_6=%d", PIN_EXT_6);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_EXT_7=%d", PIN_EXT_7);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_EXT_8=%d", PIN_EXT_8);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_EXT_9=%d", PIN_EXT_9);
-    protocol_writeln(line);
     snprintf(line, sizeof(line), "VG:PIN_UART_TX=%d", PIN_UART_TX);
     protocol_writeln(line);
     snprintf(line, sizeof(line), "VG:PIN_UART_RX=%d", PIN_UART_RX);
     protocol_writeln(line);
 #ifdef DEBUG_HW
-    snprintf(line, sizeof(line), "VG:PIN_DBG_FIFO=%d", PIN_DBG_FIFO);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_DBG_MOV=%d", PIN_DBG_MOV);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_DBG_MOV_CONST=%d", PIN_DBG_MOV_CONST);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_DBG_CMD=%d", PIN_DBG_CMD);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_DBG_IRQ=%d", PIN_DBG_IRQ);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_DBG_UNDERRUN=%d", PIN_DBG_UNDERRUN);
-    protocol_writeln(line);
+    if (dbg_hw_allowed()) {
+      snprintf(line, sizeof(line), "VG:PIN_DBG_FIFO=%d", PIN_DBG_FIFO);
+      protocol_writeln(line);
+      snprintf(line, sizeof(line), "VG:PIN_DBG_MOV=%d", PIN_DBG_MOV);
+      protocol_writeln(line);
+      snprintf(line, sizeof(line), "VG:PIN_DBG_MOV_CONST=%d", PIN_DBG_MOV_CONST);
+      protocol_writeln(line);
+      snprintf(line, sizeof(line), "VG:PIN_DBG_CMD=%d", PIN_DBG_CMD);
+      protocol_writeln(line);
+      snprintf(line, sizeof(line), "VG:PIN_DBG_IRQ=%d", PIN_DBG_IRQ);
+      protocol_writeln(line);
+      snprintf(line, sizeof(line), "VG:PIN_DBG_UNDERRUN=%d", PIN_DBG_UNDERRUN);
+      protocol_writeln(line);
+    }
 #endif
     return false;
   }
@@ -920,6 +1149,17 @@ bool protocol_exec_command(const char *cmd) {
     motion_set_accel(sess->accel_mm_s2);
     if (!board_config_save_to_fs()) {
       /* RAM already updated; report flash failure. */
+      protocol_error("cfg", "save failed");
+      return false;
+    }
+    return false;
+  }
+
+  if (match_any(cmd, &rest, "CR", "ConfigReset", nullptr)) {
+    config_reset_to_defaults();
+    motion_set_speed(sess->speed_mm_s);
+    motion_set_accel(sess->accel_mm_s2);
+    if (!board_config_save_to_fs()) {
       protocol_error("cfg", "save failed");
       return false;
     }
@@ -958,6 +1198,18 @@ bool protocol_exec_command(const char *cmd) {
       motion_path_abort_to_planner();
     }
     motion_halt();
+    return false;
+  }
+
+  /* RB / Reboot — soft MCU reset (no power cycle). EN off first. */
+  if (match_any(cmd, &rest, "RB", "Reboot", nullptr)) {
+    if (motion_path_is_active()) {
+      motion_path_abort_to_planner();
+    }
+    motion_halt();
+#ifndef HOST_TEST
+    rp2040.reboot();
+#endif
     return false;
   }
 

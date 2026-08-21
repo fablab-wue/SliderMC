@@ -110,14 +110,14 @@ double planner_sine_advance_phi(double phi, float v0, float v1, float accel_mm_s
   return phi;
 }
 
-int planner_stop_rem_steps(float vel_mm_s, float accel_mm_s2, float steps_per_mm) {
+int planner_stop_rem_steps(float vel_mm_s, float accel_mm_s2, float steps_per_unit) {
   if (fabsf(vel_mm_s) < 0.01f) {
     return 0;
   }
   float a = accel_mm_s2 > 1e-3f ? accel_mm_s2 : 1e-3f;
-  float spmm = steps_per_mm > 1e-3f ? steps_per_mm : 1.0f;
+  float spu = steps_per_unit > 1e-3f ? steps_per_unit : 1.0f;
   float d_stop = (float)M_PI * vel_mm_s * vel_mm_s / (4.0f * a);
-  int rem = (int)ceilf(fabsf(d_stop) * spmm);
+  int rem = (int)ceilf(fabsf(d_stop) * spu);
   if (rem < 1) {
     rem = 1;
   }

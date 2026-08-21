@@ -103,6 +103,11 @@ static void save_one(const char *key, const char *value, void *ctx) {
   if (!sc->ok || !key || !value) {
     return;
   }
+  /* name may be blank; other keys must have a value (guards broken float snprintf). */
+  if (value[0] == 0 && strcmp(key, "name") != 0) {
+    sc->ok = false;
+    return;
+  }
   if (sc->f->printf("%s=%s\n", key, value) <= 0) {
     sc->ok = false;
   }

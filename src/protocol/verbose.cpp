@@ -10,9 +10,14 @@
  * Verbose mode (~3 Hz): push compact `#…` status for the UIC to refresh a
  * display (e.g. OLED). Also acts as a heartbeat that the MC is alive.
  * Realtime `?` uses the same line format.
+ *
+ * 1-axis:  #I pos | #M pos speed accel [target] | #H pos speed accel
+ * 2-axis:  #I pos1 pos2
+ *          #H pos1 pos2 speed1 speed2 accel1 accel2
+ *          #M pos1 pos2 speed1 speed2 accel1 accel2 target1 target2
  */
 
-static char g_last_verbose[96];
+static char g_last_verbose[192];
 
 void protocol_verbose_reset_dedupe(void) { g_last_verbose[0] = 0; }
 
@@ -73,7 +78,7 @@ static void format_num(char *dst, size_t n, float v) {
     snprintf(dst, n, "0");
     return;
   }
-  
+
   snprintf(dst, n, "%s", tmp);
 }
 
@@ -98,11 +103,27 @@ static void build_status_line(char *buf, size_t buflen) {
   format_num(pos, sizeof(pos), st.pos_mm);
   snprintf(buf, buflen, "#%c %s", letter, pos);
 
+  const bool ax2 = config_axis2_enabled();
+  if (ax2) {
+    append_num(buf, buflen, st.pos_mm_2);
+  }
+
   if (st.moving || st.homing) {
-    append_num(buf, buflen, fabsf(st.vel_mm_s));
-    append_num(buf, buflen, fabsf(st.acc_mm_s2));
-    if (st.has_target) {
-      append_num(buf, buflen, st.target_mm);
+    if (ax2) {
+      append_num(buf, buflen, fabsf(st.vel_mm_s));
+      append_num(buf, buflen, fabsf(st.vel_mm_s_2));
+      append_num(buf, buflen, fabsf(st.acc_mm_s2));
+      append_num(buf, buflen, fabsf(st.acc_mm_s2_2));
+      if (st.moving && !st.homing) {
+        append_num(buf, buflen, st.target_mm);
+        append_num(buf, buflen, st.target_mm_2);
+      }
+    } else {
+      append_num(buf, buflen, fabsf(st.vel_mm_s));
+      append_num(buf, buflen, fabsf(st.acc_mm_s2));
+      if (st.moving && !st.homing && st.has_target) {
+        append_num(buf, buflen, st.target_mm);
+      }
     }
   }
   size_t used = strlen(buf);
@@ -113,7 +134,7 @@ static void build_status_line(char *buf, size_t buflen) {
 }
 
 void protocol_send_verbose(void) {
-  char buf[96];
+  char buf[192];
   build_status_line(buf, sizeof(buf));
 
   if (session_get()->terminal) {
@@ -128,7 +149,7 @@ void protocol_send_verbose(void) {
 }
 
 void protocol_send_status(void) {
-  char buf[96];
+  char buf[192];
   build_status_line(buf, sizeof(buf));
   protocol_write(buf);
 }

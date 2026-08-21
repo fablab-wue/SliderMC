@@ -2,6 +2,7 @@
 #include "config_store.h"
 #include "motion_api.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -45,6 +46,15 @@ static void expect_contains(const char *name, const char *needle) {
 static void expect_empty(const char *name) {
   if (!g_out.empty()) {
     std::fprintf(stderr, "FAIL %s: expected silence, got:\n%s\n", name, g_out.c_str());
+    ++g_fail;
+  } else {
+    std::printf("OK   %s\n", name);
+  }
+}
+
+static void expect_true(const char *name, bool ok) {
+  if (!ok) {
+    std::fprintf(stderr, "FAIL %s\n", name);
     ++g_fail;
   } else {
     std::printf("OK   %s\n", name);
@@ -142,6 +152,19 @@ int main(void) {
   reset_out();
   feed("GS\n");
   expect_contains("GS after CS", "GS:25.00");
+
+  reset_out();
+  feed("CR\n");
+  expect_empty("CR ConfigReset silent");
+  reset_out();
+  feed("CG init_speed\n");
+  expect_contains("CG after CR default", "CG:init_speed=50");
+  reset_out();
+  feed("GS\n");
+  expect_contains("GS after CR default", "GS:50.00");
+  reset_out();
+  feed("ConfigReset\n");
+  expect_empty("ConfigReset alias silent");
 
   reset_out();
   feed("CS max_accel 300\n");
@@ -380,7 +403,7 @@ int main(void) {
   feed("CS path_buffer_size 2\n");
   feed("PD 1\n");
   expect_contains("PD rejected once buffer_size reached", "!E:full");
-  feed("CS path_buffer_size 64000\n");
+  feed("CS path_buffer_size 32000\n");
 
   reset_out();
   feed("PS 500\n");
@@ -437,6 +460,250 @@ int main(void) {
   reset_out();
   feed("MT 10\n");
   expect_empty("MT accepted again once path-mode ended");
+
+  /* --- axis2 protocol (HOST_TEST builds with PIN_AXIS2_SUPPORTED) --- */
+  reset_out();
+  feed("IA\n");
+  expect_contains("IA before axis2", "IA:1");
+
+  reset_out();
+  feed("CS axis2_use 1\n");
+  expect_empty("CS axis2_use 1");
+  reset_out();
+  feed("CG axis2_use\n");
+  expect_contains("CG axis2_use", "CG:axis2_use=1");
+
+  reset_out();
+  feed("IA\n");
+  expect_contains("IA after axis2", "IA:2");
+  reset_out();
+  feed("Axis\n");
+  expect_contains("Axis alias", "IA:2");
+
+  reset_out();
+  protocol_send_banner();
+  expect_contains("banner 2 Axis", "- 2 Axis");
+  expect_not_contains("banner no name yet", "Foo - Slider");
+
+  reset_out();
+  feed("CS name Foo\n");
+  expect_empty("CS name Foo");
+  reset_out();
+  feed("CG name\n");
+  expect_contains("CG name", "CG:name=Foo");
+  reset_out();
+  feed("CG unit_name\n");
+  expect_contains("CG unit_name default", "CG:unit_name=mm");
+  reset_out();
+  feed("CS unit_name deg\n");
+  expect_empty("CS unit_name deg");
+  reset_out();
+  feed("CG unit_name\n");
+  expect_contains("CG unit_name deg", "CG:unit_name=deg");
+  reset_out();
+  feed("CS steps_per_unit 200\n");
+  expect_empty("CS steps_per_unit");
+  reset_out();
+  feed("CG steps_per_unit\n");
+  expect_contains("CG steps_per_unit", "CG:steps_per_unit=200");
+  reset_out();
+  feed("CS steps_per_mm 320\n");
+  expect_empty("CS steps_per_mm alias");
+  reset_out();
+  feed("CG steps_per_mm\n");
+  expect_contains("CG steps_per_mm alias", "CG:steps_per_mm=320");
+  reset_out();
+  protocol_send_banner();
+  expect_contains("named 2-axis banner", "# Foo - Slider Motion Controller V");
+  expect_contains("named banner has 2 Axis", "- 2 Axis");
+
+  reset_out();
+  feed("MT 0 0\n");
+  expect_empty("MT park dual origin");
+  reset_out();
+  feed("MS\n");
+  expect_empty("MS snap to origin");
+  reset_out();
+  feed("MT 100 50\n");
+  expect_empty("MT dual absolute accepted");
+  {
+    /* |d2|/|d1| = 50/100 = 0.5 */
+    float v0 = motion_host_axis_cruise(0);
+    float v1 = motion_host_axis_cruise(1);
+    float a0 = motion_host_axis_accel(0);
+    float a1 = motion_host_axis_accel(1);
+    expect_true("dual MT cruise ratio ~0.5", std::fabs(v1 - v0 * 0.5f) < 0.01f);
+    expect_true("dual MT accel ratio ~0.5", std::fabs(a1 - a0 * 0.5f) < 0.01f);
+  }
+  reset_out();
+  feed("SS 40\n");
+  expect_empty("SS mid dual move");
+  {
+    float v0 = motion_host_axis_cruise(0);
+    float v1 = motion_host_axis_cruise(1);
+    expect_true("SS mid-move axis1=40", std::fabs(v0 - 40.0f) < 0.01f);
+    expect_true("SS mid-move axis2 keeps ratio", std::fabs(v1 - 20.0f) < 0.01f);
+  }
+  reset_out();
+  feed("SA 100\n");
+  expect_empty("SA mid dual move");
+  {
+    float a0 = motion_host_axis_accel(0);
+    float a1 = motion_host_axis_accel(1);
+    expect_true("SA mid-move axis1=100", std::fabs(a0 - 100.0f) < 0.01f);
+    expect_true("SA mid-move axis2 keeps ratio", std::fabs(a1 - 50.0f) < 0.01f);
+  }
+  reset_out();
+  feed("IP\n");
+  expect_contains("IP dual after MT", "IP:");
+  {
+    size_t ip = g_out.find("IP:");
+    if (ip == std::string::npos) {
+      std::fprintf(stderr, "FAIL IP dual: no IP: in:\n%s\n", g_out.c_str());
+      ++g_fail;
+    } else {
+      std::string line = g_out.substr(ip);
+      size_t nl = line.find('\n');
+      if (nl != std::string::npos) {
+        line = line.substr(0, nl);
+      }
+      /* "IP:a b" → one space after the colon value pair */
+      int spaces = 0;
+      for (size_t i = 3; i < line.size(); ++i) {
+        if (line[i] == ' ') {
+          ++spaces;
+        }
+      }
+      if (spaces < 1) {
+        std::fprintf(stderr, "FAIL IP dual needs two fields, got:\n%s\n", line.c_str());
+        ++g_fail;
+      } else {
+        std::printf("OK   IP dual positions\n");
+      }
+    }
+  }
+  reset_out();
+  feed("MT none 30\n");
+  expect_empty("MT skip axis1 token accepted");
+  reset_out();
+  feed("MT _ 40\n");
+  expect_empty("MT underscore skip accepted");
+
+  reset_out();
+  feed("ML 1\n");
+  expect_empty("ML axis mask 1");
+  reset_out();
+  feed("MR 2\n");
+  expect_empty("MR axis mask 2");
+  reset_out();
+  feed("MH 1\n");
+  expect_empty("MH axis 1");
+
+  reset_out();
+  feed("PC\n");
+  feed("PD 100 200\n");
+  expect_empty("PD dual sample");
+  reset_out();
+  feed("PN\n");
+  expect_contains("PN after dual PD", "PN:1");
+  reset_out();
+  feed("PD * N\n");
+  expect_empty("PD skip tokens become 0");
+
+  reset_out();
+  feed("X4 1\n");
+  expect_contains("X4 invalid", "!E:parse");
+  reset_out();
+  feed("X6 1\n");
+  expect_contains("X6 invalid", "!E:parse");
+
+  reset_out();
+  feed("IX\n");
+  expect_contains("IX has STEP2 when axis2", "DRV_STEP2");
+  reset_out();
+  feed("VG\n");
+  expect_contains("VG has STEP2 when axis2", "PIN_DRV_STEP2=");
+
+  reset_out();
+  protocol_feed_byte('?');
+  expect_contains("realtime ? with pos2", "#I ");
+  /* idle: #I pos1 pos2 — at least two spaces separating three tokens after #I */
+  {
+    size_t hash = g_out.find("#I ");
+    if (hash == std::string::npos) {
+      std::fprintf(stderr, "FAIL idle ? format: no #I in:\n%s\n", g_out.c_str());
+      ++g_fail;
+    } else {
+      std::string line = g_out.substr(hash);
+      size_t nl = line.find('\n');
+      if (nl != std::string::npos) {
+        line = line.substr(0, nl);
+      }
+      /* "#I a b" → two spaces minimum in the numeric part */
+      int spaces = 0;
+      for (char ch : line) {
+        if (ch == ' ') {
+          ++spaces;
+        }
+      }
+      if (spaces < 2) {
+        std::fprintf(stderr, "FAIL idle ? needs pos1 pos2, got:\n%s\n", line.c_str());
+        ++g_fail;
+      } else {
+        std::printf("OK   idle ? dual positions\n");
+      }
+    }
+  }
+
+  reset_out();
+  feed("CS axis2_use 0\n");
+  expect_empty("CS axis2_use 0 restore 1-axis");
+  reset_out();
+  feed("IA\n");
+  expect_contains("IA restored 1-axis", "IA:1");
+  reset_out();
+  feed("IX\n");
+  expect_not_contains("IX no STEP2 when 1-axis", "DRV_STEP2");
+  reset_out();
+  feed("VG\n");
+  expect_not_contains("VG no STEP2 when 1-axis", "PIN_DRV_STEP2=");
+  reset_out();
+  feed("IP\n");
+  expect_contains("IP single-field 1-axis", "IP:");
+  expect_not_contains("IP no second field when 1-axis", "IP:0.00 0.00");
+  {
+    size_t ip = g_out.find("IP:");
+    if (ip != std::string::npos) {
+      std::string line = g_out.substr(ip);
+      size_t nl = line.find('\n');
+      if (nl != std::string::npos) {
+        line = line.substr(0, nl);
+      }
+      int spaces = 0;
+      for (size_t i = 3; i < line.size(); ++i) {
+        if (line[i] == ' ') {
+          ++spaces;
+        }
+      }
+      if (spaces != 0) {
+        std::fprintf(stderr, "FAIL IP 1-axis should be one field, got:\n%s\n", line.c_str());
+        ++g_fail;
+      } else {
+        std::printf("OK   IP single position\n");
+      }
+    }
+  }
+  reset_out();
+  protocol_send_banner();
+  expect_not_contains("1-axis banner no 2 Axis", "2 Axis");
+  expect_contains("named 1-axis banner", "# Foo - Slider Motion Controller V");
+  reset_out();
+  feed("RB\n");
+  expect_empty("RB silent on host");
+  reset_out();
+  feed("Help\n");
+  expect_contains("Help lists RB", "RB");
+  expect_contains("Help lists Reboot", "Reboot");
 
   if (g_fail) {
     std::fprintf(stderr, "\n%d test(s) failed\n", g_fail);

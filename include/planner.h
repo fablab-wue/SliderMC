@@ -16,38 +16,43 @@ void planner_init(void);
  * Returns the number of words queued, so the caller can tell "FIFO full" from
  * "planner has nothing to add" and sleep instead of spinning.
  */
-int planner_fill_fifo(void);
+int planner_fill_fifo(int axis);
 
 /** ~200 Hz: switches, DIR pause, settle, underrun check, status fields (no FIFO fill). */
 void planner_tick(float dt_s);
 
-void planner_request_move_to(float mm);
-void planner_request_move_by(float mm);
-void planner_request_jog(int dir);
-void planner_request_stop(void);
-void planner_request_halt(void);
-void planner_request_home(void);
+void planner_request_move_to(int axis, float mm);
+void planner_request_move_by(int axis, float mm);
+void planner_request_jog(int axis, int dir);
+void planner_request_stop(void);  /* soft-stop all axes */
+void planner_request_halt(void);  /* hard halt all axes */
+void planner_request_home(int axis);
 void planner_soft_reset(void);
+
+/** Override cruise/accel for one axis (coordinated MT). */
+void planner_set_cruise_accel(int axis, float cruise_mm_s, float accel_mm_s2);
 
 /**
  * Seed position/velocity from motion_path (2nd planner) before a following
  * planner_request_stop()/planner_request_halt() decelerates from that speed.
  */
-void planner_takeover_from_path(int64_t pos_steps, float vel_mm_s);
+void planner_takeover_from_path(int axis, int64_t pos_steps, float vel_mm_s);
 
 /** True if signed move (neg=left, pos=right) is blocked by hard limit. */
-bool planner_hard_limit_blocks_sign(int sign);
+bool planner_hard_limit_blocks_sign(int axis, int sign);
 
-/** Debounced PIN_SW_HOME asserted (SW_HOME_use=1; for MH only, never a halt). */
-bool planner_home_switch_asserted(void);
+/** Debounced home switch asserted (SW_HOME_use; for MH only, never a halt). */
+bool planner_home_switch_asserted(int axis);
 
-/** True when SW_HOME_use is enabled in config. */
-bool planner_home_switch_enabled(void);
+/** True when SW_HOME_use is enabled for this axis. */
+bool planner_home_switch_enabled(int axis);
 
 bool planner_is_busy(void);
 bool planner_is_moving(void);
-/** True while the planner actually wants FIFO words (moving, no DIR pause). */
+/** True while any active axis wants FIFO words (moving, no DIR pause). */
 bool planner_feed_active(void);
+/** True while this axis wants FIFO words. */
+bool planner_feed_active_axis(int axis);
 void planner_get_status(McStatus *out);
 
 #ifdef __cplusplus
