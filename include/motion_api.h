@@ -66,9 +66,9 @@ bool motion_soft_reset(void); /* clear alarm / reset hold */
 bool motion_set_speed(float mm_s);
 bool motion_set_accel(float mm_s2);
 bool motion_set_max_speed(float mm_s);
-/** Session working window (SL/SR). NAN = skip that axis. false = !E:limit. */
-bool motion_set_window_left(float mm0_or_nan, float mm1_or_nan);
-bool motion_set_window_right(float mm0_or_nan, float mm1_or_nan);
+/** Session working window (SL/SR). setN=false skips; setN+NAN stores None. false = !E:limit. */
+bool motion_set_window_left(bool set0, float mm0, bool set1, float mm1);
+bool motion_set_window_right(bool set0, float mm0, bool set1, float mm1);
 void motion_reset_window_left(void);
 void motion_reset_window_right(void);
 

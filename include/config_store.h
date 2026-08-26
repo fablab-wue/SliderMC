@@ -81,7 +81,7 @@ typedef struct {
   int terminal;
   int verbose;
   int path_slice_us;
-  /* Working window (SL/SR); NAN = that side disabled. Boot-copied from slider_*. */
+  /* Working window (SL/SR); NAN = cleared (effective clip falls back to envelope). */
   float soft_left_mm;
   float soft_right_mm;
   float soft_left_mm_2;
@@ -107,9 +107,16 @@ void session_reset_left(void);  /* both axes → slider_min / _2 */
 void session_reset_right(void); /* both axes → slider_max / _2 */
 /** If CS squeezed the envelope, pull session walls inward (never past each other). */
 void session_clamp_window_to_envelope(void);
-/** Set session window; NAN skips that axis. false if outside envelope or left>right. */
-bool session_set_window_left(float mm0_or_nan, float mm1_or_nan);
-bool session_set_window_right(float mm0_or_nan, float mm1_or_nan);
+/**
+ * Set session window left/right. setN=false → leave that axis unchanged;
+ * setN=true + NAN → store None (effective clip falls back to envelope).
+ * false if outside envelope or effective left>right.
+ */
+bool session_set_window_left(bool set0, float mm0, bool set1, float mm1);
+bool session_set_window_right(bool set0, float mm0, bool set1, float mm1);
+/** Effective working-window min/max (session, else envelope if set, else NAN). */
+float session_effective_left(int axis);
+float session_effective_right(int axis);
 
 /* Returns true on success. */
 bool config_set_key(const char *key, const char *value);

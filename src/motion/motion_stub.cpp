@@ -561,12 +561,12 @@ bool motion_set_max_speed(float mm_s) {
   return true;
 }
 
-bool motion_set_window_left(float mm0_or_nan, float mm1_or_nan) {
-  return session_set_window_left(mm0_or_nan, mm1_or_nan);
+bool motion_set_window_left(bool set0, float mm0, bool set1, float mm1) {
+  return session_set_window_left(set0, mm0, set1, mm1);
 }
 
-bool motion_set_window_right(float mm0_or_nan, float mm1_or_nan) {
-  return session_set_window_right(mm0_or_nan, mm1_or_nan);
+bool motion_set_window_right(bool set0, float mm0, bool set1, float mm1) {
+  return session_set_window_right(set0, mm0, set1, mm1);
 }
 
 void motion_reset_window_left(void) { session_reset_left(); }

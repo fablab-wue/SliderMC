@@ -89,26 +89,22 @@ static bool parse_float_arg(const char *s, float *out) {
   return true;
 }
 
-/** True for skip tokens: none, N, _, * (case-insensitive for none/N). NOT bare '-'. */
+/** True for axis skip token `_` only. NOT bare '-', none, N, or *. */
 static bool is_axis_skip_token(const char *s) {
+  return s && s[0] == '_' && s[1] == 0;
+}
+
+/** True for SL/SR clear token `none` (case-insensitive). */
+static bool is_none_token(const char *s) {
   if (!s || !*s) {
     return false;
   }
-  if (s[0] == '_' || s[0] == '*') {
-    return s[1] == 0;
-  }
-  if ((s[0] == 'n' || s[0] == 'N') && s[1] == 0) {
-    return true;
-  }
-  if ((s[0] == 'n' || s[0] == 'N') && (s[1] == 'o' || s[1] == 'O') &&
-      (s[2] == 'n' || s[2] == 'N') && (s[3] == 'e' || s[3] == 'E') && s[4] == 0) {
-    return true;
-  }
-  return false;
+  return (s[0] == 'n' || s[0] == 'N') && (s[1] == 'o' || s[1] == 'O') &&
+         (s[2] == 'n' || s[2] == 'N') && (s[3] == 'e' || s[3] == 'E') && s[4] == 0;
 }
 
 /**
- * Parse one or two float args for MT/M. Skip token → NAN (idle that axis).
+ * Parse one or two float args for MT/M. Skip `_` → NAN (idle that axis).
  * Returns false on parse error. *have_second set if a 2nd token was present.
  */
 static bool parse_move_args(const char *s, float *a, float *b, bool *have_second) {
@@ -154,6 +150,71 @@ static bool parse_move_args(const char *s, float *a, float *b, bool *have_second
     if (is_axis_skip_token(tok2)) {
       *b = NAN;
     } else if (!parse_float_arg(tok2, b)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Parse SL/SR args: `_` = skip, `none` = store NAN, float = set value.
+ * *set0/*set1 true when that axis should be written.
+ */
+static bool parse_window_args(const char *s, bool *set0, float *a, bool *set1, float *b,
+                              bool *have_second) {
+  *set0 = *set1 = false;
+  *have_second = false;
+  *a = *b = NAN;
+  while (*s == ' ' || *s == '\t') {
+    ++s;
+  }
+  if (!*s) {
+    return false;
+  }
+  char tok1[CFG_VAL_MAX];
+  char tok2[CFG_VAL_MAX];
+  tok1[0] = tok2[0] = 0;
+  size_t i = 0;
+  while (*s && *s != ' ' && *s != '\t' && i + 1 < sizeof(tok1)) {
+    tok1[i++] = *s++;
+  }
+  tok1[i] = 0;
+  while (*s == ' ' || *s == '\t') {
+    ++s;
+  }
+  if (*s) {
+    *have_second = true;
+    i = 0;
+    while (*s && *s != ' ' && *s != '\t' && i + 1 < sizeof(tok2)) {
+      tok2[i++] = *s++;
+    }
+    tok2[i] = 0;
+    while (*s == ' ' || *s == '\t') {
+      ++s;
+    }
+    if (*s) {
+      return false;
+    }
+  }
+  if (is_axis_skip_token(tok1)) {
+    *set0 = false;
+  } else if (is_none_token(tok1)) {
+    *set0 = true;
+    *a = NAN;
+  } else if (parse_float_arg(tok1, a)) {
+    *set0 = true;
+  } else {
+    return false;
+  }
+  if (*have_second) {
+    if (is_axis_skip_token(tok2)) {
+      *set1 = false;
+    } else if (is_none_token(tok2)) {
+      *set1 = true;
+      *b = NAN;
+    } else if (parse_float_arg(tok2, b)) {
+      *set1 = true;
+    } else {
       return false;
     }
   }
@@ -960,15 +1021,16 @@ bool protocol_exec_command(const char *cmd) {
       return false;
     }
     float a = NAN, b = NAN;
-    bool have2 = false;
-    if (!parse_move_args(rest, &a, &b, &have2)) {
+    bool set0 = false, set1 = false, have2 = false;
+    if (!parse_window_args(rest, &set0, &a, &set1, &b, &have2)) {
       protocol_error("parse", "SL args");
       return false;
     }
+    (void)have2;
     if (!config_axis2_enabled()) {
-      b = NAN;
+      set1 = false;
     }
-    if (!motion_set_window_left(a, b)) {
+    if (!motion_set_window_left(set0, a, set1, b)) {
       protocol_error("limit", "SL");
     }
     return false;
@@ -980,15 +1042,16 @@ bool protocol_exec_command(const char *cmd) {
       return false;
     }
     float a = NAN, b = NAN;
-    bool have2 = false;
-    if (!parse_move_args(rest, &a, &b, &have2)) {
+    bool set0 = false, set1 = false, have2 = false;
+    if (!parse_window_args(rest, &set0, &a, &set1, &b, &have2)) {
       protocol_error("parse", "SR args");
       return false;
     }
+    (void)have2;
     if (!config_axis2_enabled()) {
-      b = NAN;
+      set1 = false;
     }
-    if (!motion_set_window_right(a, b)) {
+    if (!motion_set_window_right(set0, a, set1, b)) {
       protocol_error("limit", "SR");
     }
     return false;
@@ -1021,11 +1084,11 @@ bool protocol_exec_command(const char *cmd) {
     return false;
   }
   if (match_any(cmd, &rest, "GL", "GetLeft", nullptr)) {
-    reply_window("GL", sess->soft_left_mm, sess->soft_left_mm_2);
+    reply_window("GL", session_effective_left(0), session_effective_left(1));
     return false;
   }
   if (match_any(cmd, &rest, "GR", "GetRight", nullptr)) {
-    reply_window("GR", sess->soft_right_mm, sess->soft_right_mm_2);
+    reply_window("GR", session_effective_right(0), session_effective_right(1));
     return false;
   }
 

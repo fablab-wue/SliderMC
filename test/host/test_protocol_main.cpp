@@ -634,6 +634,39 @@ int main(void) {
   feed("GL\n");
   expect_contains("GL full rail again", "GL:0.00");
 
+  /* SL none: session cleared; GL/clip fall back to envelope when set */
+  reset_out();
+  feed("SL 120\n");
+  expect_empty("SL 120 before none");
+  reset_out();
+  feed("SL none\n");
+  expect_empty("SL none with envelope");
+  reset_out();
+  feed("GL\n");
+  expect_contains("GL after SL none uses envelope", "GL:0.00");
+  reset_out();
+  feed("CS slider_min none\n");
+  expect_empty("CS slider_min none");
+  reset_out();
+  feed("SL none\n");
+  expect_empty("SL none with open envelope");
+  reset_out();
+  feed("GL\n");
+  expect_contains("GL open after none+none envelope", "GL:-");
+  reset_out();
+  feed("CS slider_min 0\n");
+  feed("SL\n");
+  expect_empty("restore slider_min and bare SL");
+  reset_out();
+  feed("MT none\n");
+  expect_contains("MT none not a skip", "!E:parse");
+  reset_out();
+  feed("MT *\n");
+  expect_contains("MT star not a skip", "!E:parse");
+  reset_out();
+  feed("MT N\n");
+  expect_contains("MT N not a skip", "!E:parse");
+
   reset_out();
   feed("MS\n");
   feed("SL 100\n");
@@ -773,10 +806,13 @@ int main(void) {
   }
   reset_out();
   feed("MT none 30\n");
-  expect_empty("MT skip axis1 token accepted");
+  expect_contains("MT none not skip on dual", "!E:parse");
   reset_out();
   feed("MT _ 40\n");
   expect_empty("MT underscore skip accepted");
+  reset_out();
+  feed("MT * 40\n");
+  expect_contains("MT star not skip on dual", "!E:parse");
 
   reset_out();
   feed("ML 1\n");
@@ -853,8 +889,11 @@ int main(void) {
   feed("PN\n");
   expect_contains("PN after dual PD", "PN:1");
   reset_out();
+  feed("PD _ _\n");
+  expect_empty("PD underscore skip become 0");
+  reset_out();
   feed("PD * N\n");
-  expect_empty("PD skip tokens become 0");
+  expect_contains("PD star/N not skip", "!E:parse");
 
   reset_out();
   feed("SL\n");
@@ -863,6 +902,19 @@ int main(void) {
   reset_out();
   feed("GL\n");
   expect_contains("GL dual skip axis2", "GL:0.00 40.00");
+  reset_out();
+  feed("SL none 50\n");
+  expect_empty("SL none axis1 set axis2");
+  reset_out();
+  feed("GL\n");
+  expect_contains("GL after SL none 50", "GL:0.00 50.00");
+  reset_out();
+  feed("SR 200\n");
+  feed("SL _ none\n");
+  expect_empty("SL clear axis2 only");
+  reset_out();
+  feed("GL\n");
+  expect_contains("GL after SL _ none", "GL:0.00 0.00");
   reset_out();
   feed("SL\n");
   expect_empty("SL bare resets both axes");

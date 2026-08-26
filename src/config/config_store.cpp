@@ -192,56 +192,94 @@ static bool pos_in_envelope(int axis, float pos) {
   return true;
 }
 
-bool session_set_window_left(float mm0_or_nan, float mm1_or_nan) {
-  if (!isnan(mm0_or_nan)) {
-    if (!pos_in_envelope(0, mm0_or_nan)) {
+float session_effective_left(int axis) {
+  float soft = (axis == 1) ? g_session.soft_left_mm_2 : g_session.soft_left_mm;
+  if (!isnan(soft)) {
+    return soft;
+  }
+  return (axis == 1) ? g_cfg.slider_min_mm_2 : g_cfg.slider_min_mm;
+}
+
+float session_effective_right(int axis) {
+  float soft = (axis == 1) ? g_session.soft_right_mm_2 : g_session.soft_right_mm;
+  if (!isnan(soft)) {
+    return soft;
+  }
+  return (axis == 1) ? g_cfg.slider_max_mm_2 : g_cfg.slider_max_mm;
+}
+
+static bool eff_left_le_right(int axis, float new_left_or_nan, bool setting_left) {
+  float left = setting_left ? (isnan(new_left_or_nan) ? ((axis == 1) ? g_cfg.slider_min_mm_2
+                                                                     : g_cfg.slider_min_mm)
+                                                      : new_left_or_nan)
+                            : session_effective_left(axis);
+  float right = session_effective_right(axis);
+  if (isnan(left) || isnan(right)) {
+    return true;
+  }
+  return left <= right + 1e-4f;
+}
+
+static bool eff_right_ge_left(int axis, float new_right_or_nan, bool setting_right) {
+  float right = setting_right ? (isnan(new_right_or_nan) ? ((axis == 1) ? g_cfg.slider_max_mm_2
+                                                                       : g_cfg.slider_max_mm)
+                                                        : new_right_or_nan)
+                              : session_effective_right(axis);
+  float left = session_effective_left(axis);
+  if (isnan(left) || isnan(right)) {
+    return true;
+  }
+  return left <= right + 1e-4f;
+}
+
+bool session_set_window_left(bool set0, float mm0, bool set1, float mm1) {
+  if (set0) {
+    if (!isnan(mm0) && !pos_in_envelope(0, mm0)) {
       return false;
     }
-    if (!isnan(g_session.soft_right_mm) && mm0_or_nan > g_session.soft_right_mm + 1e-4f) {
+    if (!eff_left_le_right(0, mm0, true)) {
       return false;
     }
   }
-  if (!isnan(mm1_or_nan) && config_axis2_enabled()) {
-    if (!pos_in_envelope(1, mm1_or_nan)) {
+  if (set1 && config_axis2_enabled()) {
+    if (!isnan(mm1) && !pos_in_envelope(1, mm1)) {
       return false;
     }
-    if (!isnan(g_session.soft_right_mm_2) &&
-        mm1_or_nan > g_session.soft_right_mm_2 + 1e-4f) {
+    if (!eff_left_le_right(1, mm1, true)) {
       return false;
     }
   }
-  if (!isnan(mm0_or_nan)) {
-    g_session.soft_left_mm = mm0_or_nan;
+  if (set0) {
+    g_session.soft_left_mm = mm0;
   }
-  if (!isnan(mm1_or_nan) && config_axis2_enabled()) {
-    g_session.soft_left_mm_2 = mm1_or_nan;
+  if (set1 && config_axis2_enabled()) {
+    g_session.soft_left_mm_2 = mm1;
   }
   return true;
 }
 
-bool session_set_window_right(float mm0_or_nan, float mm1_or_nan) {
-  if (!isnan(mm0_or_nan)) {
-    if (!pos_in_envelope(0, mm0_or_nan)) {
+bool session_set_window_right(bool set0, float mm0, bool set1, float mm1) {
+  if (set0) {
+    if (!isnan(mm0) && !pos_in_envelope(0, mm0)) {
       return false;
     }
-    if (!isnan(g_session.soft_left_mm) && mm0_or_nan < g_session.soft_left_mm - 1e-4f) {
-      return false;
-    }
-  }
-  if (!isnan(mm1_or_nan) && config_axis2_enabled()) {
-    if (!pos_in_envelope(1, mm1_or_nan)) {
-      return false;
-    }
-    if (!isnan(g_session.soft_left_mm_2) &&
-        mm1_or_nan < g_session.soft_left_mm_2 - 1e-4f) {
+    if (!eff_right_ge_left(0, mm0, true)) {
       return false;
     }
   }
-  if (!isnan(mm0_or_nan)) {
-    g_session.soft_right_mm = mm0_or_nan;
+  if (set1 && config_axis2_enabled()) {
+    if (!isnan(mm1) && !pos_in_envelope(1, mm1)) {
+      return false;
+    }
+    if (!eff_right_ge_left(1, mm1, true)) {
+      return false;
+    }
   }
-  if (!isnan(mm1_or_nan) && config_axis2_enabled()) {
-    g_session.soft_right_mm_2 = mm1_or_nan;
+  if (set0) {
+    g_session.soft_right_mm = mm0;
+  }
+  if (set1 && config_axis2_enabled()) {
+    g_session.soft_right_mm_2 = mm1;
   }
   return true;
 }

@@ -140,16 +140,14 @@ static inline float axis_hw_slider_max(int axis) {
   return (axis == 1) ? c->slider_max_mm_2 : c->slider_max_mm;
 }
 
-/** Session working-window min (SL / left). Homing still uses axis_hw_slider_min. */
+/** Effective working-window min (session, else envelope). Homing uses axis_hw_slider_min. */
 static inline float axis_hw_window_min(int axis) {
-  const McSession *s = session_get();
-  return (axis == 1) ? s->soft_left_mm_2 : s->soft_left_mm;
+  return session_effective_left(axis);
 }
 
-/** Session working-window max (SR / right). */
+/** Effective working-window max (session, else envelope). */
 static inline float axis_hw_window_max(int axis) {
-  const McSession *s = session_get();
-  return (axis == 1) ? s->soft_right_mm_2 : s->soft_right_mm;
+  return session_effective_right(axis);
 }
 
 static inline int axis_hw_home_mode(int axis) {
