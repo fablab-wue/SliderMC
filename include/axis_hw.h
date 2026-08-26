@@ -140,6 +140,18 @@ static inline float axis_hw_slider_max(int axis) {
   return (axis == 1) ? c->slider_max_mm_2 : c->slider_max_mm;
 }
 
+/** Session working-window min (SL / left). Homing still uses axis_hw_slider_min. */
+static inline float axis_hw_window_min(int axis) {
+  const McSession *s = session_get();
+  return (axis == 1) ? s->soft_left_mm_2 : s->soft_left_mm;
+}
+
+/** Session working-window max (SR / right). */
+static inline float axis_hw_window_max(int axis) {
+  const McSession *s = session_get();
+  return (axis == 1) ? s->soft_right_mm_2 : s->soft_right_mm;
+}
+
 static inline int axis_hw_home_mode(int axis) {
   const McConfig *c = config_get();
   return (axis == 1) ? c->home_mode_2 : c->home_mode;
@@ -158,6 +170,16 @@ static inline float axis_hw_home_speed(int axis) {
 static inline float axis_hw_home_accel(int axis) {
   const McConfig *c = config_get();
   return (axis == 1) ? c->home_accel_mm_s2_2 : c->home_accel_mm_s2;
+}
+
+static inline float axis_hw_max_speed(int axis) {
+  const McConfig *c = config_get();
+  return (axis == 1) ? c->max_speed_mm_s_2 : c->max_speed_mm_s;
+}
+
+static inline float axis_hw_max_accel(int axis) {
+  const McConfig *c = config_get();
+  return (axis == 1) ? c->max_accel_mm_s2_2 : c->max_accel_mm_s2;
 }
 
 #ifdef __cplusplus

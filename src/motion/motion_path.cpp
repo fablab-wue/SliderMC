@@ -160,6 +160,7 @@ bool motion_path_go(void) {
   if (!st.enabled) {
     return false;
   }
+  motion_end_joy();
   float spmm0 = axis_hw_steps_per_unit(0);
   if (spmm0 < 1e-3f) {
     spmm0 = 1.0f;
@@ -323,6 +324,7 @@ bool motion_path_go(void) {
   if (!st.enabled) {
     return false;
   }
+  motion_end_joy();
   g_path_play_index = 0;
   g_path_active = true;
   return true;

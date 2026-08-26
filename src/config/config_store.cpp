@@ -43,6 +43,10 @@ void session_sync_from_config(void) {
   g_session.terminal = g_cfg.init_terminal;
   g_session.verbose = g_cfg.init_verbose;
   g_session.path_slice_us = g_cfg.init_path_slice_us;
+  g_session.soft_left_mm = g_cfg.slider_min_mm;
+  g_session.soft_right_mm = g_cfg.slider_max_mm;
+  g_session.soft_left_mm_2 = g_cfg.slider_min_mm_2;
+  g_session.soft_right_mm_2 = g_cfg.slider_max_mm_2;
 }
 
 void session_reset_speed(void) { g_session.speed_mm_s = g_cfg.init_speed_mm_s; }
@@ -50,6 +54,33 @@ void session_reset_accel(void) { g_session.accel_mm_s2 = g_cfg.init_accel_mm_s2;
 void session_reset_terminal(void) { g_session.terminal = g_cfg.init_terminal; }
 void session_reset_verbose(void) { g_session.verbose = g_cfg.init_verbose; }
 void session_reset_path_slice(void) { g_session.path_slice_us = g_cfg.init_path_slice_us; }
+void session_reset_left(void) {
+  g_session.soft_left_mm = g_cfg.slider_min_mm;
+  g_session.soft_left_mm_2 = g_cfg.slider_min_mm_2;
+}
+void session_reset_right(void) {
+  g_session.soft_right_mm = g_cfg.slider_max_mm;
+  g_session.soft_right_mm_2 = g_cfg.slider_max_mm_2;
+}
+
+static void clamp_axis_window(float env_min, float env_max, float *left, float *right) {
+  if (!isnan(env_min) && !isnan(*left) && *left < env_min) {
+    *left = env_min;
+  }
+  if (!isnan(env_max) && !isnan(*right) && *right > env_max) {
+    *right = env_max;
+  }
+  if (!isnan(*left) && !isnan(*right) && *left > *right) {
+    *right = *left;
+  }
+}
+
+void session_clamp_window_to_envelope(void) {
+  clamp_axis_window(g_cfg.slider_min_mm, g_cfg.slider_max_mm, &g_session.soft_left_mm,
+                    &g_session.soft_right_mm);
+  clamp_axis_window(g_cfg.slider_min_mm_2, g_cfg.slider_max_mm_2, &g_session.soft_left_mm_2,
+                    &g_session.soft_right_mm_2);
+}
 
 static void init_axis2_defaults(void) {
   g_cfg.steps_per_unit_2 = CFG_DEFAULT_STEPS_PER_UNIT;
@@ -69,6 +100,8 @@ static void init_axis2_defaults(void) {
   g_cfg.home_move_out_mm_2 = CFG_DEFAULT_HOME_MOVE_OUT_MM;
   g_cfg.home_speed_mm_s_2 = CFG_DEFAULT_HOME_SPEED_MM_S;
   g_cfg.home_accel_mm_s2_2 = CFG_DEFAULT_HOME_ACCEL_MM_S2;
+  g_cfg.max_speed_mm_s_2 = CFG_DEFAULT_MAX_SPEED_MM_S;
+  g_cfg.max_accel_mm_s2_2 = CFG_DEFAULT_MAX_ACCEL_MM_S2;
 }
 
 static void config_apply_defaults(void) {
@@ -145,6 +178,72 @@ bool config_axis2_enabled(void) {
   }
   return false;
 #endif
+}
+
+static bool pos_in_envelope(int axis, float pos) {
+  float mn = (axis == 1) ? g_cfg.slider_min_mm_2 : g_cfg.slider_min_mm;
+  float mx = (axis == 1) ? g_cfg.slider_max_mm_2 : g_cfg.slider_max_mm;
+  if (!isnan(mn) && pos < mn - 1e-4f) {
+    return false;
+  }
+  if (!isnan(mx) && pos > mx + 1e-4f) {
+    return false;
+  }
+  return true;
+}
+
+bool session_set_window_left(float mm0_or_nan, float mm1_or_nan) {
+  if (!isnan(mm0_or_nan)) {
+    if (!pos_in_envelope(0, mm0_or_nan)) {
+      return false;
+    }
+    if (!isnan(g_session.soft_right_mm) && mm0_or_nan > g_session.soft_right_mm + 1e-4f) {
+      return false;
+    }
+  }
+  if (!isnan(mm1_or_nan) && config_axis2_enabled()) {
+    if (!pos_in_envelope(1, mm1_or_nan)) {
+      return false;
+    }
+    if (!isnan(g_session.soft_right_mm_2) &&
+        mm1_or_nan > g_session.soft_right_mm_2 + 1e-4f) {
+      return false;
+    }
+  }
+  if (!isnan(mm0_or_nan)) {
+    g_session.soft_left_mm = mm0_or_nan;
+  }
+  if (!isnan(mm1_or_nan) && config_axis2_enabled()) {
+    g_session.soft_left_mm_2 = mm1_or_nan;
+  }
+  return true;
+}
+
+bool session_set_window_right(float mm0_or_nan, float mm1_or_nan) {
+  if (!isnan(mm0_or_nan)) {
+    if (!pos_in_envelope(0, mm0_or_nan)) {
+      return false;
+    }
+    if (!isnan(g_session.soft_left_mm) && mm0_or_nan < g_session.soft_left_mm - 1e-4f) {
+      return false;
+    }
+  }
+  if (!isnan(mm1_or_nan) && config_axis2_enabled()) {
+    if (!pos_in_envelope(1, mm1_or_nan)) {
+      return false;
+    }
+    if (!isnan(g_session.soft_left_mm_2) &&
+        mm1_or_nan < g_session.soft_left_mm_2 - 1e-4f) {
+      return false;
+    }
+  }
+  if (!isnan(mm0_or_nan)) {
+    g_session.soft_right_mm = mm0_or_nan;
+  }
+  if (!isnan(mm1_or_nan) && config_axis2_enabled()) {
+    g_session.soft_right_mm_2 = mm1_or_nan;
+  }
+  return true;
 }
 
 bool config_pin_asserted(int gpio_level, int active) {
@@ -229,6 +328,20 @@ bool config_set_key(const char *key, const char *value) {
     g_cfg.max_accel_mm_s2 = f;
     return true;
   }
+  if (icmp(key, "max_speed_2") == 0) {
+    if (!parse_float(value, &f) || f <= 0.0f) {
+      return false;
+    }
+    g_cfg.max_speed_mm_s_2 = f;
+    return true;
+  }
+  if (icmp(key, "max_accel_2") == 0) {
+    if (!parse_float(value, &f) || f <= 0.0f) {
+      return false;
+    }
+    g_cfg.max_accel_mm_s2_2 = f;
+    return true;
+  }
   if (key_is(key, "steps_per_unit", "steps_per_mm")) {
     if (!parse_float(value, &f) || f <= 0.0f) {
       return false;
@@ -246,45 +359,53 @@ bool config_set_key(const char *key, const char *value) {
   if (key_is(key, "slider_min", "soft_min")) {
     if (is_none_token(value)) {
       g_cfg.slider_min_mm = NAN;
+      session_clamp_window_to_envelope();
       return true;
     }
     if (!parse_float(value, &f)) {
       return false;
     }
     g_cfg.slider_min_mm = f;
+    session_clamp_window_to_envelope();
     return true;
   }
   if (key_is(key, "slider_max", "soft_max")) {
     if (is_none_token(value)) {
       g_cfg.slider_max_mm = NAN;
+      session_clamp_window_to_envelope();
       return true;
     }
     if (!parse_float(value, &f)) {
       return false;
     }
     g_cfg.slider_max_mm = f;
+    session_clamp_window_to_envelope();
     return true;
   }
   if (key_is(key, "slider_min_2", "soft_min_2")) {
     if (is_none_token(value)) {
       g_cfg.slider_min_mm_2 = NAN;
+      session_clamp_window_to_envelope();
       return true;
     }
     if (!parse_float(value, &f)) {
       return false;
     }
     g_cfg.slider_min_mm_2 = f;
+    session_clamp_window_to_envelope();
     return true;
   }
   if (key_is(key, "slider_max_2", "soft_max_2")) {
     if (is_none_token(value)) {
       g_cfg.slider_max_mm_2 = NAN;
+      session_clamp_window_to_envelope();
       return true;
     }
     if (!parse_float(value, &f)) {
       return false;
     }
     g_cfg.slider_max_mm_2 = f;
+    session_clamp_window_to_envelope();
     return true;
   }
   if (key_is(key, "init_verbose", "verbose")) {
@@ -555,6 +676,14 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     snprintf(out, out_len, "%.3g", (double)c->max_accel_mm_s2);
     return true;
   }
+  if (icmp(key, "max_speed_2") == 0) {
+    snprintf(out, out_len, "%.3g", (double)c->max_speed_mm_s_2);
+    return true;
+  }
+  if (icmp(key, "max_accel_2") == 0) {
+    snprintf(out, out_len, "%.3g", (double)c->max_accel_mm_s2_2);
+    return true;
+  }
   if (key_is(key, "steps_per_unit", "steps_per_mm")) {
     snprintf(out, out_len, "%.6g", (double)c->steps_per_unit);
     return true;
@@ -772,6 +901,8 @@ void config_foreach(config_foreach_fn fn, void *ctx) {
   static const char *keys[] = {
       "max_speed",
       "max_accel",
+      "max_speed_2",
+      "max_accel_2",
       "init_speed",
       "init_accel",
       "steps_per_unit",

@@ -85,6 +85,8 @@ static bool g_drv_error;
 /* Dual-MT time sync: |d2|/|d1| kept for mid-move SS/SA while coordinated. */
 static bool g_coord_active;
 static float g_coord_ratio;
+static bool g_joy_active;
+static float g_joy_pct[AXIS_MAX];
 
 #define AX (g_ax[axis])
 
@@ -106,11 +108,22 @@ static void planner_halt_all(void);
 static void coord_clear(void);
 static void coord_clear_if_idle(void);
 static void apply_session_cruise_accel(void);
+static void joy_clear(void);
+static float cruise_cap(int axis);
+static void apply_joy_cruise_accel(void);
+static void planner_request_stop_axis(int axis);
+static void planner_request_joy(int axis, float signed_v);
 static int axis_count(void) { return config_axis2_enabled() ? 2 : 1; }
 
 static void coord_clear(void) {
   g_coord_active = false;
   g_coord_ratio = 1.0f;
+}
+
+static void joy_clear(void) {
+  g_joy_active = false;
+  g_joy_pct[0] = 0.0f;
+  g_joy_pct[1] = 0.0f;
 }
 
 static void coord_clear_if_idle(void) {
@@ -128,8 +141,8 @@ static void coord_clear_if_idle(void) {
 static void scale_cruise_accel(float v0, float a0, float ratio, float *v_out, float *a_out) {
   float v1 = v0 * ratio;
   float a1 = a0 * ratio;
-  float vmax = config_get()->max_speed_mm_s;
-  float amax = config_get()->max_accel_mm_s2;
+  float vmax = axis_hw_max_speed(1);
+  float amax = axis_hw_max_accel(1);
   if (v1 > vmax) {
     v1 = vmax;
   }
@@ -146,10 +159,32 @@ static void scale_cruise_accel(float v0, float a0, float ratio, float *v_out, fl
   *a_out = a1;
 }
 
+static float clamp_speed_axis(int axis, float v) {
+  float mx = axis_hw_max_speed(axis);
+  if (v > mx) {
+    v = mx;
+  }
+  if (v < 0.0f) {
+    v = 0.0f;
+  }
+  return v;
+}
+
+static float clamp_accel_axis(int axis, float a) {
+  float mx = axis_hw_max_accel(axis);
+  if (a > mx) {
+    a = mx;
+  }
+  if (a < 0.001f) {
+    a = 0.001f;
+  }
+  return a;
+}
+
 /** Apply session (or explicit) cruise/accel: axis0 = (v0,a0); axis1 scaled if coordinated. */
 static void apply_cruise_accel(float v0, float a0) {
-  g_ax[0].cruise_mm_s = v0;
-  g_ax[0].accel_mm_s2 = a0;
+  g_ax[0].cruise_mm_s = clamp_speed_axis(0, v0);
+  g_ax[0].accel_mm_s2 = clamp_accel_axis(0, a0);
   if (g_coord_active && config_axis2_enabled()) {
     float v1, a1;
     scale_cruise_accel(v0, a0, g_coord_ratio, &v1, &a1);
@@ -158,8 +193,8 @@ static void apply_cruise_accel(float v0, float a0) {
     return;
   }
   for (int axis = 1; axis < axis_count(); ++axis) {
-    AX.cruise_mm_s = v0;
-    AX.accel_mm_s2 = a0;
+    AX.cruise_mm_s = clamp_speed_axis(axis, v0);
+    AX.accel_mm_s2 = clamp_accel_axis(axis, a0);
   }
 }
 
@@ -289,6 +324,7 @@ static void planner_halt_axis(int axis) {
 
 static void planner_halt_all(void) {
   protocol_debug(3, "D:halt\n");
+  joy_clear();
   coord_clear();
   for (int a = 0; a < axis_count(); ++a) {
     planner_halt_axis(a);
@@ -713,7 +749,7 @@ static void begin_ramp(int axis, float v_cmd) {
 }
 
 static int64_t soft_min_steps(int axis) {
-  float mn = axis_hw_slider_min(axis);
+  float mn = axis_hw_window_min(axis);
   if (isnan(mn)) {
     return INT64_MIN / 4;
   }
@@ -721,7 +757,7 @@ static int64_t soft_min_steps(int axis) {
 }
 
 static int64_t soft_max_steps(int axis) {
-  float mx = axis_hw_slider_max(axis);
+  float mx = axis_hw_window_max(axis);
   if (isnan(mx)) {
     return INT64_MAX / 4;
   }
@@ -763,7 +799,7 @@ static int remaining_steps_for_sign(int axis, int sign) {
 
 static float cruise_cap(int axis) {
   float v = AX.cruise_mm_s;
-  float mx = config_get()->max_speed_mm_s;
+  float mx = axis_hw_max_speed(axis);
   if (v > mx) {
     v = mx;
   }
@@ -773,6 +809,31 @@ static float cruise_cap(int axis) {
     v = v_hz;
   }
   return v;
+}
+
+static float signed_cruise_from_pct(int axis, float pct) {
+  if (fabsf(pct) < 1e-3f) {
+    return 0.0f;
+  }
+  float v = fabsf(pct) * 0.01f * session_get()->speed_mm_s;
+  v = clamp_speed_axis(axis, v);
+  return (pct < 0.0f) ? -v : v;
+}
+
+static void apply_joy_cruise_accel(void) {
+  for (int axis = 0; axis < axis_count(); ++axis) {
+    AX.accel_mm_s2 = clamp_accel_axis(axis, session_get()->accel_mm_s2);
+    float pct = g_joy_pct[axis];
+    if (fabsf(pct) < 1e-3f) {
+      continue;
+    }
+    float signed_v = signed_cruise_from_pct(axis, pct);
+    AX.cruise_mm_s = fabsf(signed_v);
+    if (AX.st.moving && !AX.stopping) {
+      int sign = (signed_v >= 0.0f) ? 1 : -1;
+      begin_ramp(axis, (float)sign * cruise_cap(axis));
+    }
+  }
 }
 
 static void settle_if_done(int axis) {
@@ -814,6 +875,7 @@ void planner_init(void) {
   g_enabled = false;
   g_drv_error = false;
   coord_clear();
+  joy_clear();
   for (int axis = 0; axis < AXIS_MAX; ++axis) {
     memset(&AX, 0, sizeof(AX));
     AX.id = axis;
@@ -1207,8 +1269,8 @@ void planner_tick(float dt_s) {
 }
 
 static bool clamp_target_mm(int axis, float *mm) {
-  float mn = axis_hw_slider_min(axis);
-  float mx = axis_hw_slider_max(axis);
+  float mn = axis_hw_window_min(axis);
+  float mx = axis_hw_window_max(axis);
   bool ok = true;
   if (!isnan(mn) && *mm < mn) {
     *mm = mn;
@@ -1266,6 +1328,63 @@ void planner_request_jog(int axis, int dir) {
   planner_request_move_by(axis, dir >= 0 ? span : -span);
 }
 
+static void planner_request_joy(int axis, float signed_v) {
+  if (axis < 0 || axis >= axis_count() || !g_enabled || g_drv_error) {
+    return;
+  }
+  AX.spmm = axis_hw_steps_per_unit(axis);
+  if (AX.spmm < 1e-3f) {
+    AX.spmm = 1.0f;
+  }
+  AX.accel_mm_s2 = clamp_accel_axis(axis, session_get()->accel_mm_s2);
+
+  if (fabsf(signed_v) < 1e-4f) {
+    if (AX.st.moving && !AX.stopping) {
+      planner_request_stop_axis(axis);
+    }
+    return;
+  }
+
+  int sign = signed_v > 0.0f ? 1 : -1;
+  if (planner_hard_limit_blocks_sign(axis, sign)) {
+    if (AX.st.moving && !AX.stopping) {
+      planner_request_stop_axis(axis);
+    }
+    return;
+  }
+
+  int64_t dest_steps = (sign > 0) ? soft_max_steps(axis) : soft_min_steps(axis);
+  if ((sign > 0 && AX.pos_steps >= dest_steps) || (sign < 0 && AX.pos_steps <= dest_steps)) {
+    if (AX.st.moving && !AX.stopping) {
+      planner_request_stop_axis(axis);
+    }
+    return;
+  }
+
+  float cruise = fabsf(signed_v);
+  bool same = AX.st.moving && !AX.stopping && AX.target_steps == dest_steps &&
+              fabsf(AX.cruise_mm_s - cruise) < 1e-4f;
+  AX.cruise_mm_s = cruise;
+  if (same) {
+    return;
+  }
+
+  AX.target_steps = dest_steps;
+  AX.stopping = false;
+  AX.st.moving = true;
+  AX.st.homing = false;
+  AX.st.has_target = true;
+  AX.fill_wants_more = false;
+  AX.acc_meas = 0.0f;
+  AX.braking = false;
+  AX.brake_d = 0;
+  begin_ramp(axis, (float)sign * cruise_cap(axis));
+  pio_step_clear_stall(axis);
+  pio_step_start(axis);
+  pio_step_kick_feed();
+  refresh_state(axis);
+}
+
 static void planner_request_stop_axis(int axis) {
   if (AX.st.homing) {
     AX.home_phase = HOME_IDLE;
@@ -1300,6 +1419,7 @@ void planner_takeover_from_path(int axis, int64_t pos_steps, float vel_mm_s) {
   if (axis < 0 || axis >= AXIS_MAX) {
     return;
   }
+  joy_clear();
   AX.pos_steps = pos_steps;
   AX.target_steps = pos_steps;
   AX.vel_mm_s = vel_mm_s;
@@ -1356,6 +1476,7 @@ void planner_request_home(int axis) {
 
 void planner_soft_reset(void) {
   g_drv_error = false;
+  joy_clear();
   coord_clear();
   for (int axis = 0; axis < axis_count(); ++axis) {
     AX.st.drv_error = false;
@@ -1508,6 +1629,7 @@ bool motion_enable(bool on) {
     AX.st.enabled = on;
   }
   if (!on) {
+    joy_clear();
     planner_request_stop();
     coord_clear();
     for (int axis = 0; axis < axis_count(); ++axis) {
@@ -1531,8 +1653,8 @@ bool motion_move_to(float mm) {
     return false;
   }
   {
-    float mn = axis_hw_slider_min(0);
-    float mx = axis_hw_slider_max(0);
+    float mn = axis_hw_window_min(0);
+    float mx = axis_hw_window_max(0);
     if ((!isnan(mn) && mm < mn) || (!isnan(mx) && mm > mx)) {
       g_ax[0].st.at_soft_limit = true;
       return false;
@@ -1543,6 +1665,7 @@ bool motion_move_to(float mm) {
   if (planner_hard_limit_blocks_sign(0, sign)) {
     return false;
   }
+  joy_clear();
   coord_clear();
   g_ax[0].cruise_mm_s = session_get()->speed_mm_s;
   g_ax[0].accel_mm_s2 = session_get()->accel_mm_s2;
@@ -1560,16 +1683,16 @@ bool motion_move_to2(float mm1_or_nan, float mm2_or_nan) {
     return true;
   }
   if (do0) {
-    float mn = axis_hw_slider_min(0);
-    float mx = axis_hw_slider_max(0);
+    float mn = axis_hw_window_min(0);
+    float mx = axis_hw_window_max(0);
     if ((!isnan(mn) && mm1_or_nan < mn) || (!isnan(mx) && mm1_or_nan > mx)) {
       g_ax[0].st.at_soft_limit = true;
       return false;
     }
   }
   if (do1) {
-    float mn = axis_hw_slider_min(1);
-    float mx = axis_hw_slider_max(1);
+    float mn = axis_hw_window_min(1);
+    float mx = axis_hw_window_max(1);
     if ((!isnan(mn) && mm2_or_nan < mn) || (!isnan(mx) && mm2_or_nan > mx)) {
       g_ax[1].st.at_soft_limit = true;
       return false;
@@ -1587,6 +1710,7 @@ bool motion_move_to2(float mm1_or_nan, float mm2_or_nan) {
     do1 = false;
   }
   if (!do0 && !do1) {
+    joy_clear();
     coord_clear();
     return true;
   }
@@ -1598,6 +1722,7 @@ bool motion_move_to2(float mm1_or_nan, float mm2_or_nan) {
     return false;
   }
 
+  joy_clear();
   /* Coordinated: session speed/accel on axis0; scale axis1 to match duration. */
   if (do0 && do1) {
     g_coord_active = true;
@@ -1633,6 +1758,7 @@ bool motion_move_by(float mm) {
   if (planner_hard_limit_blocks_sign(0, mm < 0.0f ? -1 : (mm > 0.0f ? 1 : 0))) {
     return false;
   }
+  joy_clear();
   coord_clear();
   g_ax[0].cruise_mm_s = session_get()->speed_mm_s;
   g_ax[0].accel_mm_s2 = session_get()->accel_mm_s2;
@@ -1644,8 +1770,6 @@ bool motion_jog(int dir, int axis_mask) {
   if (!g_enabled) {
     return false;
   }
-  coord_clear();
-  apply_session_cruise_accel();
   int sign = dir >= 0 ? 1 : -1;
   if (!config_axis2_enabled() || axis_mask == 0) {
     /* 1-axis mode or mask=both: jog all active axes */
@@ -1654,6 +1778,9 @@ bool motion_jog(int dir, int axis_mask) {
         return false;
       }
     }
+    joy_clear();
+    coord_clear();
+    apply_session_cruise_accel();
     for (int axis = 0; axis < axis_count(); ++axis) {
       planner_request_jog(axis, dir);
     }
@@ -1663,6 +1790,9 @@ bool motion_jog(int dir, int axis_mask) {
     if (planner_hard_limit_blocks_sign(0, sign)) {
       return false;
     }
+    joy_clear();
+    coord_clear();
+    apply_session_cruise_accel();
     planner_request_jog(0, dir);
     return true;
   }
@@ -1670,13 +1800,40 @@ bool motion_jog(int dir, int axis_mask) {
     if (planner_hard_limit_blocks_sign(1, sign)) {
       return false;
     }
+    joy_clear();
+    coord_clear();
+    apply_session_cruise_accel();
     planner_request_jog(1, dir);
     return true;
   }
   return false;
 }
 
+bool motion_joy(float pct0, float pct1_or_nan) {
+  if (!g_enabled) {
+    return false;
+  }
+  coord_clear();
+  g_joy_active = true;
+  if (isnan(pct0) || fabsf(pct0) < 1e-3f) {
+    pct0 = 0.0f;
+  }
+  g_joy_pct[0] = pct0;
+  planner_request_joy(0, signed_cruise_from_pct(0, pct0));
+  if (!config_axis2_enabled()) {
+    g_joy_pct[1] = 0.0f;
+    return true;
+  }
+  float pct1 = (isnan(pct1_or_nan) || fabsf(pct1_or_nan) < 1e-3f) ? 0.0f : pct1_or_nan;
+  g_joy_pct[1] = pct1;
+  planner_request_joy(1, signed_cruise_from_pct(1, pct1));
+  return true;
+}
+
+void motion_end_joy(void) { joy_clear(); }
+
 bool motion_stop(void) {
+  joy_clear();
   planner_request_stop();
   return true;
 }
@@ -1695,11 +1852,13 @@ bool motion_home(int axis_1based) {
     return false;
   }
   if (axis_hw_home_mode(axis) == 0) {
+    joy_clear();
     return true;
   }
   if (!home_cfg_ok(axis)) {
     return false;
   }
+  joy_clear();
   planner_request_home(axis);
   return true;
 }
@@ -1711,13 +1870,21 @@ bool motion_soft_reset(void) {
 
 bool motion_set_speed(float mm_s) {
   session_get()->speed_mm_s = mm_s;
-  apply_session_cruise_accel();
+  if (g_joy_active) {
+    apply_joy_cruise_accel();
+  } else {
+    apply_session_cruise_accel();
+  }
   return true;
 }
 
 bool motion_set_accel(float mm_s2) {
   session_get()->accel_mm_s2 = mm_s2;
-  apply_session_cruise_accel();
+  if (g_joy_active) {
+    apply_joy_cruise_accel();
+  } else {
+    apply_session_cruise_accel();
+  }
   return true;
 }
 
@@ -1726,12 +1893,17 @@ bool motion_set_max_speed(float mm_s) {
   return true;
 }
 
-bool motion_set_soft_limits(bool min_en, float min_mm, bool max_en, float max_mm) {
-  McConfig *c = config_get();
-  c->slider_min_mm = min_en ? min_mm : NAN;
-  c->slider_max_mm = max_en ? max_mm : NAN;
-  return true;
+bool motion_set_window_left(float mm0_or_nan, float mm1_or_nan) {
+  return session_set_window_left(mm0_or_nan, mm1_or_nan);
 }
+
+bool motion_set_window_right(float mm0_or_nan, float mm1_or_nan) {
+  return session_set_window_right(mm0_or_nan, mm1_or_nan);
+}
+
+void motion_reset_window_left(void) { session_reset_left(); }
+
+void motion_reset_window_right(void) { session_reset_right(); }
 
 void motion_get_status(McStatus *out) {
   if (motion_path_is_active()) {

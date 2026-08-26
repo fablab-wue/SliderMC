@@ -26,6 +26,7 @@ Docs and manuals: **[SliderDoc](https://github.com/fablab-wue/SliderDoc)**.
 - **Sine ramp** acceleration and deceleration — smooth starts and stops  
 - **Homing**, soft travel limits, hard-limit alarms, **`DRV_ERROR` / EMO** interlock  
 - **Path playback** — host-authored motion paths for advanced moves  
+- **Joystick hold (`MJ`)** — signed % of session speed, 1- or 2-axis  
 - **API units:** mm, mm/s, mm/s² (steps handled internally)
 
 ### Maker / pro transparency
@@ -67,6 +68,8 @@ Details: [mc/build.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/buil
 | Config keys | [mc/config.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/config.md) |
 | GPIO map | [mc/pins.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/pins.md) |
 | Motion / planner | [mc/motion.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/motion.md) |
+| Joystick (`MJ`) | [mc/motion-joy.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/motion-joy.md) |
+| Working window (`SL`/`SR`) | [mc/working-window.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/working-window.md) |
 | UIC (panel) | [SliderCtrl](https://github.com/fablab-wue/SliderCtrl) · [uic/](https://github.com/fablab-wue/SliderDoc/blob/main/uic/README.md) |
 
 ---

@@ -1,6 +1,7 @@
 #include "motion_api.h"
 #include "config_store.h"
 #include "motion_path.h"
+#include "axis_hw.h"
 #include "pins.h"
 
 #include <math.h>
@@ -21,10 +22,18 @@ static float g_cruise[2];
 static float g_accel[2];
 static bool g_coord_active;
 static float g_coord_ratio;
+static bool g_joy_active;
+static float g_joy_pct[2];
 
 static void coord_clear(void) {
   g_coord_active = false;
   g_coord_ratio = 1.0f;
+}
+
+static void joy_clear(void) {
+  g_joy_active = false;
+  g_joy_pct[0] = 0.0f;
+  g_joy_pct[1] = 0.0f;
 }
 
 static void coord_clear_if_idle(void) {
@@ -40,8 +49,8 @@ static void coord_clear_if_idle(void) {
 static void scale_cruise_accel(float v0, float a0, float ratio, float *v_out, float *a_out) {
   float v1 = v0 * ratio;
   float a1 = a0 * ratio;
-  float vmax = config_get()->max_speed_mm_s;
-  float amax = config_get()->max_accel_mm_s2;
+  float vmax = config_get()->max_speed_mm_s_2;
+  float amax = config_get()->max_accel_mm_s2_2;
   if (v1 > vmax) {
     v1 = vmax;
   }
@@ -58,14 +67,38 @@ static void scale_cruise_accel(float v0, float a0, float ratio, float *v_out, fl
   *a_out = a1;
 }
 
+static float clamp_speed_axis(int axis, float v) {
+  const McConfig *c = config_get();
+  float mx = (axis == 1) ? c->max_speed_mm_s_2 : c->max_speed_mm_s;
+  if (v > mx) {
+    v = mx;
+  }
+  if (v < 0.0f) {
+    v = 0.0f;
+  }
+  return v;
+}
+
+static float clamp_accel_axis(int axis, float a) {
+  const McConfig *c = config_get();
+  float mx = (axis == 1) ? c->max_accel_mm_s2_2 : c->max_accel_mm_s2;
+  if (a > mx) {
+    a = mx;
+  }
+  if (a < 0.001f) {
+    a = 0.001f;
+  }
+  return a;
+}
+
 static void apply_cruise_accel(float v0, float a0) {
-  g_cruise[0] = v0;
-  g_accel[0] = a0;
+  g_cruise[0] = clamp_speed_axis(0, v0);
+  g_accel[0] = clamp_accel_axis(0, a0);
   if (g_coord_active && config_axis2_enabled()) {
     scale_cruise_accel(v0, a0, g_coord_ratio, &g_cruise[1], &g_accel[1]);
   } else {
-    g_cruise[1] = v0;
-    g_accel[1] = a0;
+    g_cruise[1] = clamp_speed_axis(1, v0);
+    g_accel[1] = clamp_accel_axis(1, a0);
   }
   /* Refresh live status speeds if a move is in progress. */
   if (g_pending) {
@@ -80,6 +113,35 @@ static void apply_cruise_accel(float v0, float a0) {
 
 static void apply_session_cruise_accel(void) {
   apply_cruise_accel(session_get()->speed_mm_s, session_get()->accel_mm_s2);
+}
+
+static float signed_cruise_from_pct(int axis, float pct) {
+  if (fabsf(pct) < 1e-3f) {
+    return 0.0f;
+  }
+  float v = fabsf(pct) * 0.01f * session_get()->speed_mm_s;
+  v = clamp_speed_axis(axis, v);
+  return (pct < 0.0f) ? -v : v;
+}
+
+static void apply_joy_cruise_accel(void) {
+  for (int axis = 0; axis < 2; ++axis) {
+    g_accel[axis] = clamp_accel_axis(axis, session_get()->accel_mm_s2);
+    float pct = g_joy_pct[axis];
+    if (fabsf(pct) < 1e-3f) {
+      continue;
+    }
+    float signed_v = signed_cruise_from_pct(axis, pct);
+    g_cruise[axis] = fabsf(signed_v);
+    if (axis == 0 && g_pending) {
+      g_st.vel_mm_s = (signed_v >= 0.0f) ? g_cruise[0] : -g_cruise[0];
+      g_st.acc_mm_s2 = g_accel[0];
+    }
+    if (axis == 1 && g_pending_2) {
+      g_st.vel_mm_s_2 = (signed_v >= 0.0f) ? g_cruise[1] : -g_cruise[1];
+      g_st.acc_mm_s2_2 = g_accel[1];
+    }
+  }
 }
 
 void motion_init(void) {
@@ -104,6 +166,7 @@ void motion_init(void) {
   g_eta_ms = 0;
   g_eta_ms_2 = 0;
   coord_clear();
+  joy_clear();
   apply_session_cruise_accel();
   motion_path_init();
 }
@@ -123,9 +186,8 @@ static void refresh_state(void) {
 }
 
 static bool soft_ok(float dest, int axis) {
-  const McConfig *c = config_get();
-  float mn = (axis == 1) ? c->slider_min_mm_2 : c->slider_min_mm;
-  float mx = (axis == 1) ? c->slider_max_mm_2 : c->slider_max_mm;
+  float mn = axis_hw_window_min(axis);
+  float mx = axis_hw_window_max(axis);
   if (!isnan(mn) && dest < mn) {
     g_st.at_soft_limit = true;
     return false;
@@ -181,6 +243,7 @@ bool motion_enable(bool on) {
     g_st.acc_mm_s2 = 0.0f;
     g_st.acc_mm_s2_2 = 0.0f;
     g_st.has_target = false;
+    joy_clear();
     coord_clear();
   }
   refresh_state();
@@ -194,6 +257,7 @@ bool motion_move_to(float mm) {
   if (!soft_ok(mm, 0)) {
     return false;
   }
+  joy_clear();
   coord_clear();
   apply_session_cruise_accel();
   start_move_axis(0, mm);
@@ -221,9 +285,11 @@ bool motion_move_to2(float mm1_or_nan, float mm2_or_nan) {
     do1 = false;
   }
   if (!do0 && !do1) {
+    joy_clear();
     coord_clear();
     return true;
   }
+  joy_clear();
   if (do0 && do1) {
     g_coord_active = true;
     g_coord_ratio = fabsf(d1) / fabsf(d0);
@@ -247,38 +313,111 @@ bool motion_jog(int dir, int axis_mask) {
   if (!g_st.enabled || g_st.drv_error) {
     return false;
   }
-  coord_clear();
-  apply_session_cruise_accel();
   const McConfig *c = config_get();
   float delta = (dir >= 0 ? 1.0f : -1.0f) * c->max_speed_mm_s * 10.0f;
   bool ax2 = config_axis2_enabled();
   if (!ax2 || axis_mask == 0 || axis_mask == 1) {
     float dest = g_st.pos_mm + delta;
-    if (!isnan(c->slider_max_mm) && dest > c->slider_max_mm) {
-      dest = c->slider_max_mm;
+    if (!isnan(axis_hw_window_max(0)) && dest > axis_hw_window_max(0)) {
+      dest = axis_hw_window_max(0);
     }
-    if (!isnan(c->slider_min_mm) && dest < c->slider_min_mm) {
-      dest = c->slider_min_mm;
+    if (!isnan(axis_hw_window_min(0)) && dest < axis_hw_window_min(0)) {
+      dest = axis_hw_window_min(0);
     }
     if (!soft_ok(dest, 0)) {
       return false;
     }
+    joy_clear();
+    coord_clear();
+    apply_session_cruise_accel();
     start_move_axis(0, dest);
   }
   if (ax2 && (axis_mask == 0 || axis_mask == 2)) {
     float dest = g_st.pos_mm_2 + delta;
-    if (!isnan(c->slider_max_mm_2) && dest > c->slider_max_mm_2) {
-      dest = c->slider_max_mm_2;
+    if (!isnan(axis_hw_window_max(1)) && dest > axis_hw_window_max(1)) {
+      dest = axis_hw_window_max(1);
     }
-    if (!isnan(c->slider_min_mm_2) && dest < c->slider_min_mm_2) {
-      dest = c->slider_min_mm_2;
+    if (!isnan(axis_hw_window_min(1)) && dest < axis_hw_window_min(1)) {
+      dest = axis_hw_window_min(1);
+    }
+    if (!ax2 || axis_mask == 2) {
+      joy_clear();
+      coord_clear();
+      apply_session_cruise_accel();
     }
     start_move_axis(1, dest);
   }
   return true;
 }
 
+static float joy_dest_mm(int axis, int sign) {
+  float mn = axis_hw_window_min(axis);
+  float mx = axis_hw_window_max(axis);
+  if (sign > 0) {
+    return isnan(mx) ? 1e9f : mx;
+  }
+  return isnan(mn) ? -1e9f : mn;
+}
+
+static void stop_axis_stub(int axis) {
+  if (axis == 0) {
+    g_pending = false;
+    g_st.vel_mm_s = 0.0f;
+    g_st.acc_mm_s2 = 0.0f;
+  } else {
+    g_pending_2 = false;
+    g_st.vel_mm_s_2 = 0.0f;
+    g_st.acc_mm_s2_2 = 0.0f;
+  }
+  if (!g_pending && !g_pending_2) {
+    g_st.moving = false;
+    g_st.has_target = false;
+  }
+  refresh_state();
+}
+
+static void request_joy_axis(int axis, float signed_v) {
+  g_accel[axis] = clamp_accel_axis(axis, session_get()->accel_mm_s2);
+  if (fabsf(signed_v) < 1e-4f) {
+    stop_axis_stub(axis);
+    return;
+  }
+  int sign = signed_v > 0.0f ? 1 : -1;
+  float dest = joy_dest_mm(axis, sign);
+  float pos = (axis == 1) ? g_st.pos_mm_2 : g_st.pos_mm;
+  if ((sign > 0 && dest <= pos + 1e-6f) || (sign < 0 && dest >= pos - 1e-6f)) {
+    stop_axis_stub(axis);
+    return;
+  }
+  g_cruise[axis] = fabsf(signed_v);
+  start_move_axis(axis, dest);
+}
+
+bool motion_joy(float pct0, float pct1_or_nan) {
+  if (!g_st.enabled || g_st.drv_error) {
+    return false;
+  }
+  coord_clear();
+  g_joy_active = true;
+  if (isnan(pct0) || fabsf(pct0) < 1e-3f) {
+    pct0 = 0.0f;
+  }
+  g_joy_pct[0] = pct0;
+  request_joy_axis(0, signed_cruise_from_pct(0, pct0));
+  if (!config_axis2_enabled()) {
+    g_joy_pct[1] = 0.0f;
+    return true;
+  }
+  float pct1 = (isnan(pct1_or_nan) || fabsf(pct1_or_nan) < 1e-3f) ? 0.0f : pct1_or_nan;
+  g_joy_pct[1] = pct1;
+  request_joy_axis(1, signed_cruise_from_pct(1, pct1));
+  return true;
+}
+
+void motion_end_joy(void) { joy_clear(); }
+
 bool motion_stop(void) {
+  joy_clear();
   if (g_pending) {
     g_st.pos_mm = g_pending_target;
   }
@@ -310,6 +449,7 @@ bool motion_halt(void) {
   g_st.acc_mm_s2 = 0.0f;
   g_st.acc_mm_s2_2 = 0.0f;
   g_st.enabled = false;
+  joy_clear();
   coord_clear();
   refresh_state();
   return true;
@@ -326,6 +466,7 @@ bool motion_home(int axis_1based) {
   const McConfig *c = config_get();
   int hm = (axis == 1) ? c->home_mode_2 : c->home_mode;
   if (hm == 0) {
+    joy_clear();
     return true;
   }
   bool cfg_ok = false;
@@ -339,6 +480,7 @@ bool motion_home(int axis_1based) {
   if (!cfg_ok) {
     return false;
   }
+  joy_clear();
   float mn = (axis == 1) ? c->slider_min_mm_2 : c->slider_min_mm;
   float mx = (axis == 1) ? c->slider_max_mm_2 : c->slider_max_mm;
   float target;
@@ -388,6 +530,7 @@ bool motion_soft_reset(void) {
   g_st.vel_mm_s_2 = 0.0f;
   g_st.acc_mm_s2 = 0.0f;
   g_st.acc_mm_s2_2 = 0.0f;
+  joy_clear();
   coord_clear();
   refresh_state();
   return true;
@@ -395,13 +538,21 @@ bool motion_soft_reset(void) {
 
 bool motion_set_speed(float mm_s) {
   session_get()->speed_mm_s = mm_s;
-  apply_session_cruise_accel();
+  if (g_joy_active) {
+    apply_joy_cruise_accel();
+  } else {
+    apply_session_cruise_accel();
+  }
   return true;
 }
 
 bool motion_set_accel(float mm_s2) {
   session_get()->accel_mm_s2 = mm_s2;
-  apply_session_cruise_accel();
+  if (g_joy_active) {
+    apply_joy_cruise_accel();
+  } else {
+    apply_session_cruise_accel();
+  }
   return true;
 }
 
@@ -410,12 +561,17 @@ bool motion_set_max_speed(float mm_s) {
   return true;
 }
 
-bool motion_set_soft_limits(bool min_en, float min_mm, bool max_en, float max_mm) {
-  McConfig *c = config_get();
-  c->slider_min_mm = min_en ? min_mm : NAN;
-  c->slider_max_mm = max_en ? max_mm : NAN;
-  return true;
+bool motion_set_window_left(float mm0_or_nan, float mm1_or_nan) {
+  return session_set_window_left(mm0_or_nan, mm1_or_nan);
 }
+
+bool motion_set_window_right(float mm0_or_nan, float mm1_or_nan) {
+  return session_set_window_right(mm0_or_nan, mm1_or_nan);
+}
+
+void motion_reset_window_left(void) { session_reset_left(); }
+
+void motion_reset_window_right(void) { session_reset_right(); }
 
 void motion_get_status(McStatus *out) {
   if (motion_path_is_active()) {

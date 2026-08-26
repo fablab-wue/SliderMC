@@ -160,6 +160,12 @@ int main(void) {
   feed("CG init_speed\n");
   expect_contains("CG after CR default", "CG:init_speed=50");
   reset_out();
+  feed("CG max_speed_2\n");
+  expect_contains("CG max_speed_2 default", "CG:max_speed_2=100");
+  reset_out();
+  feed("CG max_accel_2\n");
+  expect_contains("CG max_accel_2 default", "CG:max_accel_2=300");
+  reset_out();
   feed("GS\n");
   expect_contains("GS after CR default", "GS:50.00");
   reset_out();
@@ -308,7 +314,10 @@ int main(void) {
   expect_contains("Help header", "Short Long");
   expect_contains("Help SetSpeed", "SS    SetSpeed");
   expect_contains("Help SetDebug", "SD    SetDebug");
+  expect_contains("Help SetLeft", "SL    SetLeft");
+  expect_contains("Help GetLeft", "GL    GetLeft");
   expect_contains("Help IsReady", "IR    IsReady");
+  expect_contains("Help MoveJoy", "MJ    MoveJoy");
   expect_contains("Help Halt", "H/HT  Halt");
   expect_contains("Help self", "$ /HL Help");
   reset_out();
@@ -435,8 +444,17 @@ int main(void) {
   feed("MT 10\n");
   expect_contains("MT rejected while path active", "!E:busy");
   reset_out();
+  feed("MJ 50\n");
+  expect_contains("MJ rejected while path active", "!E:busy");
+  reset_out();
   feed("SS 10\n");
   expect_contains("SS rejected while path active", "!E:busy");
+  reset_out();
+  feed("SL 10\n");
+  expect_contains("SL rejected while path active", "!E:busy");
+  reset_out();
+  feed("GL\n");
+  expect_contains("GL allowed while path active", "GL:");
   reset_out();
   feed("PN\n");
   expect_contains("PN allowed while path active", "PN:1");
@@ -460,6 +478,177 @@ int main(void) {
   reset_out();
   feed("MT 10\n");
   expect_empty("MT accepted again once path-mode ended");
+
+  /* --- MJ / MoveJoy (1-axis) --- */
+  reset_out();
+  feed("MJ\n");
+  expect_contains("MJ no args", "!E:parse MJ args");
+  reset_out();
+  feed("MJ foo\n");
+  expect_contains("MJ junk args", "!E:parse");
+  reset_out();
+  feed("SE 0\n");
+  feed("MJ 50\n");
+  expect_contains("MJ disabled", "!E:disabled");
+  feed("SE 1\n");
+
+  reset_out();
+  feed("SS 80\n");
+  expect_empty("SS 80 before MJ");
+  reset_out();
+  feed("MJ 50\n");
+  expect_empty("MJ 50 silent");
+  expect_true("MJ 50 cruise 40", std::fabs(motion_host_axis_cruise(0) - 40.0f) < 0.01f);
+  reset_out();
+  feed("IM\n");
+  expect_contains("IM during MJ", "IM:1");
+  reset_out();
+  feed("GS\n");
+  expect_contains("MJ does not change SS", "GS:80.00");
+
+  reset_out();
+  feed("SS 60\n");
+  expect_empty("SS during MJ silent");
+  expect_true("SS rescale joy cruise", std::fabs(motion_host_axis_cruise(0) - 30.0f) < 0.01f);
+  reset_out();
+  feed("SA 150\n");
+  expect_empty("SA during MJ silent");
+  expect_true("SA during MJ", std::fabs(motion_host_axis_accel(0) - 150.0f) < 0.01f);
+  reset_out();
+  feed("GS\n");
+  expect_contains("SS still 60 in joy", "GS:60.00");
+
+  reset_out();
+  feed("MJ 500\n");
+  expect_empty("MJ over 100% silent");
+  expect_true("MJ clamp to max_speed", std::fabs(motion_host_axis_cruise(0) - 100.0f) < 0.01f);
+
+  reset_out();
+  feed("MJ 0\n");
+  expect_empty("MJ 0 silent");
+  reset_out();
+  feed("IM\n");
+  expect_contains("IM after MJ 0", "IM:0");
+
+  reset_out();
+  feed("MJ 50 -20\n");
+  expect_empty("1-axis ignores spd2");
+  expect_true("1-axis MJ 50 cruise 30", std::fabs(motion_host_axis_cruise(0) - 30.0f) < 0.01f);
+
+  reset_out();
+  feed("ML\n");
+  expect_empty("ML exits joy");
+  reset_out();
+  feed("GS\n");
+  expect_contains("SS unchanged after ML", "GS:60.00");
+  expect_true("ML uses session SS", std::fabs(motion_host_axis_cruise(0) - 60.0f) < 0.01f);
+
+  reset_out();
+  feed("MS\n");
+  expect_empty("MS after ML");
+  reset_out();
+  feed("IP\n");
+  /* sit at current pos: set slider_max to that position and command into the rail */
+  {
+    McStatus st;
+    motion_get_status(&st);
+    char cmd[64];
+    std::snprintf(cmd, sizeof(cmd), "CS slider_max %.3f\n", (double)st.pos_mm);
+    reset_out();
+    feed(cmd);
+    expect_empty("CS slider_max to current pos");
+  }
+  reset_out();
+  feed("MJ 50\n");
+  expect_empty("MJ into soft rail silent");
+  reset_out();
+  feed("CS slider_max 600\n");
+  expect_empty("CS slider_max restore");
+  reset_out();
+  feed("SR\n");
+  expect_empty("SR bare restores session right after CS squeeze");
+  reset_out();
+  feed("SS 50\n");
+  expect_empty("SS restore 50");
+  reset_out();
+  feed("SA 200\n");
+  expect_empty("SA restore 200");
+
+  /* --- SL/SR/GL/GR session working window (1-axis) --- */
+  reset_out();
+  feed("SL\n");
+  feed("SR\n");
+  expect_empty("SL/SR bare to envelope");
+  reset_out();
+  feed("GL\n");
+  expect_contains("GL boot envelope", "GL:0.00");
+  reset_out();
+  feed("GR\n");
+  expect_contains("GR boot envelope", "GR:600.00");
+  reset_out();
+  feed("SL 120\n");
+  expect_empty("SL 120 silent");
+  reset_out();
+  feed("GL\n");
+  expect_contains("GL after SL", "GL:120.00");
+  reset_out();
+  feed("CG slider_min\n");
+  expect_contains("envelope unchanged by SL", "CG:slider_min=0");
+  reset_out();
+  feed("SL\n");
+  expect_empty("SL bare reset");
+  reset_out();
+  feed("GL\n");
+  expect_contains("GL after bare SL", "GL:0.00");
+  reset_out();
+  feed("SL 700\n");
+  expect_contains("SL past envelope", "!E:limit");
+  reset_out();
+  feed("SL 200\n");
+  expect_empty("SL 200 for crossed-window test");
+  reset_out();
+  feed("SR 100\n");
+  expect_contains("SR left of SL rejected", "!E:limit");
+  reset_out();
+  feed("GR\n");
+  expect_contains("GR unchanged after reject", "GR:600.00");
+  reset_out();
+  feed("SL 80\n");
+  expect_empty("SL 80 before CS clamp");
+  reset_out();
+  feed("CS slider_min 150\n");
+  expect_empty("CS slider_min 150");
+  reset_out();
+  feed("GL\n");
+  expect_contains("CS clamps session left", "GL:150.00");
+  reset_out();
+  feed("CS slider_min 0\n");
+  expect_empty("CS slider_min restore 0");
+  reset_out();
+  feed("GL\n");
+  expect_contains("CS widen envelope keeps window", "GL:150.00");
+  reset_out();
+  feed("SL\n");
+  expect_empty("SL bare after CS clamp test");
+  reset_out();
+  feed("GL\n");
+  expect_contains("GL full rail again", "GL:0.00");
+
+  reset_out();
+  feed("MS\n");
+  feed("SL 100\n");
+  expect_empty("SL 100 for inward MJ");
+  reset_out();
+  feed("MJ -80\n");
+  expect_empty("MJ negative below window silent");
+  motion_stub_tick_ms(800);
+  reset_out();
+  feed("IP\n");
+  expect_contains("MJ out clamped inward to left wall", "IP:100.00");
+  reset_out();
+  feed("SL\n");
+  feed("MS\n");
+  expect_empty("reset window after inward test");
 
   /* --- axis2 protocol (HOST_TEST builds with PIN_AXIS2_SUPPORTED) --- */
   reset_out();
@@ -600,6 +789,63 @@ int main(void) {
   expect_empty("MH axis 1");
 
   reset_out();
+  feed("MS\n");
+  expect_empty("MS before dual MJ");
+  reset_out();
+  feed("SS 80\n");
+  expect_empty("SS 80 for dual MJ");
+  reset_out();
+  feed("CS max_speed_2 30\n");
+  expect_empty("CS max_speed_2 30");
+  reset_out();
+  feed("CG max_speed_2\n");
+  expect_contains("CG max_speed_2 30", "CG:max_speed_2=30");
+  reset_out();
+  feed("MJ 100 100\n");
+  expect_empty("MJ 100 100 silent");
+  expect_true("MJ axis0 cruise SS", std::fabs(motion_host_axis_cruise(0) - 80.0f) < 0.01f);
+  expect_true("MJ axis1 clamp max_speed_2", std::fabs(motion_host_axis_cruise(1) - 30.0f) < 0.01f);
+
+  reset_out();
+  feed("CS max_speed_2 100\n");
+  expect_empty("CS max_speed_2 restore");
+  reset_out();
+  feed("MJ 40\n");
+  expect_empty("MJ 40 snapshot axis1=0");
+  {
+    McStatus st;
+    motion_get_status(&st);
+    expect_true("snapshot axis0 moving", st.vel_mm_s > 0.0f);
+    expect_true("snapshot axis1 stopped", std::fabs(st.vel_mm_s_2) < 0.01f);
+  }
+  expect_true("snapshot axis0 cruise 32", std::fabs(motion_host_axis_cruise(0) - 32.0f) < 0.01f);
+
+  reset_out();
+  feed("MJ 40 -20\n");
+  expect_empty("MJ independent signs");
+  {
+    McStatus st;
+    motion_get_status(&st);
+    expect_true("MJ 40 vel+", st.vel_mm_s > 0.0f);
+    expect_true("MJ -20 vel-", st.vel_mm_s_2 < 0.0f);
+  }
+  expect_true("MJ 40 cruise 32", std::fabs(motion_host_axis_cruise(0) - 32.0f) < 0.01f);
+  expect_true("MJ -20 cruise 16", std::fabs(motion_host_axis_cruise(1) - 16.0f) < 0.01f);
+
+  reset_out();
+  feed("SS 50\n");
+  expect_empty("SS during dual MJ");
+  expect_true("SS rescale axis0", std::fabs(motion_host_axis_cruise(0) - 20.0f) < 0.01f);
+  expect_true("SS rescale axis1", std::fabs(motion_host_axis_cruise(1) - 10.0f) < 0.01f);
+
+  reset_out();
+  feed("MS\n");
+  expect_empty("MS exits dual MJ");
+  reset_out();
+  feed("GS\n");
+  expect_contains("GS after dual MJ MS", "GS:50.00");
+
+  reset_out();
   feed("PC\n");
   feed("PD 100 200\n");
   expect_empty("PD dual sample");
@@ -609,6 +855,20 @@ int main(void) {
   reset_out();
   feed("PD * N\n");
   expect_empty("PD skip tokens become 0");
+
+  reset_out();
+  feed("SL\n");
+  feed("SL _ 40\n");
+  expect_empty("SL skip axis1");
+  reset_out();
+  feed("GL\n");
+  expect_contains("GL dual skip axis2", "GL:0.00 40.00");
+  reset_out();
+  feed("SL\n");
+  expect_empty("SL bare resets both axes");
+  reset_out();
+  feed("GL\n");
+  expect_contains("GL dual after bare SL", "GL:0.00 0.00");
 
   reset_out();
   feed("X4 1\n");

@@ -211,6 +211,27 @@ static void reply_query_float(const char *tag, float v) {
   protocol_write(buf);
 }
 
+static void fmt_window_field(char *out, size_t n, float v) {
+  if (isnan(v)) {
+    snprintf(out, n, "-");
+  } else {
+    snprintf(out, n, "%.2f", (double)v);
+  }
+}
+
+static void reply_window(const char *tag, float a, float b) {
+  char fa[16], fb[16], buf[48];
+  fmt_window_field(fa, sizeof(fa), a);
+  if (config_axis2_enabled()) {
+    fmt_window_field(fb, sizeof(fb), b);
+    snprintf(buf, sizeof(buf), "%s:%s %s\n", tag, fa, fb);
+    protocol_write(buf);
+  } else {
+    snprintf(buf, sizeof(buf), "%s:%s\n", tag, fa);
+    protocol_write(buf);
+  }
+}
+
 static void cg_dump_one(const char *key, const char *value, void *ctx) {
   (void)ctx;
   char buf[96];
@@ -264,12 +285,16 @@ static const HelpRow k_help_rows[] = {
     {"ST", "SetTerminal", "Terminal 0|1; bare toggles"},
     {"SV", "SetVerbose", "Verbose 0|1; bare toggles"},
     {"SD", "SetDebug", "USB debug level 0..5"},
+    {"SL", "SetLeft", "Session soft limit left"},
+    {"SR", "SetRight", "Session soft limit right"},
     {"GS", "GetSpeed", "Session cruise mm/s"},
     {"GA", "GetAccel", "Session accel mm/s2"},
     {"GE", "GetEnable", "Driver enable state"},
     {"GT", "GetTerminal", "Terminal Mode state"},
     {"GV", "GetVerbose", "Verbose push state"},
     {"GD", "GetDebug", "USB debug level"},
+    {"GL", "GetLeft", "Session soft limit left"},
+    {"GR", "GetRight", "Session soft limit right"},
     {"IM", "IsMoving", "Moving? 0|1"},
     {"IH", "IsHoming", "Homing? 0|1"},
     {"IL", "IsLimit", "At soft-limit position?"},
@@ -286,6 +311,7 @@ static const HelpRow k_help_rows[] = {
     {"M", "Move", "Relative move mm"},
     {"ML", "MoveLeft", "Continuous jog -"},
     {"MR", "MoveRight", "Continuous jog +"},
+    {"MJ", "MoveJoy", "Joy % of SS, signed"},
     {"MH", "MoveHome", "Homing cycle"},
     {"MS", "MoveStop", "Soft decelerate"},
     {"PC", "PathClear", "Clear path buffer"},
@@ -478,7 +504,9 @@ static bool path_command_allowed(const char *cmd) {
       match_any(cmd, &rest, "GE", "GetEnable", nullptr) ||
       match_any(cmd, &rest, "GT", "GetTerminal", nullptr) ||
       match_any(cmd, &rest, "GV", "GetVerbose", nullptr) ||
-      match_any(cmd, &rest, "GD", "GetDebug", nullptr)) {
+      match_any(cmd, &rest, "GD", "GetDebug", nullptr) ||
+      match_any(cmd, &rest, "GL", "GetLeft", nullptr) ||
+      match_any(cmd, &rest, "GR", "GetRight", nullptr)) {
     return true;
   }
   if (match_any(cmd, &rest, "VA", "VersionAbout", nullptr) ||
@@ -645,6 +673,28 @@ bool protocol_exec_command(const char *cmd) {
     if (!motion_jog(+1, mask)) {
       motion_get_status(&st);
       protocol_error(st.hard_limit ? "hard" : "soft", "jog rejected");
+    }
+    return false;
+  }
+
+  if (match_any(cmd, &rest, "MJ", "MoveJoy", nullptr)) {
+    float a = 0.0f, b = NAN;
+    bool have2 = false;
+    if (!parse_move_args(rest, &a, &b, &have2) || isnan(a) || (have2 && isnan(b))) {
+      protocol_error("parse", "MJ args");
+      return false;
+    }
+    if (!st.enabled) {
+      protocol_error("disabled", "enable first");
+      return false;
+    }
+    if (!config_axis2_enabled()) {
+      b = NAN;
+    } else if (!have2) {
+      b = 0.0f;
+    }
+    if (!motion_joy(a, b)) {
+      protocol_error("disabled", "enable first");
     }
     return false;
   }
@@ -904,6 +954,46 @@ bool protocol_exec_command(const char *cmd) {
     return false;
   }
 
+  if (match_any(cmd, &rest, "SL", "SetLeft", nullptr)) {
+    if (!*rest) {
+      motion_reset_window_left();
+      return false;
+    }
+    float a = NAN, b = NAN;
+    bool have2 = false;
+    if (!parse_move_args(rest, &a, &b, &have2)) {
+      protocol_error("parse", "SL args");
+      return false;
+    }
+    if (!config_axis2_enabled()) {
+      b = NAN;
+    }
+    if (!motion_set_window_left(a, b)) {
+      protocol_error("limit", "SL");
+    }
+    return false;
+  }
+
+  if (match_any(cmd, &rest, "SR", "SetRight", nullptr)) {
+    if (!*rest) {
+      motion_reset_window_right();
+      return false;
+    }
+    float a = NAN, b = NAN;
+    bool have2 = false;
+    if (!parse_move_args(rest, &a, &b, &have2)) {
+      protocol_error("parse", "SR args");
+      return false;
+    }
+    if (!config_axis2_enabled()) {
+      b = NAN;
+    }
+    if (!motion_set_window_right(a, b)) {
+      protocol_error("limit", "SR");
+    }
+    return false;
+  }
+
   /* --- G session get --- */
   if (match_any(cmd, &rest, "GS", "GetSpeed", nullptr)) {
     reply_query_float("GS", sess->speed_mm_s);
@@ -928,6 +1018,14 @@ bool protocol_exec_command(const char *cmd) {
   }
   if (match_any(cmd, &rest, "GD", "GetDebug", nullptr)) {
     reply_query_int("GD", config_get()->init_debug_level);
+    return false;
+  }
+  if (match_any(cmd, &rest, "GL", "GetLeft", nullptr)) {
+    reply_window("GL", sess->soft_left_mm, sess->soft_left_mm_2);
+    return false;
+  }
+  if (match_any(cmd, &rest, "GR", "GetRight", nullptr)) {
+    reply_window("GR", sess->soft_right_mm, sess->soft_right_mm_2);
     return false;
   }
 

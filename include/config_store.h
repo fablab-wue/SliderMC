@@ -63,6 +63,8 @@ typedef struct {
   float home_move_out_mm_2;
   float home_speed_mm_s_2;
   float home_accel_mm_s2_2;
+  float max_speed_mm_s_2;
+  float max_accel_mm_s2_2;
 
   int ramp_start_hz;
   int stop_approach_hz;
@@ -79,6 +81,11 @@ typedef struct {
   int terminal;
   int verbose;
   int path_slice_us;
+  /* Working window (SL/SR); NAN = that side disabled. Boot-copied from slider_*. */
+  float soft_left_mm;
+  float soft_right_mm;
+  float soft_left_mm_2;
+  float soft_right_mm_2;
 } McSession;
 
 void config_init_defaults(void);
@@ -96,6 +103,13 @@ void session_reset_accel(void);
 void session_reset_terminal(void);
 void session_reset_verbose(void);
 void session_reset_path_slice(void);
+void session_reset_left(void);  /* both axes → slider_min / _2 */
+void session_reset_right(void); /* both axes → slider_max / _2 */
+/** If CS squeezed the envelope, pull session walls inward (never past each other). */
+void session_clamp_window_to_envelope(void);
+/** Set session window; NAN skips that axis. false if outside envelope or left>right. */
+bool session_set_window_left(float mm0_or_nan, float mm1_or_nan);
+bool session_set_window_right(float mm0_or_nan, float mm1_or_nan);
 
 /* Returns true on success. */
 bool config_set_key(const char *key, const char *value);

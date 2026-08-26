@@ -50,6 +50,13 @@ bool motion_move_by(float mm); /* axis 0 only */
  * In 1-axis mode the mask is ignored.
  */
 bool motion_jog(int dir, int axis_mask);
+/**
+ * Signed joy percent of session SS per axis. NAN = 0 on that axis.
+ * 2-axis: omitted axis is 0 (snapshot). Does not change session SS.
+ */
+bool motion_joy(float pct0, float pct1_or_nan);
+/** Leave joy-mode without issuing a stop (another motion source takes over). */
+void motion_end_joy(void);
 bool motion_stop(void);   /* soft stop both */
 bool motion_halt(void);   /* error-decel halt both */
 /** Homing cycle for axis 1 or 2 (1-based). Default callers use 1. */
@@ -59,7 +66,11 @@ bool motion_soft_reset(void); /* clear alarm / reset hold */
 bool motion_set_speed(float mm_s);
 bool motion_set_accel(float mm_s2);
 bool motion_set_max_speed(float mm_s);
-bool motion_set_soft_limits(bool min_en, float min_mm, bool max_en, float max_mm);
+/** Session working window (SL/SR). NAN = skip that axis. false = !E:limit. */
+bool motion_set_window_left(float mm0_or_nan, float mm1_or_nan);
+bool motion_set_window_right(float mm0_or_nan, float mm1_or_nan);
+void motion_reset_window_left(void);
+void motion_reset_window_right(void);
 
 void motion_get_status(McStatus *out);
 bool motion_is_busy(void); /* moving or homing on either axis */
