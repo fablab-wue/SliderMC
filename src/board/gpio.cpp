@@ -71,6 +71,7 @@ void board_gpio_init(void) {
     ext_write_level(i, false); /* inactive at boot */
   }
 
+  board_buzzer_reconfigure();
   dbg_hw_gpio_init();
 }
 
@@ -87,6 +88,65 @@ bool board_ext_get(int index) {
     return false;
   }
   return g_ext_on[index];
+}
+
+#define BUZZER_PULSE_MS 100u
+
+static unsigned g_buzzer_remain_ms;
+static bool g_buzzer_claimed;
+
+static bool buzzer_hw_ok(void) {
+  if (config_get()->buzzer_use == 0) {
+    return false;
+  }
+  if (PIN_BUZZER == PIN_LED) {
+    return false;
+  }
+  return true;
+}
+
+void board_buzzer_reconfigure(void) {
+  if (!buzzer_hw_ok()) {
+    g_buzzer_remain_ms = 0;
+    if (g_buzzer_claimed) {
+      pinMode(PIN_BUZZER, INPUT);
+      g_buzzer_claimed = false;
+    }
+    return;
+  }
+  if (!g_buzzer_claimed) {
+    pinMode(PIN_BUZZER, OUTPUT);
+    digitalWrite(PIN_BUZZER, LOW);
+    g_buzzer_claimed = true;
+  }
+}
+
+void board_buzzer_pulse(void) {
+  if (!buzzer_hw_ok()) {
+    return;
+  }
+  if (!g_buzzer_claimed) {
+    board_buzzer_reconfigure();
+  }
+  if (!g_buzzer_claimed) {
+    return;
+  }
+  digitalWrite(PIN_BUZZER, HIGH);
+  g_buzzer_remain_ms = BUZZER_PULSE_MS;
+}
+
+void board_buzzer_tick(unsigned dt_ms) {
+  if (g_buzzer_remain_ms == 0) {
+    return;
+  }
+  if (dt_ms >= g_buzzer_remain_ms) {
+    g_buzzer_remain_ms = 0;
+    if (g_buzzer_claimed) {
+      digitalWrite(PIN_BUZZER, LOW);
+    }
+    return;
+  }
+  g_buzzer_remain_ms -= dt_ms;
 }
 
 #else /* HOST_TEST */
@@ -114,5 +174,9 @@ bool board_ext_get(int index) {
   }
   return g_ext_on[index];
 }
+
+void board_buzzer_pulse(void) {}
+void board_buzzer_tick(unsigned dt_ms) { (void)dt_ms; }
+void board_buzzer_reconfigure(void) {}
 
 #endif

@@ -54,6 +54,7 @@
 #define PIN_UART_RX 13
 
 #define PIN_LED 29 /* external status LED; onboard WS2812 on GP16 unused */
+#define PIN_BUZZER 28
 
 #ifdef DEBUG_HW
 #define PIN_DBG_FIFO 23
@@ -98,6 +99,8 @@
 // Current: GP16/GP17 → UART0 → Serial1 (keep PIN_UART_SERIAL in sync with the pair).
 #define PIN_UART_TX 16
 #define PIN_UART_RX 17
+
+#define PIN_BUZZER 28
 
 #if defined(BOARD_PICO_W)
 /* External LED on GP28. Pico W onboard LED is CYW43 WL_GPIO0 (LED_BUILTIN=32);

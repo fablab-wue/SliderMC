@@ -331,6 +331,82 @@ static bool begin_wait_cmd(ProtocolWaitKind kind, const char *rest) {
   return true;
 }
 
+static bool wait_cruise_done(void) {
+  McStatus st;
+  motion_get_status(&st);
+  if (!st.moving) {
+    return true;
+  }
+  return protocol_state_letter() == 'M';
+}
+
+static bool wait_not_cruise_done(void) { return protocol_state_letter() != 'M'; }
+
+static bool begin_wait_if_needed(ProtocolWaitKind kind, const char *rest, bool already_done) {
+  float timeout_s = -1.0f;
+  if (*rest) {
+    if (!parse_float_arg(rest, &timeout_s) || timeout_s < 0.0f) {
+      protocol_error("parse", "W timeout");
+      return false;
+    }
+  }
+  if (already_done) {
+    return false;
+  }
+  protocol_begin_wait(kind, timeout_s);
+  return true;
+}
+
+/** Parse required pos and optional timeout_s (default -1 = none). */
+static bool parse_pos_timeout(const char *s, float *pos, float *timeout_s) {
+  *timeout_s = -1.0f;
+  char buf[CFG_LINE_MAX];
+  strncpy(buf, s ? s : "", sizeof(buf) - 1);
+  buf[sizeof(buf) - 1] = 0;
+  char *second = nullptr;
+  const char *first = split_two(buf, &second);
+  if (!first || !*first) {
+    return false;
+  }
+  if (!parse_float_arg(first, pos)) {
+    return false;
+  }
+  if (second && *second) {
+    if (!parse_float_arg(second, timeout_s) || *timeout_s < 0.0f) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool begin_wait_pos_cmd(const char *rest) {
+  float pos = 0.0f;
+  float timeout_s = -1.0f;
+  if (!parse_pos_timeout(rest, &pos, &timeout_s)) {
+    protocol_error("parse", "WP args");
+    return false;
+  }
+  McStatus st;
+  motion_get_status(&st);
+  if (!st.moving && !st.homing) {
+    return false;
+  }
+  float vel = st.vel_mm_s;
+  int sign;
+  if (st.moving && vel > 0.01f) {
+    sign = 1;
+  } else if (st.moving && vel < -0.01f) {
+    sign = -1;
+  } else {
+    return false; /* dir-pause / ~0 vel: treat as idle */
+  }
+  if ((sign > 0 && st.pos_mm >= pos) || (sign < 0 && st.pos_mm <= pos)) {
+    return false;
+  }
+  protocol_begin_wait_pos(pos, sign, timeout_s);
+  return true;
+}
+
 typedef struct {
   const char *sh;
   const char *lng;
@@ -381,6 +457,7 @@ static const HelpRow k_help_rows[] = {
     {"PN", "PathNumber", "Path sample count"},
     {"PS", "PathSlice", "Slice length us (>=1000); bare resets"},
     {"X0-3", "Ext0-3", "Ext out 0|1; bare toggles"},
+    {"Z", "Buzzer", "Pulse buzzer ~0.1s"},
     {"CS", "ConfigSet", "Set persistent config key"},
     {"CR", "ConfigReset", "Reset all config to defaults"},
     {"CG", "ConfigGet", "Get config key(s)"},
@@ -388,6 +465,9 @@ static const HelpRow k_help_rows[] = {
     {"W", "Wait", "Delay sec (default 1)"},
     {"WM", "WaitMoving", "Wait until move done"},
     {"WH", "WaitHoming", "Wait until home done"},
+    {"WP", "WaitPos", "Wait until axis1 pos (or overstep)"},
+    {"WC", "WaitCruise", "Wait until cruise M or idle"},
+    {"WnC", "WaitNotCruise", "Wait until not cruise M"},
     {"VA", "VersionAbout", "About string"},
     {"VF", "VersionFW", "Firmware version"},
     {"VP", "VersionProtocol", "Protocol version"},
@@ -456,6 +536,9 @@ static void cmd_pinout_index(void) {
   PIN_IX_ADD(PIN_UART_TX, "UART_TX", "UART TX to UIC (1 Mbaud)");
   PIN_IX_ADD(PIN_UART_RX, "UART_RX", "UART RX from UIC (1 Mbaud)");
   PIN_IX_ADD(PIN_LED, "LED", "Status / heartbeat LED");
+  if (config_get()->buzzer_use && PIN_BUZZER != PIN_LED) {
+    PIN_IX_ADD(PIN_BUZZER, "BUZZER", "Piezo pulse (Z)");
+  }
 #ifdef DEBUG_HW
   if (dbg_hw_allowed()) {
     PIN_IX_ADD(PIN_DBG_FIFO, "DBG_FIFO", "Scope: TX FIFO non-empty");
@@ -515,6 +598,9 @@ static bool emo_command_allowed(const char *cmd) {
     return true;
   }
   if (match_any(cmd, &rest, "RB", "Reboot", nullptr)) {
+    return true;
+  }
+  if (match_any(cmd, &rest, "Z", "Buzzer", nullptr)) {
     return true;
   }
   /* X0..X3 / Ext0..Ext3 */
@@ -582,6 +668,9 @@ static bool path_command_allowed(const char *cmd) {
   if (match_any(cmd, &rest, "CG", "ConfigGet", nullptr)) {
     return true;
   }
+  if (match_any(cmd, &rest, "Z", "Buzzer", nullptr)) {
+    return true;
+  }
   return false;
 }
 
@@ -647,6 +736,15 @@ bool protocol_exec_command(const char *cmd) {
       protocol_error("parse", "Xn 0..3 only");
       return false;
     }
+  }
+
+  if (match_any(cmd, &rest, "Z", "Buzzer", nullptr)) {
+    if (*rest) {
+      protocol_error("parse", "Z args");
+      return false;
+    }
+    board_buzzer_pulse();
+    return false;
   }
 
   /* --- M motion (longer prefixes before M) --- */
@@ -1195,7 +1293,16 @@ bool protocol_exec_command(const char *cmd) {
     return false;
   }
 
-  /* --- W wait (WM/WH before bare W) --- */
+  /* --- W wait (longer W* before bare W) --- */
+  if (match_any(cmd, &rest, "WnC", "WaitNotCruise", nullptr)) {
+    return begin_wait_if_needed(PROTOCOL_WAIT_NOT_CRUISE, rest, wait_not_cruise_done());
+  }
+  if (match_any(cmd, &rest, "WC", "WaitCruise", nullptr)) {
+    return begin_wait_if_needed(PROTOCOL_WAIT_CRUISE, rest, wait_cruise_done());
+  }
+  if (match_any(cmd, &rest, "WP", "WaitPos", nullptr)) {
+    return begin_wait_pos_cmd(rest);
+  }
   if (match_any(cmd, &rest, "WM", "WaitMoving", nullptr)) {
     return begin_wait_cmd(PROTOCOL_WAIT_MOVING, rest);
   }
@@ -1267,6 +1374,10 @@ bool protocol_exec_command(const char *cmd) {
     protocol_writeln(line);
     snprintf(line, sizeof(line), "VG:PIN_EXT_3=%d", PIN_EXT_3);
     protocol_writeln(line);
+    if (config_get()->buzzer_use && PIN_BUZZER != PIN_LED) {
+      snprintf(line, sizeof(line), "VG:PIN_BUZZER=%d", PIN_BUZZER);
+      protocol_writeln(line);
+    }
     snprintf(line, sizeof(line), "VG:PIN_UART_TX=%d", PIN_UART_TX);
     protocol_writeln(line);
     snprintf(line, sizeof(line), "VG:PIN_UART_RX=%d", PIN_UART_RX);
@@ -1305,6 +1416,12 @@ bool protocol_exec_command(const char *cmd) {
       protocol_error("cfg", "bad key/value");
       return false;
     }
+    {
+      const char *krest = key;
+      if (starts_cmd(key, "BUZZER_use", &krest)) {
+        board_buzzer_reconfigure();
+      }
+    }
     /* CS updates session for init_speed/init_accel/init_terminal/init_verbose; refresh motion. */
     motion_set_speed(sess->speed_mm_s);
     motion_set_accel(sess->accel_mm_s2);
@@ -1318,6 +1435,7 @@ bool protocol_exec_command(const char *cmd) {
 
   if (match_any(cmd, &rest, "CR", "ConfigReset", nullptr)) {
     config_reset_to_defaults();
+    board_buzzer_reconfigure();
     motion_set_speed(sess->speed_mm_s);
     motion_set_accel(sess->accel_mm_s2);
     if (!board_config_save_to_fs()) {

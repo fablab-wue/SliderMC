@@ -8,7 +8,8 @@
 
 /*
  * Lightweight motion stub for protocol bring-up and host tests.
- * Instantly "arrives" after a short virtual travel time so WM/WH can complete.
+ * Interpolates position over virtual travel time (A → M → B → I) so WP/WC/WnC
+ * and WM/WH can complete.
  */
 
 static McStatus g_st;
@@ -18,6 +19,9 @@ static bool g_pending;
 static bool g_pending_2;
 static unsigned g_eta_ms;
 static unsigned g_eta_ms_2;
+static unsigned g_eta_total[2];
+static float g_move_start[2];
+static McState g_move_phase;
 static float g_cruise[2];
 static float g_accel[2];
 static bool g_coord_active;
@@ -165,6 +169,9 @@ void motion_init(void) {
   g_pending_2 = false;
   g_eta_ms = 0;
   g_eta_ms_2 = 0;
+  g_eta_total[0] = g_eta_total[1] = 0;
+  g_move_start[0] = g_move_start[1] = 0.0f;
+  g_move_phase = MC_STATE_IDLE;
   coord_clear();
   joy_clear();
   apply_session_cruise_accel();
@@ -179,7 +186,7 @@ static void refresh_state(void) {
   } else if (g_st.homing) {
     g_st.state = MC_STATE_HOMING;
   } else if (g_st.moving) {
-    g_st.state = MC_STATE_MOVING;
+    g_st.state = g_move_phase;
   } else {
     g_st.state = MC_STATE_IDLE;
   }
@@ -211,6 +218,9 @@ static void start_move_axis(int axis, float dest) {
   if (ms < 20) {
     ms = 20;
   }
+  g_move_start[axis] = pos;
+  g_eta_total[axis] = ms;
+  g_move_phase = MC_STATE_ACCELERATING;
   if (axis == 1) {
     g_pending_target_2 = dest;
     g_pending_2 = true;
@@ -508,12 +518,16 @@ bool motion_home(int axis_1based) {
     g_pending = true;
     g_pending_target = target;
     g_eta_ms = ms;
+    g_eta_total[0] = ms;
+    g_move_start[0] = g_st.pos_mm;
     g_st.vel_mm_s = (target >= g_st.pos_mm) ? v : -v;
     g_st.acc_mm_s2 = c->home_accel_mm_s2;
   } else {
     g_pending_2 = true;
     g_pending_target_2 = target;
     g_eta_ms_2 = ms;
+    g_eta_total[1] = ms;
+    g_move_start[1] = g_st.pos_mm_2;
   }
   refresh_state();
   return true;
@@ -591,25 +605,49 @@ void motion_get_status(McStatus *out) {
 
 bool motion_is_busy(void) { return g_st.moving || g_st.homing; }
 
+static McState phase_from_remain(unsigned remain, unsigned total) {
+  if (total == 0) {
+    return MC_STATE_MOVING;
+  }
+  float prog = 1.0f - (float)remain / (float)total;
+  if (prog < 0.20f) {
+    return MC_STATE_ACCELERATING;
+  }
+  if (prog > 0.80f) {
+    return MC_STATE_DECELERATING;
+  }
+  return MC_STATE_MOVING;
+}
+
+static void stub_advance_axis(int axis, unsigned ms) {
+  bool *pending = (axis == 1) ? &g_pending_2 : &g_pending;
+  unsigned *eta = (axis == 1) ? &g_eta_ms_2 : &g_eta_ms;
+  float *pos = (axis == 1) ? &g_st.pos_mm_2 : &g_st.pos_mm;
+  float target = (axis == 1) ? g_pending_target_2 : g_pending_target;
+  if (!*pending) {
+    return;
+  }
+  if (ms >= *eta) {
+    *eta = 0;
+    *pos = target;
+    *pending = false;
+    return;
+  }
+  *eta -= ms;
+  unsigned total = g_eta_total[axis];
+  float prog = (total > 0) ? (1.0f - (float)*eta / (float)total) : 1.0f;
+  if (prog < 0.0f) {
+    prog = 0.0f;
+  }
+  if (prog > 1.0f) {
+    prog = 1.0f;
+  }
+  *pos = g_move_start[axis] + (target - g_move_start[axis]) * prog;
+}
+
 void motion_stub_tick_ms(unsigned ms) {
-  if (g_pending) {
-    if (ms >= g_eta_ms) {
-      g_eta_ms = 0;
-      g_st.pos_mm = g_pending_target;
-      g_pending = false;
-    } else {
-      g_eta_ms -= ms;
-    }
-  }
-  if (g_pending_2) {
-    if (ms >= g_eta_ms_2) {
-      g_eta_ms_2 = 0;
-      g_st.pos_mm_2 = g_pending_target_2;
-      g_pending_2 = false;
-    } else {
-      g_eta_ms_2 -= ms;
-    }
-  }
+  stub_advance_axis(0, ms);
+  stub_advance_axis(1, ms);
   if (!g_pending && !g_pending_2) {
     g_st.moving = false;
     g_st.homing = false;
@@ -618,9 +656,21 @@ void motion_stub_tick_ms(unsigned ms) {
     g_st.vel_mm_s_2 = 0.0f;
     g_st.acc_mm_s2 = 0.0f;
     g_st.acc_mm_s2_2 = 0.0f;
+    g_move_phase = MC_STATE_IDLE;
     refresh_state();
     coord_clear_if_idle();
+    return;
   }
+  McState p0 = g_pending ? phase_from_remain(g_eta_ms, g_eta_total[0]) : MC_STATE_IDLE;
+  McState p1 = g_pending_2 ? phase_from_remain(g_eta_ms_2, g_eta_total[1]) : MC_STATE_IDLE;
+  if (p0 == MC_STATE_DECELERATING || p1 == MC_STATE_DECELERATING) {
+    g_move_phase = MC_STATE_DECELERATING;
+  } else if (p0 == MC_STATE_ACCELERATING || p1 == MC_STATE_ACCELERATING) {
+    g_move_phase = MC_STATE_ACCELERATING;
+  } else {
+    g_move_phase = MC_STATE_MOVING;
+  }
+  refresh_state();
 }
 
 #ifdef HOST_TEST
