@@ -300,6 +300,13 @@ class Sim:
             if n <= 0:
                 break
             n = min(n, rem)
+            # Curvature cap while braking: bound word size against the peak
+            # |dv/dR| of the sine brake arc (at R = D/2) so a mid-arc word
+            # cannot hold enough pulses to make a large, audible speed step.
+            if decel and self.brake_d > 0:
+                brake_step_frac = 0.06
+                n_curv = max(1, int(brake_step_frac * (2.0 / math.pi) * self.brake_d))
+                n = min(n, n_curv)
 
             dt = n / hz_est
             v_prev = self.vel

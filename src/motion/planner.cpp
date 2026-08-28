@@ -1090,6 +1090,26 @@ int planner_fill_fifo(int axis) {
     if (n > rem) {
       n = rem;
     }
+    /*
+     * Curvature cap while braking: the time-budget pack size only shrinks
+     * once close to the target (rem <= remaining/5), so a word entered mid
+     * brake-arc (steepest part of the sine, near D/2) could still hold ~64
+     * pulses at one fixed rate — a visible speed "step" each time the next
+     * word's rate is applied (reported as pumping / un-smooth deceleration).
+     * |dv/dR| peaks at pi*dv_total/(2*D) (at R=D/2); bounding n against that
+     * worst case keeps the per-word speed change under ~brake_step_frac of
+     * the total brake span everywhere on the arc, not just near the target.
+     */
+    if (decel && AX.brake_d > 0) {
+      const float brake_step_frac = 0.06f;
+      int n_curv = (int)(brake_step_frac * (2.0f / (float)M_PI) * (float)AX.brake_d);
+      if (n_curv < 1) {
+        n_curv = 1;
+      }
+      if (n > n_curv) {
+        n = n_curv;
+      }
+    }
 
     /* Compute the actual PIO delay for this word from the start-of-word
        rate estimate and derive the real issued duration (dt) for the packed
@@ -1102,8 +1122,36 @@ int planner_fill_fifo(int axis) {
                 (double)pio_step_sysclk_hz();
     /* One refinement pass: estimate end-of-word velocity and recompute a
        delay from the average rate, improving alignment between phi advance
-       and the issued PIO word without heavy iteration. */
-    if (!decel && AX.ramp_active) {
+       and the issued PIO word without heavy iteration. Cover both the accel
+       ramp and the brake arc — omitting decel here left every braking word's
+       delay keyed on the start-of-word (pre-decel) rate, i.e. the corner
+       from steady speed into deceleration ran a whole word too fast before
+       snapping to the next word's slower rate. */
+    if (decel && AX.brake_d > 0) {
+      float v_app_est = (stop_app > 0) ? (float)stop_app / AX.spmm : 0.0f;
+      float dv_est = AX.brake_v0 - v_app_est;
+      if (dv_est < 0.0f) {
+        dv_est = 0.0f;
+      }
+      int r_after_est = rem - n;
+      float v_end_est;
+      if (r_after_est <= 0) {
+        v_end_est = v_app_est;
+      } else {
+        float frac_est = (float)M_PI * (float)r_after_est / (2.0f * (float)AX.brake_d);
+        v_end_est = v_app_est + dv_est * sinf(frac_est);
+      }
+      double step_hz_est2 = fabs((double)v_end_est) * (double)AX.spmm;
+      if (step_hz_est2 < 1.0) {
+        step_hz_est2 = (double)min_hz;
+      }
+      uint32_t delay2 = planner_hz_to_delay((float)step_hz_est2, pio_step_sysclk_hz(), PIO_STEP_PERIOD_FIXED);
+      double dt2 = (double)n * ((double)delay2 + (double)PIO_STEP_PERIOD_FIXED) / (double)pio_step_sysclk_hz();
+      if (fabs(dt2 - dt) / (dt + 1e-12) > 0.02) {
+        dt = dt2;
+        delay_cycles_for_word = delay2;
+      }
+    } else if (!decel && AX.ramp_active) {
       double phi_est = planner_sine_advance_phi((double)AX.ramp_phi, AX.ramp_v0, AX.ramp_v1, AX.accel_mm_s2, dt);
       double v_est = (double)planner_sine_vel(AX.ramp_v0, AX.ramp_v1, (float)phi_est);
       double step_hz_est2 = fabs(v_est) * (double)AX.spmm;
