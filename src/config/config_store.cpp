@@ -131,6 +131,7 @@ static void config_apply_defaults(void) {
   g_cfg.sw_limit_r_active = CFG_DEFAULT_SW_LIMIT_R_ACTIVE;
   g_cfg.sw_limit_l_use = CFG_DEFAULT_SW_LIMIT_L_USE;
   g_cfg.sw_limit_r_use = CFG_DEFAULT_SW_LIMIT_R_USE;
+  g_cfg.buzzer_use = CFG_DEFAULT_BUZZER_USE;
   for (int e = 0; e < 4; ++e) {
     g_cfg.ext_active[e] = CFG_DEFAULT_EXT_ACTIVE;
   }
@@ -562,6 +563,9 @@ bool config_set_key(const char *key, const char *value) {
   if (icmp(key, "SW_LIMIT_R_use") == 0) {
     return set_01(value, &g_cfg.sw_limit_r_use);
   }
+  if (icmp(key, "BUZZER_use") == 0) {
+    return set_01(value, &g_cfg.buzzer_use);
+  }
   if (icmp(key, "DRV_STEP_active_2") == 0) {
     return set_01(value, &g_cfg.drv_step_active_2);
   }
@@ -834,6 +838,10 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     snprintf(out, out_len, "%d", c->sw_limit_r_use);
     return true;
   }
+  if (icmp(key, "BUZZER_use") == 0) {
+    snprintf(out, out_len, "%d", c->buzzer_use);
+    return true;
+  }
   if (icmp(key, "DRV_STEP_active_2") == 0) {
     snprintf(out, out_len, "%d", c->drv_step_active_2);
     return true;
@@ -964,6 +972,7 @@ void config_foreach(config_foreach_fn fn, void *ctx) {
       "SW_LIMIT_R_active",
       "SW_LIMIT_L_use",
       "SW_LIMIT_R_use",
+      "BUZZER_use",
       "EXT_0_active",
       "EXT_1_active",
       "EXT_2_active",

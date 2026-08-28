@@ -297,6 +297,176 @@ int main(void) {
   feed("GS\n");
   expect_contains("W then SS ran", "GS:33.00");
 
+  /* WP / WC / WnC / Z */
+  reset_out();
+  feed("WP\n");
+  expect_contains("WP bare parse", "!E:parse");
+  reset_out();
+  feed("WP 100 50 1\n");
+  expect_contains("WP extra token parse", "!E:parse");
+
+  reset_out();
+  feed("SS 50\n");
+  expect_empty("SS 50 before idle WP");
+  reset_out();
+  feed("WP 50; SS 12\n");
+  expect_empty("idle WP silent");
+  reset_out();
+  feed("IW\n");
+  expect_contains("IW idle after WP", "IW:0");
+  reset_out();
+  feed("GS\n");
+  expect_contains("idle WP then SS immediately", "GS:12.00");
+
+  reset_out();
+  feed("SS 50\nSA 200\n");
+  expect_empty("SS SA for WP move");
+  reset_out();
+  feed("MT 0; WM\n");
+  for (int i = 0; i < 50; ++i) {
+    protocol_poll(20);
+  }
+  reset_out();
+  feed("MT 100; WP 40; SS 8\n");
+  expect_empty("MT WP SS silent start");
+  reset_out();
+  feed("IW\n");
+  expect_contains("IW during WP", "IW:1");
+  {
+    bool ran = false;
+    for (int i = 0; i < 200; ++i) {
+      protocol_poll(20);
+      reset_out();
+      feed("GS\n");
+      if (g_out.find("GS:8.00") != std::string::npos) {
+        ran = true;
+        break;
+      }
+    }
+    expect_true("WP mid-move then SS", ran);
+  }
+
+  reset_out();
+  feed("MT 0; WM\n");
+  for (int i = 0; i < 80; ++i) {
+    protocol_poll(20);
+  }
+  reset_out();
+  feed("SS 50\n");
+  reset_out();
+  feed("MT 100; WP 80 0.01; SS 9\n");
+  for (int i = 0; i < 8; ++i) {
+    protocol_poll(5);
+  }
+  expect_contains("WP timeout", "!E:timeout");
+  reset_out();
+  feed("GS\n");
+  expect_not_contains("WP timeout canceled SS", "GS:9.00");
+
+  reset_out();
+  feed("HT\nSE 1\nSS 50\nSA 200\n");
+  expect_empty("re-enable after HT");
+  reset_out();
+  feed("MT 0; WM\n");
+  for (int i = 0; i < 80; ++i) {
+    protocol_poll(20);
+  }
+  reset_out();
+  feed("MT 100; WC; SA 5\n");
+  expect_empty("MT WC SA silent start");
+  reset_out();
+  feed("IW\n");
+  expect_contains("IW during WC", "IW:1");
+  {
+    bool ran = false;
+    for (int i = 0; i < 200; ++i) {
+      protocol_poll(20);
+      reset_out();
+      feed("GA\n");
+      if (g_out.find("GA:5.00") != std::string::npos) {
+        ran = true;
+        break;
+      }
+    }
+    expect_true("WC then live SA", ran);
+  }
+
+  reset_out();
+  feed("WnC; SS 44\n");
+  expect_empty("idle WnC silent");
+  reset_out();
+  feed("IW\n");
+  expect_contains("IW idle after WnC", "IW:0");
+  reset_out();
+  feed("GS\n");
+  expect_contains("idle WnC then SS immediately", "GS:44.00");
+
+  reset_out();
+  feed("SS 50\nSA 200\nMT 0; WM\n");
+  for (int i = 0; i < 80; ++i) {
+    protocol_poll(20);
+  }
+  reset_out();
+  feed("MT 100; WC; WnC; SS 6\n");
+  {
+    bool ran = false;
+    for (int i = 0; i < 400; ++i) {
+      protocol_poll(20);
+      reset_out();
+      feed("GS\n");
+      if (g_out.find("GS:6.00") != std::string::npos) {
+        ran = true;
+        break;
+      }
+    }
+    expect_true("WnC after cruise then SS", ran);
+  }
+
+  reset_out();
+  feed("SS 50\nMT 100; WP 40; SS 11\n");
+  protocol_poll(5);
+  reset_out();
+  feed("HT\n");
+  expect_empty("HT during WP silent");
+  for (int i = 0; i < 50; ++i) {
+    protocol_poll(20);
+  }
+  reset_out();
+  feed("GS\n");
+  expect_not_contains("HT canceled WP SS", "GS:11.00");
+  reset_out();
+  feed("IW\n");
+  expect_contains("IW after HT WP", "IW:0");
+
+  reset_out();
+  feed("SE 1\nZ; SS 13\n");
+  expect_empty("Z silent not a wait");
+  reset_out();
+  feed("IW\n");
+  expect_contains("IW after Z", "IW:0");
+  reset_out();
+  feed("GS\n");
+  expect_contains("Z then SS immediately", "GS:13.00");
+  reset_out();
+  feed("Z 1\n");
+  expect_contains("Z extra arg parse", "!E:parse");
+  reset_out();
+  feed("CG BUZZER_use\n");
+  expect_contains("CG BUZZER_use default", "CG:BUZZER_use=0");
+  reset_out();
+  feed("CS BUZZER_use 1\n");
+  expect_empty("CS BUZZER_use 1");
+  reset_out();
+  feed("CG BUZZER_use\n");
+  expect_contains("CG BUZZER_use on", "CG:BUZZER_use=1");
+  reset_out();
+  feed("CS BUZZER_use 0\n");
+  expect_empty("CS BUZZER_use 0 restore");
+
+  reset_out();
+  feed("SE 1\nSS 50\nSA 200\n");
+  expect_empty("restore SS SA after wait tests");
+
   reset_out();
   feed("MT50\n");
   protocol_feed_byte('!');
@@ -318,6 +488,10 @@ int main(void) {
   expect_contains("Help GetLeft", "GL    GetLeft");
   expect_contains("Help IsReady", "IR    IsReady");
   expect_contains("Help MoveJoy", "MJ    MoveJoy");
+  expect_contains("Help WaitPos", "WP    WaitPos");
+  expect_contains("Help WaitCruise", "WC    WaitCruise");
+  expect_contains("Help WaitNotCruise", "WnC   WaitNotCruise");
+  expect_contains("Help Buzzer", "Z     Buzzer");
   expect_contains("Help Halt", "H/HT  Halt");
   expect_contains("Help self", "$ /HL Help");
   reset_out();
@@ -778,6 +952,29 @@ int main(void) {
   reset_out();
   feed("IP\n");
   expect_contains("IP dual after MT", "IP:");
+
+  reset_out();
+  feed("MS\n");
+  feed("MT 0 0\n");
+  feed("MS\n");
+  feed("SS 50\n");
+  feed("SA 200\n");
+  expect_empty("park before 2-axis WP");
+  reset_out();
+  feed("MT 100 80; WP 40; SS 4\n");
+  {
+    bool ran = false;
+    for (int i = 0; i < 200; ++i) {
+      protocol_poll(20);
+      reset_out();
+      feed("GS\n");
+      if (g_out.find("GS:4.00") != std::string::npos) {
+        ran = true;
+        break;
+      }
+    }
+    expect_true("2-axis WP keys off axis1", ran);
+  }
   {
     size_t ip = g_out.find("IP:");
     if (ip == std::string::npos) {

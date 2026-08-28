@@ -1,4 +1,5 @@
 #include "board_heartbeat.h"
+#include "board.h"
 #include "config_store.h"
 #include "motion_api.h"
 #include "pins.h"
@@ -45,7 +46,7 @@ void board_heartbeat_ready(void) {
 }
 
 void board_heartbeat_tick(unsigned dt_ms) {
-  (void)dt_ms;
+  board_buzzer_tick(dt_ms);
 
   rp2040.wdt_reset();
 
@@ -117,6 +118,6 @@ void board_heartbeat_tick_old(unsigned dt_ms) {
 
 void board_heartbeat_init(void) {}
 void board_heartbeat_ready(void) {}
-void board_heartbeat_tick(unsigned dt_ms) { (void)dt_ms; }
+void board_heartbeat_tick(unsigned dt_ms) { board_buzzer_tick(dt_ms); }
 
 #endif

@@ -37,7 +37,7 @@ void protocol_feed_byte(uint8_t b);
 void protocol_feed_uart_byte(uint8_t b);
 
 /**
- * Periodic work: verbose push (~3 Hz), complete W/WM/WH waits.
+ * Periodic work: verbose push (~3 Hz), complete W/WM/WH/WP/WC/WnC waits.
  * Call from a FreeRTOS task or main loop; dt_ms is elapsed ms since last poll.
  */
 void protocol_poll(unsigned dt_ms);
@@ -52,7 +52,7 @@ void protocol_send_verbose(void);
 
 char protocol_state_letter(void);
 
-/** Cancel active W/WM/WH wait and discard remaining `;` chain (Halt / hard limit). */
+/** Cancel active W/WM/WH/WP/WC/WnC wait and discard remaining `;` chain (Halt / hard limit). */
 void protocol_cancel_waits_and_chain(void);
 
 #ifdef __cplusplus

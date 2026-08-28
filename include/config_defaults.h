@@ -29,6 +29,7 @@
 #define CFG_DEFAULT_SW_LIMIT_R_ACTIVE 0
 #define CFG_DEFAULT_SW_LIMIT_L_USE 0
 #define CFG_DEFAULT_SW_LIMIT_R_USE 0
+#define CFG_DEFAULT_BUZZER_USE 0
 #define CFG_DEFAULT_EXT_ACTIVE 1 /* EXT_0..5_active default (high-active) */
 
 #define CFG_DEFAULT_HOME_MODE 0

@@ -16,6 +16,13 @@ bool board_ext_set(int index, bool on);
 /** Current logical on/off for extender output 0..5. */
 bool board_ext_get(int index);
 
+/** Pulse PIN_BUZZER high ~100 ms (no-op if BUZZER_use=0 or pin is PIN_LED). */
+void board_buzzer_pulse(void);
+/** Countdown active buzzer pulse; call every proto/heartbeat tick. */
+void board_buzzer_tick(unsigned dt_ms);
+/** Apply BUZZER_use (claim or release pin). */
+void board_buzzer_reconfigure(void);
+
 void board_uart_init(void);
 
 /**

@@ -37,6 +37,7 @@ typedef struct {
   int sw_limit_r_active;
   int sw_limit_l_use; /* 1 = poll PIN_SW_LIMIT_L as hard limit */
   int sw_limit_r_use;
+  int buzzer_use; /* 1 = drive PIN_BUZZER from Z (skipped if pin aliases PIN_LED) */
   int ext_active[4]; /* EXT_0..3_active: 0=low-active, 1=high-active */
 
   /* Homing: 0=off, 1=SW_HOME left, 2=SW_HOME right, 3=LIMIT_L, 4=LIMIT_R */

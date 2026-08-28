@@ -75,7 +75,7 @@ void motion_reset_window_right(void);
 void motion_get_status(McStatus *out);
 bool motion_is_busy(void); /* moving or homing on either axis */
 
-/* Host/test helper: advance stub time so WM/WH can complete. */
+/* Host/test helper: advance stub time so waits can complete. */
 void motion_stub_tick_ms(unsigned ms);
 
 #ifdef HOST_TEST

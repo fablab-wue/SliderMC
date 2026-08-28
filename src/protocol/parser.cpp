@@ -19,6 +19,8 @@ static ProtocolWaitKind g_wait_kind;
 static bool g_wait_has_timeout;
 static unsigned g_wait_timeout_ms;
 static unsigned g_wait_elapsed_ms;
+static float g_wait_pos_mm;
+static int g_wait_pos_sign;
 
 void protocol_set_resume_chain(const char *chain) {
   if (!chain) {
@@ -43,6 +45,8 @@ void protocol_cancel_waits_and_chain(void) {
   g_wait_has_timeout = false;
   g_wait_timeout_ms = 0;
   g_wait_elapsed_ms = 0;
+  g_wait_pos_mm = 0.0f;
+  g_wait_pos_sign = 1;
   protocol_cancel_resume_chain();
 }
 
@@ -75,6 +79,12 @@ void protocol_begin_wait(ProtocolWaitKind kind, float timeout_s) {
     }
     g_wait_timeout_ms = (unsigned)(timeout_s * 1000.0f + 0.5f);
   }
+}
+
+void protocol_begin_wait_pos(float pos_mm, int sign, float timeout_s) {
+  g_wait_pos_mm = pos_mm;
+  g_wait_pos_sign = (sign >= 0) ? 1 : -1;
+  protocol_begin_wait(PROTOCOL_WAIT_POS, timeout_s);
 }
 
 void protocol_write_n(const char *s, size_t n) {
@@ -140,6 +150,8 @@ void protocol_init(ProtocolIo io) {
   g_wait_has_timeout = false;
   g_wait_timeout_ms = 0;
   g_wait_elapsed_ms = 0;
+  g_wait_pos_mm = 0.0f;
+  g_wait_pos_sign = 1;
   protocol_verbose_reset_dedupe();
   config_init_defaults();
   motion_init();
@@ -179,6 +191,21 @@ static bool wait_condition_met(void) {
   }
   if (g_wait_kind == PROTOCOL_WAIT_DELAY) {
     return false; /* completed only by elapsed time */
+  }
+  if (g_wait_kind == PROTOCOL_WAIT_POS) {
+    if (g_wait_pos_sign >= 0) {
+      return st.pos_mm >= g_wait_pos_mm;
+    }
+    return st.pos_mm <= g_wait_pos_mm;
+  }
+  if (g_wait_kind == PROTOCOL_WAIT_CRUISE) {
+    if (!st.moving) {
+      return true;
+    }
+    return protocol_state_letter() == 'M';
+  }
+  if (g_wait_kind == PROTOCOL_WAIT_NOT_CRUISE) {
+    return protocol_state_letter() != 'M';
   }
   return true;
 }
