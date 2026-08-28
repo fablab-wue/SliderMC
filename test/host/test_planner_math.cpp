@@ -86,8 +86,8 @@ int main(void) {
   expect_true("no last sign", !planner_needs_reverse_decel(0, -1, 10.0f));
 
   int rem_stop = planner_stop_rem_steps(50.0f, 200.0f, 320.0f);
-  float d = (float)M_PI * 50.0f * 50.0f / (4.0f * 200.0f);
-  int rem_expect = (int)std::ceil(d * 320.0f);
+  float d_stop = (float)M_PI * 50.0f * 50.0f / (4.0f * 200.0f);
+  int rem_expect = (int)std::ceil(d_stop * 320.0f);
   expect_true("stop_rem matches d_stop", rem_stop == rem_expect);
   expect_true("stop_rem zero vel", planner_stop_rem_steps(0.0f, 200.0f, 320.0f) == 0);
 
