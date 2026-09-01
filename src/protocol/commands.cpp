@@ -533,8 +533,8 @@ static void cmd_pinout_index(void) {
     PIN_IX_ADD(PIN_SW_LIMIT_L2, "SW_LIMIT_L2", "Hard limit left axis2");
     PIN_IX_ADD(PIN_SW_LIMIT_R2, "SW_LIMIT_R2", "Hard limit right axis2");
   }
-  PIN_IX_ADD(PIN_UART_TX, "UART_TX", "UART TX to UIC (1 Mbaud)");
-  PIN_IX_ADD(PIN_UART_RX, "UART_RX", "UART RX from UIC (1 Mbaud)");
+  PIN_IX_ADD(PIN_UART_TX, "UART_TX", "UART TX to UIC (115200 baud)");
+  PIN_IX_ADD(PIN_UART_RX, "UART_RX", "UART RX from UIC (115200 baud)");
   PIN_IX_ADD(PIN_LED, "LED", "Status / heartbeat LED");
   if (config_get()->buzzer_use && PIN_BUZZER != PIN_LED) {
     PIN_IX_ADD(PIN_BUZZER, "BUZZER", "Piezo pulse (Z)");

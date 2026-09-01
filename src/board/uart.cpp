@@ -6,7 +6,7 @@
 #include <Arduino.h>
 
 /*
- * UIC link: hardware UART at 1 Mbaud.
+ * UIC link: hardware UART at 115200 baud.
  *
  * GP8/GP9 are UART1 pins on the RP2040, which the earlephilhower core exposes
  * as Serial2. setTX()/setRX() live on SerialUART (not the HardwareSerial base)

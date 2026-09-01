@@ -18,7 +18,7 @@
 
 #define PIN_EXT_COUNT 4 /* only PIN_EXT_0…3 */
 #define PIN_UART_SERIAL Serial1
-#define UART_BAUD 1000000
+#define UART_BAUD 115200
 
 #if defined(BOARD_RP2040_ZERO)
 
@@ -92,7 +92,7 @@
 #define PIN_AXIS2_SUPPORTED 1
 #define PIN_DBG_OVERLAPS_AXIS2 1
 
-// UART to UI controller (1 Mbaud).
+// UART to UI controller (115200 baud).
 // Available HW UART pins (RP2040 / earlephilhower Arduino core):
 //   UART0 = Serial1  TX/RX:  0/1, 12/13, 16/17
 //   UART1 = Serial2  TX/RX:  4/5,  8/9, 20/21, 24/25

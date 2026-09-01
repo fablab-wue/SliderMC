@@ -18,7 +18,7 @@ Docs and manuals: **[SliderDoc](https://github.com/fablab-wue/SliderDoc)**.
 
 ## Features
 
-**Open motion stack, set-ready behaviour.** Dedicated RP2040 runs the planner and PIO step engine; the UIC talks millimetres over UART at 1 Mbaud.
+**Open motion stack, set-ready behaviour.** Dedicated RP2040 runs the planner and PIO step engine; the UIC talks millimetres over UART at 115200 baud.
 
 ### Motion quality
 
