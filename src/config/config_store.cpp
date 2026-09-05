@@ -1,6 +1,7 @@
 #include "config_store.h"
 #include "config_defaults.h"
 #include "pins.h"
+#include "motion_path.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -10,24 +11,6 @@
 static McConfig g_cfg;
 static McSession g_session;
 static bool g_cfg_ready;
-static bool g_legacy_sw_home_seen;
-
-static void remap_legacy_home_mode(int *mode) {
-  if (*mode == 3) {
-    *mode = 1;
-  } else if (*mode == 4) {
-    *mode = 2;
-  }
-}
-
-void config_migrate_legacy_home_modes(void) {
-  if (!g_legacy_sw_home_seen) {
-    return;
-  }
-  remap_legacy_home_mode(&g_cfg.home_mode);
-  remap_legacy_home_mode(&g_cfg.home_mode_2);
-  g_legacy_sw_home_seen = false;
-}
 
 static int icmp(const char *a, const char *b) {
   while (*a && *b) {
@@ -65,6 +48,8 @@ void session_sync_from_config(void) {
   g_session.soft_right_mm = g_cfg.slider_max_mm;
   g_session.soft_left_mm_2 = g_cfg.slider_min_mm_2;
   g_session.soft_right_mm_2 = g_cfg.slider_max_mm_2;
+  g_session.soft_left_mm_3 = g_cfg.slider_min_mm_3;
+  g_session.soft_right_mm_3 = g_cfg.slider_max_mm_3;
 }
 
 void session_reset_speed(void) { g_session.speed_mm_s = g_cfg.init_speed_mm_s; }
@@ -75,10 +60,12 @@ void session_reset_path_slice(void) { g_session.path_slice_us = g_cfg.init_path_
 void session_reset_left(void) {
   g_session.soft_left_mm = g_cfg.slider_min_mm;
   g_session.soft_left_mm_2 = g_cfg.slider_min_mm_2;
+  g_session.soft_left_mm_3 = g_cfg.slider_min_mm_3;
 }
 void session_reset_right(void) {
   g_session.soft_right_mm = g_cfg.slider_max_mm;
   g_session.soft_right_mm_2 = g_cfg.slider_max_mm_2;
+  g_session.soft_right_mm_3 = g_cfg.slider_max_mm_3;
 }
 
 static void clamp_axis_window(float env_min, float env_max, float *left, float *right) {
@@ -98,6 +85,8 @@ void session_clamp_window_to_envelope(void) {
                     &g_session.soft_right_mm);
   clamp_axis_window(g_cfg.slider_min_mm_2, g_cfg.slider_max_mm_2, &g_session.soft_left_mm_2,
                     &g_session.soft_right_mm_2);
+  clamp_axis_window(g_cfg.slider_min_mm_3, g_cfg.slider_max_mm_3, &g_session.soft_left_mm_3,
+                    &g_session.soft_right_mm_3);
 }
 
 static void init_axis2_defaults(void) {
@@ -120,6 +109,49 @@ static void init_axis2_defaults(void) {
   g_cfg.max_accel_mm_s2_2 = CFG_DEFAULT_MAX_ACCEL_MM_S2;
 }
 
+static void init_axis3_defaults(void) {
+  g_cfg.steps_per_unit_3 = CFG_DEFAULT_STEPS_PER_UNIT;
+  g_cfg.slider_min_mm_3 = CFG_DEFAULT_SLIDER_MIN_MM;
+  g_cfg.slider_max_mm_3 = CFG_DEFAULT_SLIDER_MAX_MM;
+  g_cfg.drv_dir_active_3 = CFG_DEFAULT_DRV_DIR_ACTIVE;
+  g_cfg.drv_en_active_3 = CFG_DEFAULT_DRV_EN_ACTIVE;
+  g_cfg.drv_error_active_3 = CFG_DEFAULT_DRV_ERROR_ACTIVE;
+  g_cfg.sw_limit_l_active_3 = CFG_DEFAULT_SW_LIMIT_L_ACTIVE;
+  g_cfg.sw_limit_r_active_3 = CFG_DEFAULT_SW_LIMIT_R_ACTIVE;
+  g_cfg.sw_limit_l_use_3 = CFG_DEFAULT_SW_LIMIT_L_USE;
+  g_cfg.sw_limit_r_use_3 = CFG_DEFAULT_SW_LIMIT_R_USE;
+  g_cfg.home_mode_3 = CFG_DEFAULT_HOME_MODE;
+  g_cfg.home_move_out_mm_3 = CFG_DEFAULT_HOME_MOVE_OUT_MM;
+  g_cfg.home_speed_mm_s_3 = CFG_DEFAULT_HOME_SPEED_MM_S;
+  g_cfg.home_accel_mm_s2_3 = CFG_DEFAULT_HOME_ACCEL_MM_S2;
+  g_cfg.max_speed_mm_s_3 = CFG_DEFAULT_MAX_SPEED_MM_S;
+  g_cfg.max_accel_mm_s2_3 = CFG_DEFAULT_MAX_ACCEL_MM_S2;
+}
+
+static int axis_board_max(void) {
+#if PIN_AXIS3_SUPPORTED
+  return 3;
+#elif PIN_AXIS2_SUPPORTED
+  return 2;
+#else
+  return 1;
+#endif
+}
+
+static void clamp_cfg_axis(void) {
+  int mx = axis_board_max();
+  if (g_cfg.axis < 1) {
+    g_cfg.axis = 1;
+  }
+  if (g_cfg.axis > mx) {
+    g_cfg.axis = mx;
+  }
+  int cap = PATH_POOL_SAMPLES / g_cfg.axis;
+  if (g_cfg.path_buffer_size > cap) {
+    g_cfg.path_buffer_size = cap;
+  }
+}
+
 static void config_apply_defaults(void) {
   g_cfg.init_speed_mm_s = CFG_DEFAULT_INIT_SPEED_MM_S;
   g_cfg.init_accel_mm_s2 = CFG_DEFAULT_INIT_ACCEL_MM_S2;
@@ -133,7 +165,7 @@ static void config_apply_defaults(void) {
   g_cfg.init_terminal = CFG_DEFAULT_INIT_TERMINAL;
   g_cfg.init_debug_level = CFG_DEFAULT_INIT_DEBUG_LEVEL;
   g_cfg.wdt_use = CFG_DEFAULT_WDT_USE;
-  g_cfg.axis2_use = CFG_DEFAULT_AXIS2_USE;
+  g_cfg.axis = CFG_DEFAULT_AXIS;
   g_cfg.name[0] = 0;
   strncpy(g_cfg.unit_name, CFG_DEFAULT_UNIT_NAME, sizeof(g_cfg.unit_name) - 1);
   g_cfg.unit_name[sizeof(g_cfg.unit_name) - 1] = 0;
@@ -154,6 +186,7 @@ static void config_apply_defaults(void) {
   g_cfg.home_speed_mm_s = CFG_DEFAULT_HOME_SPEED_MM_S;
   g_cfg.home_accel_mm_s2 = CFG_DEFAULT_HOME_ACCEL_MM_S2;
   init_axis2_defaults();
+  init_axis3_defaults();
   g_cfg.ramp_start_hz = CFG_DEFAULT_RAMP_START_HZ;
   g_cfg.stop_approach_hz = CFG_DEFAULT_STOP_APPROACH_HZ;
   g_cfg.dir_change_pause_s = CFG_DEFAULT_DIR_CHANGE_PAUSE_S;
@@ -162,6 +195,7 @@ static void config_apply_defaults(void) {
     g_cfg.path_buffer_size = PATH_BUFFER_MAX;
   }
   g_cfg.init_path_slice_us = CFG_DEFAULT_INIT_PATH_SLICE_US;
+  clamp_cfg_axis();
   session_sync_from_config();
 }
 
@@ -184,20 +218,60 @@ McSession *session_get(void) { return &g_session; }
 bool config_slider_min_enabled(void) { return !isnan(g_cfg.slider_min_mm); }
 bool config_slider_max_enabled(void) { return !isnan(g_cfg.slider_max_mm); }
 
-bool config_axis2_enabled(void) {
-#if PIN_AXIS2_SUPPORTED
-  return g_cfg.axis2_use != 0;
-#else
-  if (g_cfg.axis2_use != 0) {
-    g_cfg.axis2_use = 0;
+int config_axis_count(void) {
+  clamp_cfg_axis();
+  return g_cfg.axis;
+}
+
+bool config_axis2_enabled(void) { return config_axis_count() >= 2; }
+
+bool config_axis3_enabled(void) { return config_axis_count() >= 3; }
+
+int config_path_per_axis_max(void) { return PATH_POOL_SAMPLES / config_axis_count(); }
+
+static float cfg_slider_min(int axis) {
+  if (axis == 2) {
+    return g_cfg.slider_min_mm_3;
   }
-  return false;
-#endif
+  if (axis == 1) {
+    return g_cfg.slider_min_mm_2;
+  }
+  return g_cfg.slider_min_mm;
+}
+
+static float cfg_slider_max(int axis) {
+  if (axis == 2) {
+    return g_cfg.slider_max_mm_3;
+  }
+  if (axis == 1) {
+    return g_cfg.slider_max_mm_2;
+  }
+  return g_cfg.slider_max_mm;
+}
+
+static float *session_soft_left(int axis) {
+  if (axis == 2) {
+    return &g_session.soft_left_mm_3;
+  }
+  if (axis == 1) {
+    return &g_session.soft_left_mm_2;
+  }
+  return &g_session.soft_left_mm;
+}
+
+static float *session_soft_right(int axis) {
+  if (axis == 2) {
+    return &g_session.soft_right_mm_3;
+  }
+  if (axis == 1) {
+    return &g_session.soft_right_mm_2;
+  }
+  return &g_session.soft_right_mm;
 }
 
 static bool pos_in_envelope(int axis, float pos) {
-  float mn = (axis == 1) ? g_cfg.slider_min_mm_2 : g_cfg.slider_min_mm;
-  float mx = (axis == 1) ? g_cfg.slider_max_mm_2 : g_cfg.slider_max_mm;
+  float mn = cfg_slider_min(axis);
+  float mx = cfg_slider_max(axis);
   if (!isnan(mn) && pos < mn - 1e-4f) {
     return false;
   }
@@ -208,25 +282,23 @@ static bool pos_in_envelope(int axis, float pos) {
 }
 
 float session_effective_left(int axis) {
-  float soft = (axis == 1) ? g_session.soft_left_mm_2 : g_session.soft_left_mm;
+  float soft = *session_soft_left(axis);
   if (!isnan(soft)) {
     return soft;
   }
-  return (axis == 1) ? g_cfg.slider_min_mm_2 : g_cfg.slider_min_mm;
+  return cfg_slider_min(axis);
 }
 
 float session_effective_right(int axis) {
-  float soft = (axis == 1) ? g_session.soft_right_mm_2 : g_session.soft_right_mm;
+  float soft = *session_soft_right(axis);
   if (!isnan(soft)) {
     return soft;
   }
-  return (axis == 1) ? g_cfg.slider_max_mm_2 : g_cfg.slider_max_mm;
+  return cfg_slider_max(axis);
 }
 
 static bool eff_left_le_right(int axis, float new_left_or_nan, bool setting_left) {
-  float left = setting_left ? (isnan(new_left_or_nan) ? ((axis == 1) ? g_cfg.slider_min_mm_2
-                                                                     : g_cfg.slider_min_mm)
-                                                      : new_left_or_nan)
+  float left = setting_left ? (isnan(new_left_or_nan) ? cfg_slider_min(axis) : new_left_or_nan)
                             : session_effective_left(axis);
   float right = session_effective_right(axis);
   if (isnan(left) || isnan(right)) {
@@ -236,10 +308,9 @@ static bool eff_left_le_right(int axis, float new_left_or_nan, bool setting_left
 }
 
 static bool eff_right_ge_left(int axis, float new_right_or_nan, bool setting_right) {
-  float right = setting_right ? (isnan(new_right_or_nan) ? ((axis == 1) ? g_cfg.slider_max_mm_2
-                                                                       : g_cfg.slider_max_mm)
-                                                        : new_right_or_nan)
-                              : session_effective_right(axis);
+  float right =
+      setting_right ? (isnan(new_right_or_nan) ? cfg_slider_max(axis) : new_right_or_nan)
+                    : session_effective_right(axis);
   float left = session_effective_left(axis);
   if (isnan(left) || isnan(right)) {
     return true;
@@ -247,22 +318,28 @@ static bool eff_right_ge_left(int axis, float new_right_or_nan, bool setting_rig
   return left <= right + 1e-4f;
 }
 
-bool session_set_window_left(bool set0, float mm0, bool set1, float mm1) {
-  if (set0) {
-    if (!isnan(mm0) && !pos_in_envelope(0, mm0)) {
-      return false;
-    }
-    if (!eff_left_le_right(0, mm0, true)) {
-      return false;
-    }
+static bool session_set_window_one(int axis, bool set, float mm, bool left) {
+  if (!set || axis >= config_axis_count()) {
+    return true;
   }
-  if (set1 && config_axis2_enabled()) {
-    if (!isnan(mm1) && !pos_in_envelope(1, mm1)) {
+  if (!isnan(mm) && !pos_in_envelope(axis, mm)) {
+    return false;
+  }
+  if (left) {
+    if (!eff_left_le_right(axis, mm, true)) {
       return false;
     }
-    if (!eff_left_le_right(1, mm1, true)) {
-      return false;
-    }
+  } else if (!eff_right_ge_left(axis, mm, true)) {
+    return false;
+  }
+  return true;
+}
+
+bool session_set_window_left(bool set0, float mm0, bool set1, float mm1, bool set2, float mm2) {
+  if (!session_set_window_one(0, set0, mm0, true) ||
+      !session_set_window_one(1, set1, mm1, true) ||
+      !session_set_window_one(2, set2, mm2, true)) {
+    return false;
   }
   if (set0) {
     g_session.soft_left_mm = mm0;
@@ -270,31 +347,26 @@ bool session_set_window_left(bool set0, float mm0, bool set1, float mm1) {
   if (set1 && config_axis2_enabled()) {
     g_session.soft_left_mm_2 = mm1;
   }
+  if (set2 && config_axis3_enabled()) {
+    g_session.soft_left_mm_3 = mm2;
+  }
   return true;
 }
 
-bool session_set_window_right(bool set0, float mm0, bool set1, float mm1) {
-  if (set0) {
-    if (!isnan(mm0) && !pos_in_envelope(0, mm0)) {
-      return false;
-    }
-    if (!eff_right_ge_left(0, mm0, true)) {
-      return false;
-    }
-  }
-  if (set1 && config_axis2_enabled()) {
-    if (!isnan(mm1) && !pos_in_envelope(1, mm1)) {
-      return false;
-    }
-    if (!eff_right_ge_left(1, mm1, true)) {
-      return false;
-    }
+bool session_set_window_right(bool set0, float mm0, bool set1, float mm1, bool set2, float mm2) {
+  if (!session_set_window_one(0, set0, mm0, false) ||
+      !session_set_window_one(1, set1, mm1, false) ||
+      !session_set_window_one(2, set2, mm2, false)) {
+    return false;
   }
   if (set0) {
     g_session.soft_right_mm = mm0;
   }
   if (set1 && config_axis2_enabled()) {
     g_session.soft_right_mm_2 = mm1;
+  }
+  if (set2 && config_axis3_enabled()) {
+    g_session.soft_right_mm_3 = mm2;
   }
   return true;
 }
@@ -367,14 +439,14 @@ bool config_set_key(const char *key, const char *value) {
     g_session.accel_mm_s2 = f;
     return true;
   }
-  if (icmp(key, "max_speed") == 0) {
+  if (icmp(key, "max_speed_1") == 0) {
     if (!parse_float(value, &f) || f <= 0.0f) {
       return false;
     }
     g_cfg.max_speed_mm_s = f;
     return true;
   }
-  if (icmp(key, "max_accel") == 0) {
+  if (icmp(key, "max_accel_1") == 0) {
     if (!parse_float(value, &f) || f <= 0.0f) {
       return false;
     }
@@ -395,7 +467,7 @@ bool config_set_key(const char *key, const char *value) {
     g_cfg.max_accel_mm_s2_2 = f;
     return true;
   }
-  if (key_is(key, "steps_per_unit", "steps_per_mm")) {
+  if (key_is(key, "steps_per_unit_1", "steps_per_mm_1")) {
     if (!parse_float(value, &f) || f <= 0.0f) {
       return false;
     }
@@ -409,7 +481,7 @@ bool config_set_key(const char *key, const char *value) {
     g_cfg.steps_per_unit_2 = f;
     return true;
   }
-  if (key_is(key, "slider_min", "soft_min")) {
+  if (key_is(key, "slider_min_1", "soft_min_1")) {
     if (is_none_token(value)) {
       g_cfg.slider_min_mm = NAN;
       session_clamp_window_to_envelope();
@@ -422,7 +494,7 @@ bool config_set_key(const char *key, const char *value) {
     session_clamp_window_to_envelope();
     return true;
   }
-  if (key_is(key, "slider_max", "soft_max")) {
+  if (key_is(key, "slider_max_1", "soft_max_1")) {
     if (is_none_token(value)) {
       g_cfg.slider_max_mm = NAN;
       session_clamp_window_to_envelope();
@@ -492,20 +564,26 @@ bool config_set_key(const char *key, const char *value) {
   if (icmp(key, "WDT_use") == 0) {
     return set_01(value, &g_cfg.wdt_use);
   }
-  if (icmp(key, "axis2_use") == 0) {
-    if (!set_01(value, &i)) {
+  if (icmp(key, "axis") == 0) {
+    if (!parse_int(value, &i) || i < 1 || i > 3) {
       return false;
     }
-#if !PIN_AXIS2_SUPPORTED
-    g_cfg.axis2_use = 0;
-    if (i != 0) {
+    if (i > axis_board_max()) {
       return false;
     }
+    if (i != g_cfg.axis) {
+      if (motion_path_is_active()) {
+        return false;
+      }
+      if (motion_path_count() > 0) {
+        if (!motion_path_clear()) {
+          return false;
+        }
+      }
+    }
+    g_cfg.axis = i;
+    clamp_cfg_axis();
     return true;
-#else
-    g_cfg.axis2_use = i;
-    return true;
-#endif
   }
   if (icmp(key, "name") == 0) {
     /* Printable ASCII, no '#' or control chars; empty clears. */
@@ -547,60 +625,55 @@ bool config_set_key(const char *key, const char *value) {
     g_cfg.unit_name[n] = 0;
     return true;
   }
-  if (icmp(key, "DRV_STEP_active") == 0) {
+  if (icmp(key, "DRV_STEP_1_active") == 0) {
     return set_01(value, &g_cfg.drv_step_active);
   }
-  if (icmp(key, "DRV_DIR_active") == 0) {
+  if (icmp(key, "DRV_DIR_1_active") == 0) {
     return set_01(value, &g_cfg.drv_dir_active);
   }
-  if (icmp(key, "DRV_EN_active") == 0) {
+  if (icmp(key, "DRV_EN_1_active") == 0) {
     return set_01(value, &g_cfg.drv_en_active);
   }
-  if (icmp(key, "SW_HOME_active") == 0 || icmp(key, "SW_HOME_use") == 0 ||
-      icmp(key, "SW_HOME_active_2") == 0 || icmp(key, "SW_HOME_use_2") == 0) {
-    g_legacy_sw_home_seen = true;
-    return true;
-  }
-  if (icmp(key, "DRV_ERROR_active") == 0) {
+  if (icmp(key, "DRV_ERROR_1_active") == 0) {
     return set_01(value, &g_cfg.drv_error_active);
   }
-  if (icmp(key, "SW_LIMIT_L_active") == 0) {
+  if (icmp(key, "SW_LIMIT_L_1_active") == 0) {
     return set_01(value, &g_cfg.sw_limit_l_active);
   }
-  if (icmp(key, "SW_LIMIT_R_active") == 0) {
+  if (icmp(key, "SW_LIMIT_R_1_active") == 0) {
     return set_01(value, &g_cfg.sw_limit_r_active);
   }
-  if (icmp(key, "SW_LIMIT_L_use") == 0) {
+  if (icmp(key, "SW_LIMIT_L_1_use") == 0) {
     return set_01(value, &g_cfg.sw_limit_l_use);
   }
-  if (icmp(key, "SW_LIMIT_R_use") == 0) {
+  if (icmp(key, "SW_LIMIT_R_1_use") == 0) {
     return set_01(value, &g_cfg.sw_limit_r_use);
   }
   if (icmp(key, "BUZZER_use") == 0) {
     return set_01(value, &g_cfg.buzzer_use);
   }
-  if (icmp(key, "DRV_STEP_active_2") == 0) {
+  if (icmp(key, "DRV_STEP_2_active") == 0) {
     return set_01(value, &g_cfg.drv_step_active_2);
   }
-  if (icmp(key, "DRV_DIR_active_2") == 0) {
+  if (icmp(key, "DRV_DIR_2_active") == 0) {
     return set_01(value, &g_cfg.drv_dir_active_2);
   }
-  if (icmp(key, "DRV_EN_active_2") == 0) {
+  if (icmp(key, "DRV_EN_2_active") == 0) {
     return set_01(value, &g_cfg.drv_en_active_2);
   }
-  if (icmp(key, "DRV_ERROR_active_2") == 0) {
+  if (icmp(key, "DRV_ERROR_2_active") == 0) {
     return set_01(value, &g_cfg.drv_error_active_2);
   }
-  if (icmp(key, "SW_LIMIT_L_active_2") == 0) {
+  if (icmp(key, "SW_LIMIT_L_2_active") == 0) {
     return set_01(value, &g_cfg.sw_limit_l_active_2);
   }
-  if (icmp(key, "SW_LIMIT_R_active_2") == 0) {
+  if (icmp(key, "SW_LIMIT_R_2_active") == 0) {
     return set_01(value, &g_cfg.sw_limit_r_active_2);
   }
-  if (icmp(key, "SW_LIMIT_L_use_2") == 0) {
+  if (icmp(key, "SW_LIMIT_L_2_use") == 0) {
     return set_01(value, &g_cfg.sw_limit_l_use_2);
   }
-  if (icmp(key, "SW_LIMIT_R_use_2") == 0) {
+  if (icmp(key, "SW_LIMIT_R_2_use") == 0) {
     return set_01(value, &g_cfg.sw_limit_r_use_2);
   }
   /* EXT_0_active … EXT_3_active */
@@ -609,28 +682,28 @@ bool config_set_key(const char *key, const char *value) {
       key[5] == '_' && icmp(key + 6, "active") == 0) {
     return set_01(value, &g_cfg.ext_active[key[4] - '0']);
   }
-  if (icmp(key, "home_mode") == 0) {
+  if (icmp(key, "home_mode_1") == 0) {
     if (!parse_int(value, &i) || i < 0 || i > 4) {
       return false;
     }
     g_cfg.home_mode = i;
     return true;
   }
-  if (icmp(key, "home_move_out") == 0) {
+  if (icmp(key, "home_move_out_1") == 0) {
     if (!parse_float(value, &f) || f < 0.0f) {
       return false;
     }
     g_cfg.home_move_out_mm = f;
     return true;
   }
-  if (icmp(key, "home_speed") == 0) {
+  if (icmp(key, "home_speed_1") == 0) {
     if (!parse_float(value, &f) || f <= 0.0f) {
       return false;
     }
     g_cfg.home_speed_mm_s = f;
     return true;
   }
-  if (icmp(key, "home_accel") == 0) {
+  if (icmp(key, "home_accel_1") == 0) {
     if (!parse_float(value, &f) || f <= 0.0f) {
       return false;
     }
@@ -644,25 +717,121 @@ bool config_set_key(const char *key, const char *value) {
     g_cfg.home_mode_2 = i;
     return true;
   }
-  if (icmp(key, "home_move_out_2") == 0 || icmp(key, "home_move_out_mm_2") == 0) {
+  if (icmp(key, "home_move_out_2") == 0) {
     if (!parse_float(value, &f) || f < 0.0f) {
       return false;
     }
     g_cfg.home_move_out_mm_2 = f;
     return true;
   }
-  if (icmp(key, "home_speed_2") == 0 || icmp(key, "home_speed_mm_s_2") == 0) {
+  if (icmp(key, "home_speed_2") == 0) {
     if (!parse_float(value, &f) || f <= 0.0f) {
       return false;
     }
     g_cfg.home_speed_mm_s_2 = f;
     return true;
   }
-  if (icmp(key, "home_accel_2") == 0 || icmp(key, "home_accel_mm_s2_2") == 0) {
+  if (icmp(key, "home_accel_2") == 0) {
     if (!parse_float(value, &f) || f <= 0.0f) {
       return false;
     }
     g_cfg.home_accel_mm_s2_2 = f;
+    return true;
+  }
+  if (icmp(key, "max_speed_3") == 0) {
+    if (!parse_float(value, &f) || f <= 0.0f) {
+      return false;
+    }
+    g_cfg.max_speed_mm_s_3 = f;
+    return true;
+  }
+  if (icmp(key, "max_accel_3") == 0) {
+    if (!parse_float(value, &f) || f <= 0.0f) {
+      return false;
+    }
+    g_cfg.max_accel_mm_s2_3 = f;
+    return true;
+  }
+  if (key_is(key, "steps_per_unit_3", "steps_per_mm_3")) {
+    if (!parse_float(value, &f) || f <= 0.0f) {
+      return false;
+    }
+    g_cfg.steps_per_unit_3 = f;
+    return true;
+  }
+  if (key_is(key, "slider_min_3", "soft_min_3")) {
+    if (is_none_token(value)) {
+      g_cfg.slider_min_mm_3 = NAN;
+      session_clamp_window_to_envelope();
+      return true;
+    }
+    if (!parse_float(value, &f)) {
+      return false;
+    }
+    g_cfg.slider_min_mm_3 = f;
+    session_clamp_window_to_envelope();
+    return true;
+  }
+  if (key_is(key, "slider_max_3", "soft_max_3")) {
+    if (is_none_token(value)) {
+      g_cfg.slider_max_mm_3 = NAN;
+      session_clamp_window_to_envelope();
+      return true;
+    }
+    if (!parse_float(value, &f)) {
+      return false;
+    }
+    g_cfg.slider_max_mm_3 = f;
+    session_clamp_window_to_envelope();
+    return true;
+  }
+  if (icmp(key, "DRV_DIR_3_active") == 0) {
+    return set_01(value, &g_cfg.drv_dir_active_3);
+  }
+  if (icmp(key, "DRV_EN_3_active") == 0) {
+    return set_01(value, &g_cfg.drv_en_active_3);
+  }
+  if (icmp(key, "DRV_ERROR_3_active") == 0) {
+    return set_01(value, &g_cfg.drv_error_active_3);
+  }
+  if (icmp(key, "SW_LIMIT_L_3_active") == 0) {
+    return set_01(value, &g_cfg.sw_limit_l_active_3);
+  }
+  if (icmp(key, "SW_LIMIT_R_3_active") == 0) {
+    return set_01(value, &g_cfg.sw_limit_r_active_3);
+  }
+  if (icmp(key, "SW_LIMIT_L_3_use") == 0) {
+    return set_01(value, &g_cfg.sw_limit_l_use_3);
+  }
+  if (icmp(key, "SW_LIMIT_R_3_use") == 0) {
+    return set_01(value, &g_cfg.sw_limit_r_use_3);
+  }
+  if (icmp(key, "home_mode_3") == 0) {
+    if (!parse_int(value, &i) || i < 0 || i > 4) {
+      return false;
+    }
+    g_cfg.home_mode_3 = i;
+    return true;
+  }
+  if (icmp(key, "home_move_out_3") == 0) {
+    if (!parse_float(value, &f) || f < 0.0f) {
+      return false;
+    }
+    g_cfg.home_move_out_mm_3 = f;
+    return true;
+  }
+  if (icmp(key, "home_speed_3") == 0) {
+    if (!parse_float(value, &f) || f <= 0.0f) {
+      return false;
+    }
+    g_cfg.home_speed_mm_s_3 = f;
+    return true;
+  }
+  if (icmp(key, "home_accel_3") == 0) {
+    if (!parse_float(value, &f) || f <= 0.0f) {
+      return false;
+    }
+    g_cfg.home_accel_mm_s2_3 = f;
     return true;
   }
   if (icmp(key, "ramp_start_hz") == 0) {
@@ -687,7 +856,8 @@ bool config_set_key(const char *key, const char *value) {
     return true;
   }
   if (icmp(key, "path_buffer_size") == 0) {
-    if (!parse_int(value, &i) || i < 1 || i > PATH_BUFFER_MAX) {
+    int cap = config_path_per_axis_max();
+    if (!parse_int(value, &i) || i < 1 || i > cap) {
       return false;
     }
     g_cfg.path_buffer_size = i;
@@ -717,11 +887,11 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     snprintf(out, out_len, "%.3g", (double)c->init_accel_mm_s2);
     return true;
   }
-  if (icmp(key, "max_speed") == 0) {
+  if (icmp(key, "max_speed_1") == 0) {
     snprintf(out, out_len, "%.3g", (double)c->max_speed_mm_s);
     return true;
   }
-  if (icmp(key, "max_accel") == 0) {
+  if (icmp(key, "max_accel_1") == 0) {
     snprintf(out, out_len, "%.3g", (double)c->max_accel_mm_s2);
     return true;
   }
@@ -733,7 +903,7 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     snprintf(out, out_len, "%.3g", (double)c->max_accel_mm_s2_2);
     return true;
   }
-  if (key_is(key, "steps_per_unit", "steps_per_mm")) {
+  if (key_is(key, "steps_per_unit_1", "steps_per_mm_1")) {
     snprintf(out, out_len, "%.6g", (double)c->steps_per_unit);
     return true;
   }
@@ -741,7 +911,7 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     snprintf(out, out_len, "%.6g", (double)c->steps_per_unit_2);
     return true;
   }
-  if (key_is(key, "slider_min", "soft_min")) {
+  if (key_is(key, "slider_min_1", "soft_min_1")) {
     if (isnan(c->slider_min_mm)) {
       snprintf(out, out_len, "none");
     } else {
@@ -749,7 +919,7 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     }
     return true;
   }
-  if (key_is(key, "slider_max", "soft_max")) {
+  if (key_is(key, "slider_max_1", "soft_max_1")) {
     if (isnan(c->slider_max_mm)) {
       snprintf(out, out_len, "none");
     } else {
@@ -793,8 +963,8 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     snprintf(out, out_len, "%d", c->wdt_use);
     return true;
   }
-  if (icmp(key, "axis2_use") == 0) {
-    snprintf(out, out_len, "%d", c->axis2_use);
+  if (icmp(key, "axis") == 0) {
+    snprintf(out, out_len, "%d", c->axis);
     return true;
   }
   if (icmp(key, "name") == 0) {
@@ -805,35 +975,35 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     snprintf(out, out_len, "%s", c->unit_name);
     return true;
   }
-  if (icmp(key, "DRV_STEP_active") == 0) {
+  if (icmp(key, "DRV_STEP_1_active") == 0) {
     snprintf(out, out_len, "%d", c->drv_step_active);
     return true;
   }
-  if (icmp(key, "DRV_DIR_active") == 0) {
+  if (icmp(key, "DRV_DIR_1_active") == 0) {
     snprintf(out, out_len, "%d", c->drv_dir_active);
     return true;
   }
-  if (icmp(key, "DRV_EN_active") == 0) {
+  if (icmp(key, "DRV_EN_1_active") == 0) {
     snprintf(out, out_len, "%d", c->drv_en_active);
     return true;
   }
-  if (icmp(key, "DRV_ERROR_active") == 0) {
+  if (icmp(key, "DRV_ERROR_1_active") == 0) {
     snprintf(out, out_len, "%d", c->drv_error_active);
     return true;
   }
-  if (icmp(key, "SW_LIMIT_L_active") == 0) {
+  if (icmp(key, "SW_LIMIT_L_1_active") == 0) {
     snprintf(out, out_len, "%d", c->sw_limit_l_active);
     return true;
   }
-  if (icmp(key, "SW_LIMIT_R_active") == 0) {
+  if (icmp(key, "SW_LIMIT_R_1_active") == 0) {
     snprintf(out, out_len, "%d", c->sw_limit_r_active);
     return true;
   }
-  if (icmp(key, "SW_LIMIT_L_use") == 0) {
+  if (icmp(key, "SW_LIMIT_L_1_use") == 0) {
     snprintf(out, out_len, "%d", c->sw_limit_l_use);
     return true;
   }
-  if (icmp(key, "SW_LIMIT_R_use") == 0) {
+  if (icmp(key, "SW_LIMIT_R_1_use") == 0) {
     snprintf(out, out_len, "%d", c->sw_limit_r_use);
     return true;
   }
@@ -841,35 +1011,35 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     snprintf(out, out_len, "%d", c->buzzer_use);
     return true;
   }
-  if (icmp(key, "DRV_STEP_active_2") == 0) {
+  if (icmp(key, "DRV_STEP_2_active") == 0) {
     snprintf(out, out_len, "%d", c->drv_step_active_2);
     return true;
   }
-  if (icmp(key, "DRV_DIR_active_2") == 0) {
+  if (icmp(key, "DRV_DIR_2_active") == 0) {
     snprintf(out, out_len, "%d", c->drv_dir_active_2);
     return true;
   }
-  if (icmp(key, "DRV_EN_active_2") == 0) {
+  if (icmp(key, "DRV_EN_2_active") == 0) {
     snprintf(out, out_len, "%d", c->drv_en_active_2);
     return true;
   }
-  if (icmp(key, "DRV_ERROR_active_2") == 0) {
+  if (icmp(key, "DRV_ERROR_2_active") == 0) {
     snprintf(out, out_len, "%d", c->drv_error_active_2);
     return true;
   }
-  if (icmp(key, "SW_LIMIT_L_active_2") == 0) {
+  if (icmp(key, "SW_LIMIT_L_2_active") == 0) {
     snprintf(out, out_len, "%d", c->sw_limit_l_active_2);
     return true;
   }
-  if (icmp(key, "SW_LIMIT_R_active_2") == 0) {
+  if (icmp(key, "SW_LIMIT_R_2_active") == 0) {
     snprintf(out, out_len, "%d", c->sw_limit_r_active_2);
     return true;
   }
-  if (icmp(key, "SW_LIMIT_L_use_2") == 0) {
+  if (icmp(key, "SW_LIMIT_L_2_use") == 0) {
     snprintf(out, out_len, "%d", c->sw_limit_l_use_2);
     return true;
   }
-  if (icmp(key, "SW_LIMIT_R_use_2") == 0) {
+  if (icmp(key, "SW_LIMIT_R_2_use") == 0) {
     snprintf(out, out_len, "%d", c->sw_limit_r_use_2);
     return true;
   }
@@ -879,19 +1049,19 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     snprintf(out, out_len, "%d", c->ext_active[key[4] - '0']);
     return true;
   }
-  if (icmp(key, "home_mode") == 0) {
+  if (icmp(key, "home_mode_1") == 0) {
     snprintf(out, out_len, "%d", c->home_mode);
     return true;
   }
-  if (icmp(key, "home_move_out") == 0) {
+  if (icmp(key, "home_move_out_1") == 0) {
     snprintf(out, out_len, "%.3g", (double)c->home_move_out_mm);
     return true;
   }
-  if (icmp(key, "home_speed") == 0) {
+  if (icmp(key, "home_speed_1") == 0) {
     snprintf(out, out_len, "%.3g", (double)c->home_speed_mm_s);
     return true;
   }
-  if (icmp(key, "home_accel") == 0) {
+  if (icmp(key, "home_accel_1") == 0) {
     snprintf(out, out_len, "%.3g", (double)c->home_accel_mm_s2);
     return true;
   }
@@ -899,15 +1069,15 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     snprintf(out, out_len, "%d", c->home_mode_2);
     return true;
   }
-  if (icmp(key, "home_move_out_2") == 0 || icmp(key, "home_move_out_mm_2") == 0) {
+  if (icmp(key, "home_move_out_2") == 0) {
     snprintf(out, out_len, "%.3g", (double)c->home_move_out_mm_2);
     return true;
   }
-  if (icmp(key, "home_speed_2") == 0 || icmp(key, "home_speed_mm_s_2") == 0) {
+  if (icmp(key, "home_speed_2") == 0) {
     snprintf(out, out_len, "%.3g", (double)c->home_speed_mm_s_2);
     return true;
   }
-  if (icmp(key, "home_accel_2") == 0 || icmp(key, "home_accel_mm_s2_2") == 0) {
+  if (icmp(key, "home_accel_2") == 0) {
     snprintf(out, out_len, "%.3g", (double)c->home_accel_mm_s2_2);
     return true;
   }
@@ -931,60 +1101,148 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     snprintf(out, out_len, "%d", c->init_path_slice_us);
     return true;
   }
+  if (icmp(key, "max_speed_3") == 0) {
+    snprintf(out, out_len, "%.3g", (double)c->max_speed_mm_s_3);
+    return true;
+  }
+  if (icmp(key, "max_accel_3") == 0) {
+    snprintf(out, out_len, "%.3g", (double)c->max_accel_mm_s2_3);
+    return true;
+  }
+  if (key_is(key, "steps_per_unit_3", "steps_per_mm_3")) {
+    snprintf(out, out_len, "%.6g", (double)c->steps_per_unit_3);
+    return true;
+  }
+  if (key_is(key, "slider_min_3", "soft_min_3")) {
+    if (isnan(c->slider_min_mm_3)) {
+      snprintf(out, out_len, "none");
+    } else {
+      snprintf(out, out_len, "%.3g", (double)c->slider_min_mm_3);
+    }
+    return true;
+  }
+  if (key_is(key, "slider_max_3", "soft_max_3")) {
+    if (isnan(c->slider_max_mm_3)) {
+      snprintf(out, out_len, "none");
+    } else {
+      snprintf(out, out_len, "%.3g", (double)c->slider_max_mm_3);
+    }
+    return true;
+  }
+  if (icmp(key, "DRV_DIR_3_active") == 0) {
+    snprintf(out, out_len, "%d", c->drv_dir_active_3);
+    return true;
+  }
+  if (icmp(key, "DRV_EN_3_active") == 0) {
+    snprintf(out, out_len, "%d", c->drv_en_active_3);
+    return true;
+  }
+  if (icmp(key, "DRV_ERROR_3_active") == 0) {
+    snprintf(out, out_len, "%d", c->drv_error_active_3);
+    return true;
+  }
+  if (icmp(key, "SW_LIMIT_L_3_active") == 0) {
+    snprintf(out, out_len, "%d", c->sw_limit_l_active_3);
+    return true;
+  }
+  if (icmp(key, "SW_LIMIT_R_3_active") == 0) {
+    snprintf(out, out_len, "%d", c->sw_limit_r_active_3);
+    return true;
+  }
+  if (icmp(key, "SW_LIMIT_L_3_use") == 0) {
+    snprintf(out, out_len, "%d", c->sw_limit_l_use_3);
+    return true;
+  }
+  if (icmp(key, "SW_LIMIT_R_3_use") == 0) {
+    snprintf(out, out_len, "%d", c->sw_limit_r_use_3);
+    return true;
+  }
+  if (icmp(key, "home_mode_3") == 0) {
+    snprintf(out, out_len, "%d", c->home_mode_3);
+    return true;
+  }
+  if (icmp(key, "home_move_out_3") == 0) {
+    snprintf(out, out_len, "%.3g", (double)c->home_move_out_mm_3);
+    return true;
+  }
+  if (icmp(key, "home_speed_3") == 0) {
+    snprintf(out, out_len, "%.3g", (double)c->home_speed_mm_s_3);
+    return true;
+  }
+  if (icmp(key, "home_accel_3") == 0) {
+    snprintf(out, out_len, "%.3g", (double)c->home_accel_mm_s2_3);
+    return true;
+  }
   return false;
 }
 
 void config_foreach(config_foreach_fn fn, void *ctx) {
   static const char *keys[] = {
-      "max_speed",
-      "max_accel",
+      "max_speed_1",
+      "max_accel_1",
       "max_speed_2",
       "max_accel_2",
       "init_speed",
       "init_accel",
-      "steps_per_unit",
+      "steps_per_unit_1",
       "unit_name",
-      "slider_min",
-      "slider_max",
+      "slider_min_1",
+      "slider_max_1",
       "init_verbose",
       "verbose_rate_hz",
       "init_terminal",
       "init_debug_level",
       "WDT_use",
-      "axis2_use",
+      "axis",
       "name",
-      "DRV_STEP_active",
-      "DRV_DIR_active",
-      "DRV_EN_active",
-      "DRV_ERROR_active",
-      "SW_LIMIT_L_active",
-      "SW_LIMIT_R_active",
-      "SW_LIMIT_L_use",
-      "SW_LIMIT_R_use",
+      "DRV_STEP_1_active",
+      "DRV_DIR_1_active",
+      "DRV_EN_1_active",
+      "DRV_ERROR_1_active",
+      "SW_LIMIT_L_1_active",
+      "SW_LIMIT_R_1_active",
+      "SW_LIMIT_L_1_use",
+      "SW_LIMIT_R_1_use",
       "BUZZER_use",
       "EXT_0_active",
       "EXT_1_active",
       "EXT_2_active",
       "EXT_3_active",
-      "home_mode",
-      "home_move_out",
-      "home_speed",
-      "home_accel",
+      "home_mode_1",
+      "home_move_out_1",
+      "home_speed_1",
+      "home_accel_1",
       "steps_per_unit_2",
       "slider_min_2",
       "slider_max_2",
-      "DRV_STEP_active_2",
-      "DRV_DIR_active_2",
-      "DRV_EN_active_2",
-      "DRV_ERROR_active_2",
-      "SW_LIMIT_L_active_2",
-      "SW_LIMIT_R_active_2",
-      "SW_LIMIT_L_use_2",
-      "SW_LIMIT_R_use_2",
+      "DRV_STEP_2_active",
+      "DRV_DIR_2_active",
+      "DRV_EN_2_active",
+      "DRV_ERROR_2_active",
+      "SW_LIMIT_L_2_active",
+      "SW_LIMIT_R_2_active",
+      "SW_LIMIT_L_2_use",
+      "SW_LIMIT_R_2_use",
       "home_mode_2",
       "home_move_out_2",
       "home_speed_2",
       "home_accel_2",
+      "max_speed_3",
+      "max_accel_3",
+      "steps_per_unit_3",
+      "slider_min_3",
+      "slider_max_3",
+      "DRV_DIR_3_active",
+      "DRV_EN_3_active",
+      "DRV_ERROR_3_active",
+      "SW_LIMIT_L_3_active",
+      "SW_LIMIT_R_3_active",
+      "SW_LIMIT_L_3_use",
+      "SW_LIMIT_R_3_use",
+      "home_mode_3",
+      "home_move_out_3",
+      "home_speed_3",
+      "home_accel_3",
       "ramp_start_hz",
       "stop_approach_hz",
       "dir_change_pause_s",

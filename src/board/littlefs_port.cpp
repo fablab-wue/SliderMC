@@ -90,7 +90,6 @@ bool board_config_load_from_fs(void) {
     apply_ini_line(line);
   }
   f.close();
-  config_migrate_legacy_home_modes();
   return true;
 }
 

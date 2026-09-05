@@ -22,7 +22,7 @@ typedef struct {
   int init_terminal; /* Terminal Mode (local echo) */
   int init_debug_level;
   int wdt_use; /* 1 = arm RP2040 WDT (2 s) from protocol heartbeat */
-  int axis2_use; /* 1 = enable 2nd STEP/DIR axis (Pico only) */
+  int axis; /* 1|2|3 live STEP/DIR axes (clamped to board support) */
   char name[CFG_NAME_MAX]; /* optional device name for welcome banner; empty = omit */
   char unit_name[CFG_UNIT_NAME_MAX]; /* UIC label for user units; default "mm" */
 
@@ -44,7 +44,7 @@ typedef struct {
   float home_speed_mm_s;
   float home_accel_mm_s2;
 
-  /* Axis 2 mirrors (used when axis2_use=1 and PIN_AXIS2_SUPPORTED) */
+  /* Axis 2 mirrors (used when axis>=2 and PIN_AXIS2_SUPPORTED) */
   float steps_per_unit_2;
   float slider_min_mm_2;
   float slider_max_mm_2;
@@ -62,6 +62,24 @@ typedef struct {
   float home_accel_mm_s2_2;
   float max_speed_mm_s_2;
   float max_accel_mm_s2_2;
+
+  /* Axis 3 mirrors (used when axis>=3). No drv_step_active_3 — follows axis 2. */
+  float steps_per_unit_3;
+  float slider_min_mm_3;
+  float slider_max_mm_3;
+  int drv_dir_active_3;
+  int drv_en_active_3;
+  int drv_error_active_3;
+  int sw_limit_l_active_3;
+  int sw_limit_r_active_3;
+  int sw_limit_l_use_3;
+  int sw_limit_r_use_3;
+  int home_mode_3;
+  float home_move_out_mm_3;
+  float home_speed_mm_s_3;
+  float home_accel_mm_s2_3;
+  float max_speed_mm_s_3;
+  float max_accel_mm_s2_3;
 
   int ramp_start_hz;
   int stop_approach_hz;
@@ -83,6 +101,8 @@ typedef struct {
   float soft_right_mm;
   float soft_left_mm_2;
   float soft_right_mm_2;
+  float soft_left_mm_3;
+  float soft_right_mm_3;
 } McSession;
 
 void config_init_defaults(void);
@@ -100,8 +120,8 @@ void session_reset_accel(void);
 void session_reset_terminal(void);
 void session_reset_verbose(void);
 void session_reset_path_slice(void);
-void session_reset_left(void);  /* both axes → slider_min / _2 */
-void session_reset_right(void); /* both axes → slider_max / _2 */
+void session_reset_left(void);  /* all axes → slider_min / _2 / _3 */
+void session_reset_right(void); /* all axes → slider_max / _2 / _3 */
 /** If CS squeezed the envelope, pull session walls inward (never past each other). */
 void session_clamp_window_to_envelope(void);
 /**
@@ -109,14 +129,13 @@ void session_clamp_window_to_envelope(void);
  * setN=true + NAN → store None (effective clip falls back to envelope).
  * false if outside envelope or effective left>right.
  */
-bool session_set_window_left(bool set0, float mm0, bool set1, float mm1);
-bool session_set_window_right(bool set0, float mm0, bool set1, float mm1);
+bool session_set_window_left(bool set0, float mm0, bool set1, float mm1, bool set2,
+                             float mm2);
+bool session_set_window_right(bool set0, float mm0, bool set1, float mm1, bool set2,
+                              float mm2);
 /** Effective working-window min/max (session, else envelope if set, else NAN). */
 float session_effective_left(int axis);
 float session_effective_right(int axis);
-
-/** After loading an old ini that still has SW_HOME_* keys: remap home_mode 3→1, 4→2. */
-void config_migrate_legacy_home_modes(void);
 
 /* Returns true on success. */
 bool config_set_key(const char *key, const char *value);
@@ -129,11 +148,14 @@ void config_foreach(config_foreach_fn fn, void *ctx);
 bool config_slider_min_enabled(void);
 bool config_slider_max_enabled(void);
 
-/**
- * True only if axis2_use && PIN_AXIS2_SUPPORTED.
- * On unsupported boards, clears a stray axis2_use=1 and returns false.
- */
+/** Live axis count 1..3 after board clamp. */
+int config_axis_count(void);
+/** True if axis >= 2 (and board supports axis 2). */
 bool config_axis2_enabled(void);
+/** True if axis >= 3 (and board supports axis 3). */
+bool config_axis3_enabled(void);
+/** Per-axis path sample cap: PATH_POOL_SAMPLES / n_axes. */
+int config_path_per_axis_max(void);
 
 /* True if gpio_level (0/1) matches the pin's active setting. */
 bool config_pin_asserted(int gpio_level, int active);

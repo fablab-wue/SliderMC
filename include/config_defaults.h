@@ -13,7 +13,7 @@
 #define CFG_DEFAULT_INIT_TERMINAL 0
 #define CFG_DEFAULT_INIT_DEBUG_LEVEL 3
 #define CFG_DEFAULT_WDT_USE 1
-#define CFG_DEFAULT_AXIS2_USE 0
+#define CFG_DEFAULT_AXIS 1 /* 1|2|3 live STEP/DIR axes */
 #define CFG_NAME_MAX 32 /* device name for welcome banner (incl. NUL) */
 #define CFG_UNIT_NAME_MAX 8 /* unit label for UIC, e.g. "mm" / "deg" (incl. NUL) */
 #define CFG_DEFAULT_UNIT_NAME "mm"
@@ -39,10 +39,11 @@
 #define CFG_DEFAULT_STOP_APPROACH_HZ 400
 #define CFG_DEFAULT_DIR_CHANGE_PAUSE_S 0.1f
 
-/* Path (PC/PD/PG/PN/PS): PATH_BUFFER_MAX is the compile-time static array size
- * per axis (32768 * 2 bytes * 2 axes ≈ 128 KB). path_buffer_size is the runtime
- * logical limit (<= PATH_BUFFER_MAX) settable via CS. */
-#define PATH_BUFFER_MAX 32768
+/* Path (PC/PD/PG/PN/PS): one int16 pool split by live axis count.
+ * 65536 samples ≈ 128 KB. 1 axis uses all; 2 axes split in half; 3 in thirds.
+ * path_buffer_size is the per-axis logical limit (<= pool / n_axes). */
+#define PATH_POOL_SAMPLES 65536
+#define PATH_BUFFER_MAX PATH_POOL_SAMPLES
 #define CFG_DEFAULT_PATH_BUFFER_SIZE 32000
 #define CFG_DEFAULT_INIT_PATH_SLICE_US 10000
 #define PATH_SLICE_US_MIN 1000

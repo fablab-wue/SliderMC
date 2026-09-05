@@ -161,18 +161,18 @@ void protocol_send_banner(void) {
   /* GRBL-style ready banner: `# ` (hash + space) — distinct from `#I …` status. */
   char banner[160];
   const McConfig *c = config_get();
-  const bool ax2 = config_axis2_enabled();
+  const int nax = config_axis_count();
   const bool named = c->name[0] != 0;
-  if (named && ax2) {
+  if (named && nax >= 2) {
     snprintf(banner, sizeof(banner),
-             "# %s - Slider Motion Controller V%s - 2 Axis ['$' for help]\n", c->name,
-             MC_VERSION_FW);
+             "# %s - Slider Motion Controller V%s - %d Axis ['$' for help]\n", c->name,
+             MC_VERSION_FW, nax);
   } else if (named) {
     snprintf(banner, sizeof(banner),
              "# %s - Slider Motion Controller V%s ['$' for help]\n", c->name, MC_VERSION_FW);
-  } else if (ax2) {
+  } else if (nax >= 2) {
     snprintf(banner, sizeof(banner),
-             "# Slider Motion Controller V%s - 2 Axis ['$' for help]\n", MC_VERSION_FW);
+             "# Slider Motion Controller V%s - %d Axis ['$' for help]\n", MC_VERSION_FW, nax);
   } else {
     snprintf(banner, sizeof(banner), "# Slider Motion Controller V%s ['$' for help]\n",
              MC_VERSION_FW);

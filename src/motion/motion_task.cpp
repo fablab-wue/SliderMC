@@ -17,21 +17,63 @@
 static TaskHandle_t g_feed_handle;
 
 static bool any_tx_full(void) {
-  if (pio_step_tx_room(0) == 0) {
-    return true;
-  }
-  if (config_axis2_enabled() && pio_step_tx_room(1) == 0) {
-    return true;
+  int n = config_axis_count();
+  for (int a = 0; a < n; ++a) {
+    if (pio_step_tx_room(a) == 0) {
+      return true;
+    }
   }
   return false;
 }
+
+static bool any_fifo_low(void) {
+  int n = config_axis_count();
+  for (int a = 0; a < n; ++a) {
+    if (planner_feed_active_axis(a) && pio_step_tx_level(a) <= 2u) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/*
+ * Fill policy. 1 = lowest TX FIFO first (trial). 0 = previous round-robin
+ * (the block in the #else below is the pre-trial source; flip this to revert).
+ */
+#ifndef PLANNER_FEED_LOWEST_FIFO
+#define PLANNER_FEED_LOWEST_FIFO 1
+#endif
+
+#if PLANNER_FEED_LOWEST_FIFO
+/* Among axes that want words and have TX room, pick the driest FIFO.
+ * Equal levels keep a rotating tie-break so axis 0 is not always first.
+ * `skip` is per-axis for this wake (time-budget / nothing to emit). */
+static int feed_pick_lowest_fifo(int n, int tie_from, const bool *skip) {
+  int best = -1;
+  unsigned best_lvl = 0xffffffffu;
+  int best_rr = 0;
+  for (int a = 0; a < n; ++a) {
+    if (skip[a] || !planner_feed_active_axis(a) || pio_step_tx_room(a) == 0) {
+      continue;
+    }
+    unsigned lvl = pio_step_tx_level(a);
+    int rr = (a - tie_from + n) % n;
+    if (best < 0 || lvl < best_lvl || (lvl == best_lvl && rr < best_rr)) {
+      best = a;
+      best_lvl = lvl;
+      best_rr = rr;
+    }
+  }
+  return best;
+}
+#endif
 
 static void task_motion_feed(void *arg) {
   (void)arg;
   for (;;) {
     if (motion_path_is_active()) {
       for (int i = 0; i < 32; ++i) {
-        if (any_tx_full() || motion_path_fill_fifo() == 0) {
+        if (motion_path_fill_fifo() == 0) {
           break;
         }
         if (!motion_path_is_active()) {
@@ -46,23 +88,45 @@ static void task_motion_feed(void *arg) {
         vTaskDelay(1);
       }
     } else if (planner_feed_active()) {
-      /* Fill each axis that has TX room independently. Do not stop the pass
-       * just because one FIFO is full — the other may still be draining. */
-      for (int i = 0; i < 32; ++i) {
-        const bool want0 =
-            planner_feed_active_axis(0) && pio_step_tx_room(0) > 0;
-        const bool want1 = config_axis2_enabled() &&
-                           planner_feed_active_axis(1) &&
-                           pio_step_tx_room(1) > 0;
-        if (!want0 && !want1) {
+      static int rr = 0;
+      int n = config_axis_count();
+#if PLANNER_FEED_LOWEST_FIFO
+      /* Re-pick the driest FIFO after every fill. 32*n matches the old
+       * 32-pass × n-axis word budget. */
+      int passes = (n > 0) ? (32 * n) : 0;
+      bool skip[3] = {false, false, false};
+      for (int i = 0; i < passes; ++i) {
+        int a = feed_pick_lowest_fifo(n, rr, skip);
+        if (a < 0) {
           break;
         }
-        int emitted = 0;
-        if (want0) {
-          emitted += planner_fill_fifo(0);
+        int emitted = planner_fill_fifo(a);
+        rr = (a + 1) % n;
+        if (emitted == 0) {
+          skip[a] = true;
+          continue;
         }
-        if (want1) {
-          emitted += planner_fill_fifo(1);
+        if (!planner_feed_active()) {
+          break;
+        }
+      }
+#else
+      /* Previous round-robin (pre lowest-FIFO trial). */
+      for (int i = 0; i < 32; ++i) {
+        bool any_want = false;
+        int emitted = 0;
+        for (int k = 0; k < n; ++k) {
+          int a = (rr + k) % n;
+          if (planner_feed_active_axis(a) && pio_step_tx_room(a) > 0) {
+            any_want = true;
+            emitted += planner_fill_fifo(a);
+          }
+        }
+        if (n > 0) {
+          rr = (rr + 1) % n;
+        }
+        if (!any_want) {
+          break;
         }
         if (emitted == 0) {
           break;
@@ -71,9 +135,13 @@ static void task_motion_feed(void *arg) {
           break;
         }
       }
+#endif
       if (any_tx_full()) {
         pio_step_arm_tx_irq();
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2));
+      } else if (any_fifo_low()) {
+        pio_step_disarm_tx_irq();
+        ulTaskNotifyTake(pdTRUE, 1);
       } else {
         pio_step_disarm_tx_irq();
         vTaskDelay(1);
@@ -146,7 +214,7 @@ static void task_protocol(void *arg) {
 }
 
 void motion_tasks_start(void) {
-  xTaskCreate(task_motion_feed, "feed", 1536, nullptr, configMAX_PRIORITIES - 1,
+  xTaskCreate(task_motion_feed, "feed", 2048, nullptr, configMAX_PRIORITIES - 1,
               &g_feed_handle);
   pio_step_set_feed_task(g_feed_handle);
   xTaskCreate(task_planner, "plan", 2048, nullptr, configMAX_PRIORITIES - 2,

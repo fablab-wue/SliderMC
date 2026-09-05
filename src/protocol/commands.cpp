@@ -9,6 +9,9 @@
 #include "pins.h"
 #include "debug_hw.h"
 #include "version.h"
+#ifndef HOST_TEST
+#include "pio_step.h"
+#endif
 
 #include <ctype.h>
 #include <math.h>
@@ -103,120 +106,128 @@ static bool is_none_token(const char *s) {
          (s[2] == 'n' || s[2] == 'N') && (s[3] == 'e' || s[3] == 'E') && s[4] == 0;
 }
 
+static bool parse_one_move_tok(const char *tok, float *out) {
+  if (is_axis_skip_token(tok)) {
+    *out = NAN;
+    return true;
+  }
+  return parse_float_arg(tok, out);
+}
+
 /**
- * Parse one or two float args for MT/M. Skip `_` → NAN (idle that axis).
- * Returns false on parse error. *have_second set if a 2nd token was present.
+ * Parse 1..3 float args for MT/M/MJ/SP. Skip `_` → NAN (idle that axis).
  */
-static bool parse_move_args(const char *s, float *a, float *b, bool *have_second) {
+static bool parse_move_args(const char *s, float *a, float *b, float *c, bool *have_second,
+                            bool *have_third) {
   *have_second = false;
+  *have_third = false;
   *b = NAN;
+  *c = NAN;
   while (*s == ' ' || *s == '\t') {
     ++s;
   }
   if (!*s) {
     return false;
   }
-  char tok1[CFG_VAL_MAX];
-  char tok2[CFG_VAL_MAX];
-  tok1[0] = tok2[0] = 0;
-  size_t i = 0;
-  while (*s && *s != ' ' && *s != '\t' && i + 1 < sizeof(tok1)) {
-    tok1[i++] = *s++;
-  }
-  tok1[i] = 0;
-  while (*s == ' ' || *s == '\t') {
-    ++s;
-  }
-  if (*s) {
-    *have_second = true;
-    i = 0;
-    while (*s && *s != ' ' && *s != '\t' && i + 1 < sizeof(tok2)) {
-      tok2[i++] = *s++;
+  char tok[3][CFG_VAL_MAX];
+  tok[0][0] = tok[1][0] = tok[2][0] = 0;
+  int nt = 0;
+  while (*s && nt < 3) {
+    size_t i = 0;
+    while (*s && *s != ' ' && *s != '\t' && i + 1 < sizeof(tok[0])) {
+      tok[nt][i++] = *s++;
     }
-    tok2[i] = 0;
+    tok[nt][i] = 0;
+    ++nt;
     while (*s == ' ' || *s == '\t') {
       ++s;
     }
-    if (*s) {
-      return false; /* trailing junk */
-    }
   }
-  if (is_axis_skip_token(tok1)) {
-    *a = NAN;
-  } else if (!parse_float_arg(tok1, a)) {
+  if (*s) {
+    return false; /* trailing junk */
+  }
+  if (nt >= 2) {
+    *have_second = true;
+  }
+  if (nt >= 3) {
+    *have_third = true;
+  }
+  if (!parse_one_move_tok(tok[0], a)) {
     return false;
   }
-  if (*have_second) {
-    if (is_axis_skip_token(tok2)) {
-      *b = NAN;
-    } else if (!parse_float_arg(tok2, b)) {
-      return false;
-    }
+  if (nt >= 2 && !parse_one_move_tok(tok[1], b)) {
+    return false;
+  }
+  if (nt >= 3 && !parse_one_move_tok(tok[2], c)) {
+    return false;
   }
   return true;
 }
 
+static bool parse_one_window_tok(const char *tok, bool *set, float *v) {
+  if (is_axis_skip_token(tok)) {
+    *set = false;
+    *v = NAN;
+    return true;
+  }
+  if (is_none_token(tok)) {
+    *set = true;
+    *v = NAN;
+    return true;
+  }
+  if (parse_float_arg(tok, v)) {
+    *set = true;
+    return true;
+  }
+  return false;
+}
+
 /**
  * Parse SL/SR args: `_` = skip, `none` = store NAN, float = set value.
- * *set0/*set1 true when that axis should be written.
  */
 static bool parse_window_args(const char *s, bool *set0, float *a, bool *set1, float *b,
-                              bool *have_second) {
-  *set0 = *set1 = false;
+                              bool *set2, float *c, bool *have_second, bool *have_third) {
+  *set0 = *set1 = *set2 = false;
   *have_second = false;
-  *a = *b = NAN;
+  *have_third = false;
+  *a = *b = *c = NAN;
   while (*s == ' ' || *s == '\t') {
     ++s;
   }
   if (!*s) {
     return false;
   }
-  char tok1[CFG_VAL_MAX];
-  char tok2[CFG_VAL_MAX];
-  tok1[0] = tok2[0] = 0;
-  size_t i = 0;
-  while (*s && *s != ' ' && *s != '\t' && i + 1 < sizeof(tok1)) {
-    tok1[i++] = *s++;
-  }
-  tok1[i] = 0;
-  while (*s == ' ' || *s == '\t') {
-    ++s;
-  }
-  if (*s) {
-    *have_second = true;
-    i = 0;
-    while (*s && *s != ' ' && *s != '\t' && i + 1 < sizeof(tok2)) {
-      tok2[i++] = *s++;
+  char tok[3][CFG_VAL_MAX];
+  tok[0][0] = tok[1][0] = tok[2][0] = 0;
+  int nt = 0;
+  while (*s && nt < 3) {
+    size_t i = 0;
+    while (*s && *s != ' ' && *s != '\t' && i + 1 < sizeof(tok[0])) {
+      tok[nt][i++] = *s++;
     }
-    tok2[i] = 0;
+    tok[nt][i] = 0;
+    ++nt;
     while (*s == ' ' || *s == '\t') {
       ++s;
     }
-    if (*s) {
-      return false;
-    }
   }
-  if (is_axis_skip_token(tok1)) {
-    *set0 = false;
-  } else if (is_none_token(tok1)) {
-    *set0 = true;
-    *a = NAN;
-  } else if (parse_float_arg(tok1, a)) {
-    *set0 = true;
-  } else {
+  if (*s) {
     return false;
   }
-  if (*have_second) {
-    if (is_axis_skip_token(tok2)) {
-      *set1 = false;
-    } else if (is_none_token(tok2)) {
-      *set1 = true;
-      *b = NAN;
-    } else if (parse_float_arg(tok2, b)) {
-      *set1 = true;
-    } else {
-      return false;
-    }
+  if (nt >= 2) {
+    *have_second = true;
+  }
+  if (nt >= 3) {
+    *have_third = true;
+  }
+  if (!parse_one_window_tok(tok[0], set0, a)) {
+    return false;
+  }
+  if (nt >= 2 && !parse_one_window_tok(tok[1], set1, b)) {
+    return false;
+  }
+  if (nt >= 3 && !parse_one_window_tok(tok[2], set2, c)) {
+    return false;
   }
   return true;
 }
@@ -280,10 +291,16 @@ static void fmt_window_field(char *out, size_t n, float v) {
   }
 }
 
-static void reply_window(const char *tag, float a, float b) {
-  char fa[16], fb[16], buf[48];
+static void reply_window(const char *tag, float a, float b, float c) {
+  char fa[16], fb[16], fc[16], buf[64];
   fmt_window_field(fa, sizeof(fa), a);
-  if (config_axis2_enabled()) {
+  int n = config_axis_count();
+  if (n >= 3) {
+    fmt_window_field(fb, sizeof(fb), b);
+    fmt_window_field(fc, sizeof(fc), c);
+    snprintf(buf, sizeof(buf), "%s:%s %s %s\n", tag, fa, fb, fc);
+    protocol_write(buf);
+  } else if (n >= 2) {
     fmt_window_field(fb, sizeof(fb), b);
     snprintf(buf, sizeof(buf), "%s:%s %s\n", tag, fa, fb);
     protocol_write(buf);
@@ -437,8 +454,8 @@ static const HelpRow k_help_rows[] = {
     {"IH", "IsHoming", "Homing? 0|1"},
     {"IL", "IsLimit", "At soft-limit position?"},
     {"IE", "IsError", "DRV_ERROR? 0|1"},
-    {"IP", "IsPosition", "Position mm (1 or 2)"},
-    {"IA", "IsAxis", "Axis count 1|2"},
+    {"IP", "IsPosition", "Position mm (1, 2 or 3)"},
+    {"IA", "IsAxis", "Axis count 1|2|3"},
     {"IT", "IsTarget", "Target mm or -"},
     {"IR", "IsReady", "Ready for motion? 0|1"},
     {"IW", "IsWaiting", "Wait active? 0|1"},
@@ -501,7 +518,7 @@ static int pin_index_cmp(const void *a, const void *b) {
 }
 
 static void cmd_pinout_index(void) {
-  PinIndexRow rows[40];
+  PinIndexRow rows[48];
   size_t n = 0;
 
 #define PIN_IX_ADD(gpio, nam, dsc)                                             \
@@ -532,6 +549,17 @@ static void cmd_pinout_index(void) {
     PIN_IX_ADD(PIN_SW_LIMIT_L2, "SW_LIMIT_L2", "Hard limit left axis2");
     PIN_IX_ADD(PIN_SW_LIMIT_R2, "SW_LIMIT_R2", "Hard limit right axis2");
   }
+  if (config_axis3_enabled()) {
+    PIN_IX_ADD(PIN_DRV_STEP3, "DRV_STEP3", "STEP axis3");
+    PIN_IX_ADD(PIN_DRV_DIR3, "DRV_DIR3", "DIR axis3");
+    PIN_IX_ADD(PIN_DRV_EN3, "DRV_EN3", "Enable axis3");
+    PIN_IX_ADD(PIN_DRV_ERROR3, "DRV_ERROR3", "Fault / E-stop axis3");
+    PIN_IX_ADD(PIN_SW_LIMIT_L3, "SW_LIMIT_L3", "Hard limit left axis3");
+    PIN_IX_ADD(PIN_SW_LIMIT_R3, "SW_LIMIT_R3", "Hard limit right axis3");
+  }
+#ifdef PIN_CAMERA_CTRL
+  PIN_IX_ADD(PIN_CAMERA_CTRL, "CAMERA_CTRL", "Camera control (reserved)");
+#endif
   PIN_IX_ADD(PIN_UART_TX, "UART_TX", "UART TX to UIC (115200 baud)");
   PIN_IX_ADD(PIN_UART_RX, "UART_RX", "UART RX from UIC (115200 baud)");
   PIN_IX_ADD(PIN_LED, "LED", "Status / heartbeat LED");
@@ -748,9 +776,9 @@ bool protocol_exec_command(const char *cmd) {
 
   /* --- M motion (longer prefixes before M) --- */
   if (match_any(cmd, &rest, "MT", "MoveTo", nullptr)) {
-    float a = 0.0f, b = NAN;
-    bool have2 = false;
-    if (!parse_move_args(rest, &a, &b, &have2)) {
+    float a = 0.0f, b = NAN, c = NAN;
+    bool have2 = false, have3 = false;
+    if (!parse_move_args(rest, &a, &b, &c, &have2, &have3)) {
       protocol_error("parse", "MT args");
       return false;
     }
@@ -759,7 +787,7 @@ bool protocol_exec_command(const char *cmd) {
       return false;
     }
     bool ok;
-    if (have2 && config_axis2_enabled()) {
+    if ((have2 || have3) && config_axis2_enabled()) {
       /* Dest == current → that axis idles (only the other moves). */
       McStatus cur;
       motion_get_status(&cur);
@@ -769,7 +797,12 @@ bool protocol_exec_command(const char *cmd) {
       if (!isnan(b) && fabsf(b - cur.pos_mm_2) < 1e-4f) {
         b = NAN;
       }
-      ok = motion_move_to2(a, b);
+      if (!config_axis3_enabled()) {
+        c = NAN;
+      } else if (!isnan(c) && fabsf(c - cur.pos_mm_3) < 1e-4f) {
+        c = NAN;
+      }
+      ok = motion_move_to_n(a, b, c);
     } else if (!isnan(a)) {
       ok = motion_move_to(a);
     } else {
@@ -797,11 +830,12 @@ bool protocol_exec_command(const char *cmd) {
     int mask = 0;
     if (*rest) {
       int v = 0;
-      if (!parse_int_arg(rest, &v) || v < 0 || v > 2) {
-        protocol_error("parse", "ML 0|1|2");
+      int vmax = config_axis_count() >= 2 ? config_axis_count() : 2;
+      if (!parse_int_arg(rest, &v) || v < 0 || v > vmax) {
+        protocol_error("parse", "ML 0|1|2|3");
         return false;
       }
-      if (config_axis2_enabled()) {
+      if (config_axis_count() >= 2) {
         mask = v;
       }
     }
@@ -820,11 +854,12 @@ bool protocol_exec_command(const char *cmd) {
     int mask = 0;
     if (*rest) {
       int v = 0;
-      if (!parse_int_arg(rest, &v) || v < 0 || v > 2) {
-        protocol_error("parse", "MR 0|1|2");
+      int vmax = config_axis_count() >= 2 ? config_axis_count() : 2;
+      if (!parse_int_arg(rest, &v) || v < 0 || v > vmax) {
+        protocol_error("parse", "MR 0|1|2|3");
         return false;
       }
-      if (config_axis2_enabled()) {
+      if (config_axis_count() >= 2) {
         mask = v;
       }
     }
@@ -836,9 +871,10 @@ bool protocol_exec_command(const char *cmd) {
   }
 
   if (match_any(cmd, &rest, "MJ", "MoveJoy", nullptr)) {
-    float a = 0.0f, b = NAN;
-    bool have2 = false;
-    if (!parse_move_args(rest, &a, &b, &have2) || isnan(a) || (have2 && isnan(b))) {
+    float a = 0.0f, b = NAN, c = NAN;
+    bool have2 = false, have3 = false;
+    if (!parse_move_args(rest, &a, &b, &c, &have2, &have3) || isnan(a) ||
+        (have2 && isnan(b)) || (have3 && isnan(c))) {
       protocol_error("parse", "MJ args");
       return false;
     }
@@ -848,10 +884,18 @@ bool protocol_exec_command(const char *cmd) {
     }
     if (!config_axis2_enabled()) {
       b = NAN;
-    } else if (!have2) {
-      b = 0.0f;
+      c = NAN;
+    } else {
+      if (!have2) {
+        b = 0.0f;
+      }
+      if (!config_axis3_enabled()) {
+        c = NAN;
+      } else if (!have3) {
+        c = 0.0f;
+      }
     }
-    if (!motion_joy(a, b)) {
+    if (!motion_joy(a, b, c)) {
       protocol_error("disabled", "enable first");
     }
     return false;
@@ -864,8 +908,9 @@ bool protocol_exec_command(const char *cmd) {
     }
     int axis = 1;
     if (*rest) {
-      if (!parse_int_arg(rest, &axis) || (axis != 1 && axis != 2)) {
-        protocol_error("parse", "MH 1|2");
+      if (!parse_int_arg(rest, &axis) || axis < 1 || axis > 3 ||
+          axis > config_axis_count()) {
+        protocol_error("parse", "MH 1|2|3");
         return false;
       }
     }
@@ -884,9 +929,9 @@ bool protocol_exec_command(const char *cmd) {
   }
 
   if (match_any(cmd, &rest, "M", "Move", "MoveBy")) {
-    float a = 0.0f, b = NAN;
-    bool have2 = false;
-    if (!parse_move_args(rest, &a, &b, &have2)) {
+    float a = 0.0f, b = NAN, c = NAN;
+    bool have2 = false, have3 = false;
+    if (!parse_move_args(rest, &a, &b, &c, &have2, &have3)) {
       protocol_error("parse", "M args");
       return false;
     }
@@ -895,15 +940,21 @@ bool protocol_exec_command(const char *cmd) {
       return false;
     }
     bool ok;
-    if (have2 && config_axis2_enabled()) {
+    if ((have2 || have3) && config_axis2_enabled()) {
       McStatus cur;
       motion_get_status(&cur);
       float t0 = isnan(a) ? NAN : (cur.pos_mm + a);
       float t1 = isnan(b) ? NAN : (cur.pos_mm_2 + b);
+      float t2 = isnan(c) ? NAN : (cur.pos_mm_3 + c);
       if (!isnan(t1) && fabsf(b) < 1e-6f) {
         t1 = NAN; /* zero delta = idle */
       }
-      ok = motion_move_to2(t0, t1);
+      if (!config_axis3_enabled()) {
+        t2 = NAN;
+      } else if (!isnan(t2) && fabsf(c) < 1e-6f) {
+        t2 = NAN;
+      }
+      ok = motion_move_to_n(t0, t1, t2);
     } else if (!isnan(a)) {
       ok = motion_move_by(a);
     } else {
@@ -932,10 +983,8 @@ bool protocol_exec_command(const char *cmd) {
   }
 
   if (match_any(cmd, &rest, "PD", "PathData", nullptr)) {
-    float a = 0.0f, b = 0.0f;
-    bool have2 = false;
-    int16_t ia = 0, ib = 0;
-    /* PD a [b]: skip → 0; single arg → (a, 0) */
+    int16_t ia = 0, ib = 0, ic = 0;
+    /* PD a [b [c]]: skip → 0; omitted extras → 0 */
     while (*rest == ' ' || *rest == '\t') {
       ++rest;
     }
@@ -943,50 +992,38 @@ bool protocol_exec_command(const char *cmd) {
       protocol_error("parse", "PD -32768..32767");
       return false;
     }
-    char tok1[CFG_VAL_MAX];
-    char tok2[CFG_VAL_MAX];
-    tok1[0] = tok2[0] = 0;
-    size_t ti = 0;
-    while (*rest && *rest != ' ' && *rest != '\t' && ti + 1 < sizeof(tok1)) {
-      tok1[ti++] = *rest++;
-    }
-    tok1[ti] = 0;
-    while (*rest == ' ' || *rest == '\t') {
-      ++rest;
+    char tok[3][CFG_VAL_MAX];
+    tok[0][0] = tok[1][0] = tok[2][0] = 0;
+    int nt = 0;
+    while (*rest && nt < 3) {
+      size_t ti = 0;
+      while (*rest && *rest != ' ' && *rest != '\t' && ti + 1 < sizeof(tok[0])) {
+        tok[nt][ti++] = *rest++;
+      }
+      tok[nt][ti] = 0;
+      ++nt;
+      while (*rest == ' ' || *rest == '\t') {
+        ++rest;
+      }
     }
     if (*rest) {
-      have2 = true;
-      ti = 0;
-      while (*rest && *rest != ' ' && *rest != '\t' && ti + 1 < sizeof(tok2)) {
-        tok2[ti++] = *rest++;
-      }
-      tok2[ti] = 0;
+      protocol_error("parse", "PD -32768..32767");
+      return false;
     }
-    if (is_axis_skip_token(tok1)) {
-      ia = 0;
-    } else {
+    int16_t *outs[3] = {&ia, &ib, &ic};
+    for (int i = 0; i < nt; ++i) {
+      if (is_axis_skip_token(tok[i])) {
+        *outs[i] = 0;
+        continue;
+      }
       int v;
-      if (!parse_int_arg(tok1, &v) || v < -32768 || v > 32767) {
+      if (!parse_int_arg(tok[i], &v) || v < -32768 || v > 32767) {
         protocol_error("parse", "PD -32768..32767");
         return false;
       }
-      ia = (int16_t)v;
+      *outs[i] = (int16_t)v;
     }
-    if (have2) {
-      if (is_axis_skip_token(tok2)) {
-        ib = 0;
-      } else {
-        int v;
-        if (!parse_int_arg(tok2, &v) || v < -32768 || v > 32767) {
-          protocol_error("parse", "PD -32768..32767");
-          return false;
-        }
-        ib = (int16_t)v;
-      }
-    }
-    (void)a;
-    (void)b;
-    if (!motion_path_add2(ia, ib)) {
+    if (!motion_path_add3(ia, ib, ic)) {
       protocol_error("full", "path buffer full");
     }
     return false;
@@ -1117,17 +1154,21 @@ bool protocol_exec_command(const char *cmd) {
       motion_reset_window_left();
       return false;
     }
-    float a = NAN, b = NAN;
-    bool set0 = false, set1 = false, have2 = false;
-    if (!parse_window_args(rest, &set0, &a, &set1, &b, &have2)) {
+    float a = NAN, b = NAN, c = NAN;
+    bool set0 = false, set1 = false, set2 = false, have2 = false, have3 = false;
+    if (!parse_window_args(rest, &set0, &a, &set1, &b, &set2, &c, &have2, &have3)) {
       protocol_error("parse", "SL args");
       return false;
     }
     (void)have2;
+    (void)have3;
     if (!config_axis2_enabled()) {
       set1 = false;
     }
-    if (!motion_set_window_left(set0, a, set1, b)) {
+    if (!config_axis3_enabled()) {
+      set2 = false;
+    }
+    if (!motion_set_window_left(set0, a, set1, b, set2, c)) {
       protocol_error("limit", "SL");
     }
     return false;
@@ -1138,17 +1179,21 @@ bool protocol_exec_command(const char *cmd) {
       motion_reset_window_right();
       return false;
     }
-    float a = NAN, b = NAN;
-    bool set0 = false, set1 = false, have2 = false;
-    if (!parse_window_args(rest, &set0, &a, &set1, &b, &have2)) {
+    float a = NAN, b = NAN, c = NAN;
+    bool set0 = false, set1 = false, set2 = false, have2 = false, have3 = false;
+    if (!parse_window_args(rest, &set0, &a, &set1, &b, &set2, &c, &have2, &have3)) {
       protocol_error("parse", "SR args");
       return false;
     }
     (void)have2;
+    (void)have3;
     if (!config_axis2_enabled()) {
       set1 = false;
     }
-    if (!motion_set_window_right(set0, a, set1, b)) {
+    if (!config_axis3_enabled()) {
+      set2 = false;
+    }
+    if (!motion_set_window_right(set0, a, set1, b, set2, c)) {
       protocol_error("limit", "SR");
     }
     return false;
@@ -1159,24 +1204,31 @@ bool protocol_exec_command(const char *cmd) {
       protocol_error("busy", "SP");
       return false;
     }
-    float a = 0.0f, b = NAN;
+    float a = 0.0f, b = NAN, c = NAN;
     if (!*rest) {
       a = 0.0f;
       b = config_axis2_enabled() ? 0.0f : NAN;
+      c = config_axis3_enabled() ? 0.0f : NAN;
     } else {
-      bool have2 = false;
-      if (!parse_move_args(rest, &a, &b, &have2)) {
+      bool have2 = false, have3 = false;
+      if (!parse_move_args(rest, &a, &b, &c, &have2, &have3)) {
         protocol_error("parse", "SP args");
         return false;
       }
       if (!have2) {
         b = NAN;
       }
+      if (!have3) {
+        c = NAN;
+      }
       if (!config_axis2_enabled()) {
         b = NAN;
       }
+      if (!config_axis3_enabled()) {
+        c = NAN;
+      }
     }
-    if (!motion_set_position(a, b)) {
+    if (!motion_set_position(a, b, c)) {
       protocol_error("busy", "SP");
     }
     return false;
@@ -1209,11 +1261,13 @@ bool protocol_exec_command(const char *cmd) {
     return false;
   }
   if (match_any(cmd, &rest, "GL", "GetLeft", nullptr)) {
-    reply_window("GL", session_effective_left(0), session_effective_left(1));
+    reply_window("GL", session_effective_left(0), session_effective_left(1),
+                 session_effective_left(2));
     return false;
   }
   if (match_any(cmd, &rest, "GR", "GetRight", nullptr)) {
-    reply_window("GR", session_effective_right(0), session_effective_right(1));
+    reply_window("GR", session_effective_right(0), session_effective_right(1),
+                 session_effective_right(2));
     return false;
   }
 
@@ -1240,7 +1294,13 @@ bool protocol_exec_command(const char *cmd) {
   }
   if (match_any(cmd, &rest, "IP", "IsPosition", nullptr)) {
     motion_get_status(&st);
-    if (config_axis2_enabled()) {
+    int n = config_axis_count();
+    if (n >= 3) {
+      char buf[64];
+      snprintf(buf, sizeof(buf), "IP:%.2f %.2f %.2f\n", (double)st.pos_mm,
+               (double)st.pos_mm_2, (double)st.pos_mm_3);
+      protocol_write(buf);
+    } else if (n >= 2) {
       char buf[48];
       snprintf(buf, sizeof(buf), "IP:%.2f %.2f\n", (double)st.pos_mm, (double)st.pos_mm_2);
       protocol_write(buf);
@@ -1250,7 +1310,7 @@ bool protocol_exec_command(const char *cmd) {
     return false;
   }
   if (match_any(cmd, &rest, "IA", "Axis", "IsAxis")) {
-    reply_query_int("IA", config_axis2_enabled() ? 2 : 1);
+    reply_query_int("IA", config_axis_count());
     return false;
   }
   if (match_any(cmd, &rest, "IT", "IsTarget", nullptr)) {
@@ -1275,14 +1335,24 @@ bool protocol_exec_command(const char *cmd) {
   if (match_any(cmd, &rest, "ID", "IsDiag", nullptr)) {
     MotionDiag d;
     motion_diag_get(&d);
-    char buf[96];
-    unsigned fifo_min = d.fifo_min_level;
-    if (fifo_min == 0xFFFFFFFFu) {
-      fifo_min = 0;
+    char buf[128];
+    unsigned f0 = d.fifo_min_axis[0];
+    unsigned f1 = d.fifo_min_axis[1];
+    unsigned f2 = d.fifo_min_axis[2];
+    if (f0 == 0xFFFFFFFFu) {
+      f0 = 0;
     }
-    snprintf(buf, sizeof(buf), "underrun=%lu peak_hz=%.0f overshoot=%ld fifo_min=%u",
-             (unsigned long)d.underrun_count, (double)d.peak_step_hz,
-             (long)d.overshoot_steps, fifo_min);
+    if (f1 == 0xFFFFFFFFu) {
+      f1 = 0;
+    }
+    if (f2 == 0xFFFFFFFFu) {
+      f2 = 0;
+    }
+    snprintf(buf, sizeof(buf),
+             "underrun=%lu,%lu,%lu peak_hz=%.0f overshoot=%ld fifo_min=%u,%u,%u",
+             (unsigned long)d.underrun_axis[0], (unsigned long)d.underrun_axis[1],
+             (unsigned long)d.underrun_axis[2], (double)d.peak_step_hz,
+             (long)d.overshoot_steps, f0, f1, f2);
     reply_query("ID", buf);
     return false;
   }
@@ -1389,6 +1459,24 @@ bool protocol_exec_command(const char *cmd) {
       snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_R2=%d", PIN_SW_LIMIT_R2);
       protocol_writeln(line);
     }
+    if (config_axis3_enabled()) {
+      snprintf(line, sizeof(line), "VG:PIN_DRV_STEP3=%d", PIN_DRV_STEP3);
+      protocol_writeln(line);
+      snprintf(line, sizeof(line), "VG:PIN_DRV_DIR3=%d", PIN_DRV_DIR3);
+      protocol_writeln(line);
+      snprintf(line, sizeof(line), "VG:PIN_DRV_EN3=%d", PIN_DRV_EN3);
+      protocol_writeln(line);
+      snprintf(line, sizeof(line), "VG:PIN_DRV_ERROR3=%d", PIN_DRV_ERROR3);
+      protocol_writeln(line);
+      snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_L3=%d", PIN_SW_LIMIT_L3);
+      protocol_writeln(line);
+      snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_R3=%d", PIN_SW_LIMIT_R3);
+      protocol_writeln(line);
+    }
+#ifdef PIN_CAMERA_CTRL
+    snprintf(line, sizeof(line), "VG:PIN_CAMERA_CTRL=%d", PIN_CAMERA_CTRL);
+    protocol_writeln(line);
+#endif
     snprintf(line, sizeof(line), "VG:PIN_EXT_0=%d", PIN_EXT_0);
     protocol_writeln(line);
     snprintf(line, sizeof(line), "VG:PIN_EXT_1=%d", PIN_EXT_1);
@@ -1443,6 +1531,15 @@ bool protocol_exec_command(const char *cmd) {
       const char *krest = key;
       if (starts_cmd(key, "BUZZER_use", &krest)) {
         board_buzzer_reconfigure();
+      }
+      if (starts_cmd(key, "axis", &krest)) {
+        board_gpio_init();
+#ifndef HOST_TEST
+        if (!pio_step_reconfigure()) {
+          protocol_error("cfg", "pio");
+          return false;
+        }
+#endif
       }
     }
     /* CS updates session for init_speed/init_accel/init_terminal/init_verbose; refresh motion. */

@@ -19,9 +19,10 @@
  * 2-axis:  #I pos1 | pos2
  *          #H pos1 speed1 accel1 | pos2 speed2 accel2
  *          #M pos1 speed1 accel1 target1 | pos2 speed2 accel2 target2
+ * 3-axis:  same groups joined by a third " | pos3 …"
  */
 
-static char g_last_verbose[192];
+static char g_last_verbose[256];
 
 void protocol_verbose_reset_dedupe(void) { g_last_verbose[0] = 0; }
 
@@ -118,13 +119,13 @@ static void build_status_line(char *buf, size_t buflen) {
   char letter = protocol_state_letter();
   snprintf(buf, buflen, "#%c", letter);
 
-  const bool ax2 = config_axis2_enabled();
+  const int nax = config_axis_count();
   const bool emit_dest1 = st.has_target;
-  const bool emit_dest2 = st.moving && !st.homing;
+  const bool emit_dest_n = st.moving && !st.homing;
 
   append_axis_group(buf, buflen, st.pos_mm, st.vel_mm_s, st.acc_mm_s2, st.target_mm,
-                    st.moving, st.homing, ax2 ? emit_dest2 : emit_dest1);
-  if (ax2) {
+                    st.moving, st.homing, nax >= 2 ? emit_dest_n : emit_dest1);
+  if (nax >= 2) {
     size_t used = strlen(buf);
     if (used + 3 < buflen) {
       buf[used++] = ' ';
@@ -132,7 +133,17 @@ static void build_status_line(char *buf, size_t buflen) {
       buf[used] = 0;
     }
     append_axis_group(buf, buflen, st.pos_mm_2, st.vel_mm_s_2, st.acc_mm_s2_2,
-                      st.target_mm_2, st.moving, st.homing, emit_dest2);
+                      st.target_mm_2, st.moving, st.homing, emit_dest_n);
+  }
+  if (nax >= 3) {
+    size_t used = strlen(buf);
+    if (used + 3 < buflen) {
+      buf[used++] = ' ';
+      buf[used++] = '|';
+      buf[used] = 0;
+    }
+    append_axis_group(buf, buflen, st.pos_mm_3, st.vel_mm_s_3, st.acc_mm_s2_3,
+                      st.target_mm_3, st.moving, st.homing, emit_dest_n);
   }
   size_t used = strlen(buf);
   if (used + 1 < buflen) {
@@ -142,7 +153,7 @@ static void build_status_line(char *buf, size_t buflen) {
 }
 
 void protocol_send_verbose(void) {
-  char buf[192];
+  char buf[256];
   build_status_line(buf, sizeof(buf));
 
   if (session_get()->terminal) {
@@ -157,7 +168,7 @@ void protocol_send_verbose(void) {
 }
 
 void protocol_send_status(void) {
-  char buf[192];
+  char buf[256];
   build_status_line(buf, sizeof(buf));
   protocol_write(buf);
 }

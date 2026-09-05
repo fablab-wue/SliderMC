@@ -18,6 +18,8 @@ extern "C" {
  * budget: 8 / 2500 Hz = 3.2 ms. Raising it starves the FIFO at the crossover.
  */
 #define PLANNER_PACK_MIN_HZ 2500
+/* 3-axis n=1 at 2500 Hz is ~7500 word/s of soft-float; pack earlier. */
+#define PLANNER_PACK_MIN_HZ_3AXIS 1000
 #define PLANNER_FIFO_TIME_BUDGET_MS 3.0f
 
 /** Max |v| (mm/s) that can stop within dist_mm: d = π v² / (4 a). */
@@ -28,12 +30,21 @@ float planner_vmax_for_distance(float dist_mm, float accel_mm_s2);
  * pending_steps = steps already in TX shadow for budget accounting.
  */
 int planner_pack_n(float step_hz, int remaining_steps, int pending_steps);
+int planner_pack_n_min(float step_hz, int remaining_steps, int pending_steps,
+                       int pack_min_hz);
 
 /** Delay cycles so period ≈ fixed_overhead + delay. Pass PIO_STEP_PERIOD_FIXED. */
 uint32_t planner_hz_to_delay(float step_hz, uint32_t sysclk_hz, uint32_t fixed_cycles);
 
 /** Max achievable step rate for fixed_cycles + min delay 1. */
 float planner_max_step_hz(uint32_t sysclk_hz, uint32_t fixed_cycles);
+
+/**
+ * Quarter-wave LUT + linear interpolate. Same law as libm sinf/cosf on the
+ * planner's [0, π] arguments; ~5× cheaper on Cortex-M0+ soft-float.
+ */
+float planner_sinf(float x);
+float planner_cosf(float x);
 
 /** Raised-cosine blend of velocity from v0 toward v1 over phase phi in [0,1]. */
 float planner_sine_vel(float v0, float v1, float phi);

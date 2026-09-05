@@ -7,6 +7,8 @@
 #ifndef HOST_TEST
 
 #include <Arduino.h>
+#include "hardware/clocks.h"
+#include "pio_step.h"
 
 /*
  * SliderMC firmware entry.
@@ -15,6 +17,7 @@
  */
 
 void setup() {
+  set_sys_clock_khz(PIO_STEP_SYSCLK_KHZ, true);
   Serial.begin(115200);
   delay(200);
 

@@ -174,11 +174,44 @@ int main(void) {
   expect_empty("ConfigReset alias silent");
 
   reset_out();
-  feed("CS max_accel 300\n");
-  expect_empty("CS max_accel silent");
+  feed("CS max_accel_1 300\n");
+  expect_empty("CS max_accel_1 silent");
   reset_out();
-  feed("CG max_accel\n");
-  expect_contains("CG max_accel", "CG:max_accel=300");
+  feed("CG max_accel_1\n");
+  expect_contains("CG max_accel_1", "CG:max_accel_1=300");
+
+  reset_out();
+  feed("CS DRV_STEP_1_active 0\n");
+  expect_empty("CS DRV_STEP_1_active 0");
+  reset_out();
+  feed("CG DRV_STEP_1_active\n");
+  expect_contains("CG DRV_STEP_1_active", "CG:DRV_STEP_1_active=0");
+  reset_out();
+  feed("CS DRV_STEP_1_active 1\n");
+  expect_empty("CS DRV_STEP_1_active restore");
+
+  reset_out();
+  feed("CS SW_LIMIT_R_3_use 1\n");
+  expect_empty("CS SW_LIMIT_R_3_use 1");
+  reset_out();
+  feed("CG SW_LIMIT_R_3_use\n");
+  expect_contains("CG SW_LIMIT_R_3_use", "CG:SW_LIMIT_R_3_use=1");
+  reset_out();
+  feed("CS SW_LIMIT_R_3_use 0\n");
+  expect_empty("CS SW_LIMIT_R_3_use restore");
+
+  reset_out();
+  feed("CS DRV_STEP_active 0\n");
+  expect_contains("old DRV_STEP_active rejected", "!E:cfg bad key/value");
+  reset_out();
+  feed("CS SW_LIMIT_R_use_3 1\n");
+  expect_contains("old SW_LIMIT_R_use_3 rejected", "!E:cfg bad key/value");
+  reset_out();
+  feed("CS home_mode 1\n");
+  expect_contains("old home_mode rejected", "!E:cfg bad key/value");
+  reset_out();
+  feed("CS axis2_use 1\n");
+  expect_contains("old axis2_use rejected", "!E:cfg bad key/value");
 
   reset_out();
   feed("SS 50\n");
@@ -393,6 +426,9 @@ int main(void) {
   }
 
   reset_out();
+  feed("MS\n");
+  expect_empty("MS idle before WnC");
+  reset_out();
   feed("WnC; SS 44\n");
   expect_empty("idle WnC silent");
   reset_out();
@@ -424,7 +460,10 @@ int main(void) {
   }
 
   reset_out();
-  feed("SS 50\nMT 100; WP 40; SS 11\n");
+  feed("SS 50\nSA 200\nMS\nSP 0\n");
+  expect_empty("park origin before HT WP");
+  reset_out();
+  feed("MT 100; WP 40; SS 11\n");
   protocol_poll(5);
   reset_out();
   feed("HT\n");
@@ -729,7 +768,7 @@ int main(void) {
     McStatus st;
     motion_get_status(&st);
     char cmd[64];
-    std::snprintf(cmd, sizeof(cmd), "CS slider_max %.3f\n", (double)st.pos_mm);
+    std::snprintf(cmd, sizeof(cmd), "CS slider_max_1 %.3f\n", (double)st.pos_mm);
     reset_out();
     feed(cmd);
     expect_empty("CS slider_max to current pos");
@@ -738,8 +777,8 @@ int main(void) {
   feed("MJ 50\n");
   expect_empty("MJ into soft rail silent");
   reset_out();
-  feed("CS slider_max 600\n");
-  expect_empty("CS slider_max restore");
+  feed("CS slider_max_1 600\n");
+  expect_empty("CS slider_max_1 restore");
   reset_out();
   feed("SR\n");
   expect_empty("SR bare restores session right after CS squeeze");
@@ -768,8 +807,8 @@ int main(void) {
   feed("GL\n");
   expect_contains("GL after SL", "GL:120.00");
   reset_out();
-  feed("CG slider_min\n");
-  expect_contains("envelope unchanged by SL", "CG:slider_min=0");
+  feed("CG slider_min_1\n");
+  expect_contains("envelope unchanged by SL", "CG:slider_min_1=0");
   reset_out();
   feed("SL\n");
   expect_empty("SL bare reset");
@@ -792,14 +831,14 @@ int main(void) {
   feed("SL 80\n");
   expect_empty("SL 80 before CS clamp");
   reset_out();
-  feed("CS slider_min 150\n");
-  expect_empty("CS slider_min 150");
+  feed("CS slider_min_1 150\n");
+  expect_empty("CS slider_min_1 150");
   reset_out();
   feed("GL\n");
   expect_contains("CS clamps session left", "GL:150.00");
   reset_out();
-  feed("CS slider_min 0\n");
-  expect_empty("CS slider_min restore 0");
+  feed("CS slider_min_1 0\n");
+  expect_empty("CS slider_min_1 restore 0");
   reset_out();
   feed("GL\n");
   expect_contains("CS widen envelope keeps window", "GL:150.00");
@@ -821,8 +860,8 @@ int main(void) {
   feed("GL\n");
   expect_contains("GL after SL none uses envelope", "GL:0.00");
   reset_out();
-  feed("CS slider_min none\n");
-  expect_empty("CS slider_min none");
+  feed("CS slider_min_1 none\n");
+  expect_empty("CS slider_min_1 none");
   reset_out();
   feed("SL none\n");
   expect_empty("SL none with open envelope");
@@ -830,9 +869,9 @@ int main(void) {
   feed("GL\n");
   expect_contains("GL open after none+none envelope", "GL:-");
   reset_out();
-  feed("CS slider_min 0\n");
+  feed("CS slider_min_1 0\n");
   feed("SL\n");
-  expect_empty("restore slider_min and bare SL");
+  expect_empty("restore slider_min_1 and bare SL");
   reset_out();
   feed("MT none\n");
   expect_contains("MT none not a skip", "!E:parse");
@@ -865,11 +904,11 @@ int main(void) {
   expect_contains("IA before axis2", "IA:1");
 
   reset_out();
-  feed("CS axis2_use 1\n");
-  expect_empty("CS axis2_use 1");
+  feed("CS axis 2\n");
+  expect_empty("CS axis 2");
   reset_out();
-  feed("CG axis2_use\n");
-  expect_contains("CG axis2_use", "CG:axis2_use=1");
+  feed("CG axis\n");
+  expect_contains("CG axis 2", "CG:axis=2");
 
   reset_out();
   feed("IA\n");
@@ -899,17 +938,17 @@ int main(void) {
   feed("CG unit_name\n");
   expect_contains("CG unit_name deg", "CG:unit_name=deg");
   reset_out();
-  feed("CS steps_per_unit 200\n");
-  expect_empty("CS steps_per_unit");
+  feed("CS steps_per_unit_1 200\n");
+  expect_empty("CS steps_per_unit_1");
   reset_out();
-  feed("CG steps_per_unit\n");
-  expect_contains("CG steps_per_unit", "CG:steps_per_unit=200");
+  feed("CG steps_per_unit_1\n");
+  expect_contains("CG steps_per_unit_1", "CG:steps_per_unit_1=200");
   reset_out();
-  feed("CS steps_per_mm 320\n");
-  expect_empty("CS steps_per_mm alias");
+  feed("CS steps_per_mm_1 320\n");
+  expect_empty("CS steps_per_mm_1 alias");
   reset_out();
-  feed("CG steps_per_mm\n");
-  expect_contains("CG steps_per_mm alias", "CG:steps_per_mm=320");
+  feed("CG steps_per_mm_1\n");
+  expect_contains("CG steps_per_mm_1 alias", "CG:steps_per_mm_1=320");
   reset_out();
   protocol_send_banner();
   expect_contains("named 2-axis banner", "# Foo - Slider Motion Controller V");
@@ -980,6 +1019,8 @@ int main(void) {
     }
     expect_true("2-axis WP keys off axis1", ran);
   }
+  reset_out();
+  feed("IP\n");
   {
     size_t ip = g_out.find("IP:");
     if (ip == std::string::npos) {
@@ -1164,8 +1205,8 @@ int main(void) {
   }
 
   reset_out();
-  feed("CS axis2_use 0\n");
-  expect_empty("CS axis2_use 0 restore 1-axis");
+  feed("CS axis 1\n");
+  expect_empty("CS axis 1 restore 1-axis");
   reset_out();
   feed("IA\n");
   expect_contains("IA restored 1-axis", "IA:1");
@@ -1233,30 +1274,16 @@ int main(void) {
   feed("IP\n");
   expect_contains("SP 0 pose", "IP:0.00");
   reset_out();
-  feed("CS home_mode 3\n");
-  expect_empty("CS home_mode 3 stall");
+  feed("CS home_mode_1 3\n");
+  expect_empty("CS home_mode_1 3 stall");
   reset_out();
-  feed("CG home_mode\n");
-  expect_contains("CS home_mode 3 persists", "CG:home_mode=3");
+  feed("CG home_mode_1\n");
+  expect_contains("CS home_mode_1 3 persists", "CG:home_mode_1=3");
   reset_out();
-  feed("CS SW_HOME_use 1\n");
-  expect_empty("legacy SW_HOME_use ignored");
-  config_migrate_legacy_home_modes();
+  feed("CS home_mode_1 0\n");
+  expect_empty("CS home_mode_1 0 restore");
   reset_out();
-  feed("CG home_mode\n");
-  expect_contains("legacy migrate 3 to 1", "CG:home_mode=1");
-  reset_out();
-  feed("CS home_mode 4\n");
-  feed("CS SW_HOME_use_2 0\n");
-  config_migrate_legacy_home_modes();
-  reset_out();
-  feed("CG home_mode\n");
-  expect_contains("legacy migrate 4 to 2", "CG:home_mode=2");
-  reset_out();
-  feed("CS home_mode 0\n");
-  expect_empty("CS home_mode 0 restore");
-  reset_out();
-  feed("CS axis2_use 1\n");
+  feed("CS axis 2\n");
   feed("SP 10 20\n");
   expect_empty("SP dual silent");
   reset_out();
@@ -1275,8 +1302,159 @@ int main(void) {
   expect_contains("SP rejected while moving", "!E:busy");
   reset_out();
   feed("MS\n");
-  feed("CS axis2_use 0\n");
+  feed("CS axis 1\n");
   expect_empty("restore 1-axis after SP tests");
+
+  /* --- axis3 protocol --- */
+  reset_out();
+  feed("CS axis 3\n");
+  expect_empty("CS axis 3");
+  reset_out();
+  feed("CG axis\n");
+  expect_contains("CG axis 3", "CG:axis=3");
+  reset_out();
+  feed("IA\n");
+  expect_contains("IA after axis 3", "IA:3");
+  reset_out();
+  protocol_send_banner();
+  expect_contains("banner 3 Axis", "- 3 Axis");
+
+  reset_out();
+  feed("CS axis 2\n");
+  expect_empty("CS axis 2 from 3");
+  reset_out();
+  feed("IA\n");
+  expect_contains("CS axis 2 sets IA:2", "IA:2");
+  reset_out();
+  feed("CS axis 3\n");
+  expect_empty("CS axis 3 again");
+
+  reset_out();
+  feed("MS\n");
+  feed("SP 0 0 0\n");
+  expect_empty("SP triple origin");
+  reset_out();
+  feed("IP\n");
+  expect_contains("IP triple origin", "IP:0.00 0.00 0.00");
+
+  reset_out();
+  feed("MT 100 50 25\n");
+  expect_empty("MT triple absolute");
+  {
+    float v0 = motion_host_axis_cruise(0);
+    float v1 = motion_host_axis_cruise(1);
+    float v2 = motion_host_axis_cruise(2);
+    float a0 = motion_host_axis_accel(0);
+    float a1 = motion_host_axis_accel(1);
+    float a2 = motion_host_axis_accel(2);
+    expect_true("triple MT cruise ratio 0.5", std::fabs(v1 - v0 * 0.5f) < 0.01f);
+    expect_true("triple MT cruise ratio 0.25", std::fabs(v2 - v0 * 0.25f) < 0.01f);
+    expect_true("triple MT accel ratio 0.5", std::fabs(a1 - a0 * 0.5f) < 0.01f);
+    expect_true("triple MT accel ratio 0.25", std::fabs(a2 - a0 * 0.25f) < 0.01f);
+  }
+  reset_out();
+  feed("MS\n");
+  feed("SP 0 0 0\n");
+  feed("SP _ _ 40\n");
+  expect_empty("SP skip first two");
+  reset_out();
+  feed("IP\n");
+  expect_contains("SP skip keeps 1+2 zeros axis3", "IP:0.00 0.00 40.00");
+
+  reset_out();
+  feed("PC\n");
+  feed("PD 10 20 30\n");
+  expect_empty("PD triple sample");
+  reset_out();
+  feed("PD _ _ 5\n");
+  expect_empty("PD skip become 0");
+  reset_out();
+  feed("PN\n");
+  expect_contains("PN after two triple samples", "PN:2");
+
+  reset_out();
+  feed("MH 3\n");
+  expect_empty("MH axis 3");
+  reset_out();
+  feed("ML 3\n");
+  expect_empty("ML mask 3");
+  reset_out();
+  feed("MS\n");
+  expect_empty("MS after axis3 jog");
+
+  reset_out();
+  feed("CS axis 4\n");
+  expect_contains("CS axis 4 rejected", "!E:cfg bad key/value");
+  reset_out();
+  feed("IA\n");
+  expect_contains("IA still 3 after axis 4 reject", "IA:3");
+
+  reset_out();
+  feed("SP 0 0 0\n");
+  protocol_feed_byte('?');
+  {
+    size_t hash = g_out.find("#I ");
+    if (hash == std::string::npos) {
+      std::fprintf(stderr, "FAIL idle ? 3-axis: no #I in:\n%s\n", g_out.c_str());
+      ++g_fail;
+    } else {
+      std::string line = g_out.substr(hash);
+      size_t nl = line.find('\n');
+      if (nl != std::string::npos) {
+        line = line.substr(0, nl);
+      }
+      int seps = 0;
+      for (size_t i = 0; i + 2 < line.size(); ++i) {
+        if (line[i] == ' ' && line[i + 1] == '|' && line[i + 2] == ' ') {
+          ++seps;
+        }
+      }
+      if (seps != 2) {
+        std::fprintf(stderr, "FAIL idle ? needs pos1 | pos2 | pos3, got:\n%s\n",
+                     line.c_str());
+        ++g_fail;
+      } else {
+        std::printf("OK   idle ? triple positions\n");
+      }
+    }
+  }
+
+  reset_out();
+  feed("SS 80\n");
+  expect_empty("SS 80 for triple MJ");
+  reset_out();
+  feed("MJ 100 50 25\n");
+  expect_empty("MJ triple silent");
+  expect_true("MJ triple cruise 80", std::fabs(motion_host_axis_cruise(0) - 80.0f) < 0.01f);
+  expect_true("MJ triple cruise 40", std::fabs(motion_host_axis_cruise(1) - 40.0f) < 0.01f);
+  expect_true("MJ triple cruise 20", std::fabs(motion_host_axis_cruise(2) - 20.0f) < 0.01f);
+  {
+    McStatus st;
+    motion_get_status(&st);
+    expect_true("MJ triple vel+", st.vel_mm_s > 0.0f);
+    expect_true("MJ triple vel2+", st.vel_mm_s_2 > 0.0f);
+    expect_true("MJ triple vel3+", st.vel_mm_s_3 > 0.0f);
+  }
+  reset_out();
+  feed("MS\n");
+  expect_empty("MS after triple MJ");
+
+  reset_out();
+  feed("SL 10 20 30\n");
+  expect_empty("SL triple");
+  reset_out();
+  feed("GL\n");
+  expect_contains("GL triple", "GL:10.00 20.00 30.00");
+  reset_out();
+  feed("SL\n");
+  expect_empty("SL bare after triple");
+
+  reset_out();
+  feed("CS axis 1\n");
+  expect_empty("restore 1-axis after axis3 tests");
+  reset_out();
+  feed("IA\n");
+  expect_contains("IA restored after axis3", "IA:1");
 
   if (g_fail) {
     std::fprintf(stderr, "\n%d test(s) failed\n", g_fail);

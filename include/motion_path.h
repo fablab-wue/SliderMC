@@ -19,8 +19,8 @@ extern "C" {
  * never biases total distance or total time. A 0 sample means "stand still"
  * for that slice (no STEP word is issued; the PIO naturally holds output).
  *
- * Two buffers (axis0/axis1) always share the same sample count. When axis2 is
- * disabled, axis1 samples are ignored at play time (still stored as 0).
+ * One sample pool split by live axis count (all / half / third). Columns share
+ * the same sample count. Disabled axes are stored as 0.
  *
  * On MS/H, or when the buffer is exhausted, path-mode hands its last
  * position/velocity to the main planner (planner_takeover_from_path) and
@@ -32,8 +32,10 @@ void motion_path_init(void);
 bool motion_path_clear(void); /* PC; false if active */
 /** Append one sample to both buffers (axis1 = 0). Compat wrapper. */
 bool motion_path_add(int16_t distance_um);
-/** Append a sample pair (always both buffers). */
+/** Append a sample pair (third column 0). */
 bool motion_path_add2(int16_t a_um, int16_t b_um);
+/** Append a sample triple. */
+bool motion_path_add3(int16_t a_um, int16_t b_um, int16_t c_um);
 uint32_t motion_path_count(void); /* PN */
 
 bool motion_path_set_slice_us(uint32_t us); /* PS <value>; false if active or < min */

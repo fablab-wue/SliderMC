@@ -25,7 +25,7 @@
 #define HOME_EN_PULSE_S 0.20f
 #define HOME_STALL_CLEAR_S 2.0f
 #define HOME_STALL_IGNORE_S 0.05f
-#define AXIS_MAX 2
+#define AXIS_MAX 3
 
 typedef enum {
   HOME_IDLE = 0,
@@ -89,9 +89,10 @@ typedef struct {
 static PlannerAxis g_ax[AXIS_MAX];
 static bool g_enabled;
 static bool g_drv_error;
-/* Dual-MT time sync: |d2|/|d1| kept for mid-move SS/SA while coordinated. */
+/* Coordinated MT: follower ratios vs the time master, for mid-move SS/SA. */
 static bool g_coord_active;
-static float g_coord_ratio;
+static int g_coord_master;
+static float g_coord_ratio[AXIS_MAX];
 static bool g_joy_active;
 static float g_joy_pct[AXIS_MAX];
 
@@ -124,17 +125,21 @@ static float cruise_cap(int axis);
 static void apply_joy_cruise_accel(void);
 static void planner_request_stop_axis(int axis);
 static void planner_request_joy(int axis, float signed_v);
-static int axis_count(void) { return config_axis2_enabled() ? 2 : 1; }
+static int axis_count(void) { return config_axis_count(); }
 
 static void coord_clear(void) {
   g_coord_active = false;
-  g_coord_ratio = 1.0f;
+  g_coord_master = 0;
+  for (int i = 0; i < AXIS_MAX; ++i) {
+    g_coord_ratio[i] = 1.0f;
+  }
 }
 
 static void joy_clear(void) {
   g_joy_active = false;
-  g_joy_pct[0] = 0.0f;
-  g_joy_pct[1] = 0.0f;
+  for (int i = 0; i < AXIS_MAX; ++i) {
+    g_joy_pct[i] = 0.0f;
+  }
 }
 
 static void coord_clear_if_idle(void) {
@@ -149,11 +154,12 @@ static void coord_clear_if_idle(void) {
   coord_clear();
 }
 
-static void scale_cruise_accel(float v0, float a0, float ratio, float *v_out, float *a_out) {
+static void scale_cruise_accel(int axis, float v0, float a0, float ratio, float *v_out,
+                               float *a_out) {
   float v1 = v0 * ratio;
   float a1 = a0 * ratio;
-  float vmax = axis_hw_max_speed(1);
-  float amax = axis_hw_max_accel(1);
+  float vmax = axis_hw_max_speed(axis);
+  float amax = axis_hw_max_accel(axis);
   if (v1 > vmax) {
     v1 = vmax;
   }
@@ -192,18 +198,28 @@ static float clamp_accel_axis(int axis, float a) {
   return a;
 }
 
-/** Apply session (or explicit) cruise/accel: axis0 = (v0,a0); axis1 scaled if coordinated. */
+/** Apply session cruise/accel; coordinated followers scale vs the master. */
 static void apply_cruise_accel(float v0, float a0) {
-  g_ax[0].cruise_mm_s = clamp_speed_axis(0, v0);
-  g_ax[0].accel_mm_s2 = clamp_accel_axis(0, a0);
-  if (g_coord_active && config_axis2_enabled()) {
-    float v1, a1;
-    scale_cruise_accel(v0, a0, g_coord_ratio, &v1, &a1);
-    g_ax[1].cruise_mm_s = v1;
-    g_ax[1].accel_mm_s2 = a1;
+  int n = axis_count();
+  int master = g_coord_active ? g_coord_master : 0;
+  if (master < 0 || master >= n) {
+    master = 0;
+  }
+  if (g_coord_active) {
+    g_ax[master].cruise_mm_s = clamp_speed_axis(master, v0);
+    g_ax[master].accel_mm_s2 = clamp_accel_axis(master, a0);
+    for (int axis = 0; axis < n; ++axis) {
+      if (axis == master) {
+        continue;
+      }
+      float v, a;
+      scale_cruise_accel(axis, v0, a0, g_coord_ratio[axis], &v, &a);
+      AX.cruise_mm_s = v;
+      AX.accel_mm_s2 = a;
+    }
     return;
   }
-  for (int axis = 1; axis < axis_count(); ++axis) {
+  for (int axis = 0; axis < n; ++axis) {
     AX.cruise_mm_s = clamp_speed_axis(axis, v0);
     AX.accel_mm_s2 = clamp_accel_axis(axis, a0);
   }
@@ -559,7 +575,6 @@ static void home_start_move_sign(int axis, int sign, float dist_mm) {
   AX.braking = false;
   AX.brake_d = 0;
   pio_step_clear_stall(axis); /* stale flag from the previous idle gap */
-  pio_step_start(axis);
   pio_step_kick_feed();
 }
 
@@ -959,7 +974,10 @@ int planner_fill_fifo(int axis) {
     return 0;
   }
 
-  unsigned room_budget = 6;
+  int nax = axis_count();
+  unsigned room_budget = pio_step_tx_empty(axis)
+                             ? 8u
+                             : ((nax >= 3) ? 2u : (nax >= 2) ? 3u : 6u);
   while (room_budget-- && pio_step_tx_room(axis) > 0) {
     int64_t err = AX.target_steps - AX.pos_steps;
     int sign;
@@ -1127,8 +1145,10 @@ int planner_fill_fifo(int axis) {
       step_hz_est = (float)stop_app;
     }
 
-    int pending = pio_step_pending_steps(axis);
-    int n = planner_pack_n(step_hz_est, rem, pending);
+    /* SM stopped: ignore time-budget pending so we can prefill 4+ words. */
+    int pending = pio_step_is_running(axis) ? pio_step_pending_steps(axis) : 0;
+    int pack_min = (nax >= 3) ? PLANNER_PACK_MIN_HZ_3AXIS : PLANNER_PACK_MIN_HZ;
+    int n = planner_pack_n_min(step_hz_est, rem, pending, pack_min);
     if (n <= 0) {
       /* Enough steps already queued for the time budget. */
       AX.fill_wants_more = false;
@@ -1174,7 +1194,7 @@ int planner_fill_fifo(int axis) {
        delay keyed on the start-of-word (pre-decel) rate, i.e. the corner
        from steady speed into deceleration ran a whole word too fast before
        snapping to the next word's slower rate. */
-    if (decel && AX.brake_d > 0) {
+    if (n > 1 && decel && AX.brake_d > 0) {
       float v_app_est = (stop_app > 0) ? (float)stop_app / AX.spmm : 0.0f;
       float dv_est = AX.brake_v0 - v_app_est;
       if (dv_est < 0.0f) {
@@ -1186,7 +1206,7 @@ int planner_fill_fifo(int axis) {
         v_end_est = v_app_est;
       } else {
         float frac_est = (float)M_PI * (float)r_after_est / (2.0f * (float)AX.brake_d);
-        v_end_est = v_app_est + dv_est * sinf(frac_est);
+        v_end_est = v_app_est + dv_est * planner_sinf(frac_est);
       }
       double step_hz_est2 = fabs((double)v_end_est) * (double)AX.spmm;
       if (step_hz_est2 < 1.0) {
@@ -1198,7 +1218,7 @@ int planner_fill_fifo(int axis) {
         dt = dt2;
         delay_cycles_for_word = delay2;
       }
-    } else if (!decel && AX.ramp_active) {
+    } else if (n > 1 && !decel && AX.ramp_active) {
       double phi_est = planner_sine_advance_phi((double)AX.ramp_phi, AX.ramp_v0, AX.ramp_v1, AX.accel_mm_s2, dt);
       double v_est = (double)planner_sine_vel(AX.ramp_v0, AX.ramp_v1, (float)phi_est);
       double step_hz_est2 = fabs(v_est) * (double)AX.spmm;
@@ -1234,7 +1254,7 @@ int planner_fill_fifo(int axis) {
         AX.vel_mm_s = (float)sign * v_app;
       } else {
         float frac = (float)M_PI * (float)r_after / (2.0f * (float)AX.brake_d);
-        AX.vel_mm_s = (float)sign * (v_app + dv * sinf(frac));
+        AX.vel_mm_s = (float)sign * (v_app + dv * planner_sinf(frac));
       }
     } else {
       AX.ramp_phi = (float)planner_sine_advance_phi((double)AX.ramp_phi, AX.ramp_v0, AX.ramp_v1, AX.accel_mm_s2, dt);
@@ -1281,6 +1301,7 @@ int planner_fill_fifo(int axis) {
       AX.fill_wants_more = true;
       break;
     }
+    pio_step_start_if_ready(axis);
     AX.fill_wants_more = true;
     motion_diag_note_hz(step_hz);
     if (dt > 1e-6f) {
@@ -1313,6 +1334,10 @@ int planner_fill_fifo(int axis) {
       }
     }
   }
+  if (!pio_step_is_running(axis) && !pio_step_tx_empty(axis) &&
+      (pio_step_tx_level(axis) >= PIO_STEP_START_MIN_LEVEL || !AX.fill_wants_more)) {
+    pio_step_start(axis);
+  }
   refresh_state(axis);
   return emitted;
 }
@@ -1333,8 +1358,12 @@ void planner_tick_axis(int axis, float dt_s) {
 
   if (AX.st.moving && !AX.dir_pause && AX.fill_wants_more && pio_step_is_stalled(axis) &&
       pio_step_tx_empty(axis)) {
-    motion_diag_note_underrun();
-    protocol_debug(2, "D:underrun a=%d\n", axis);
+    motion_diag_note_underrun(axis);
+    static uint32_t ur_burst[AXIS_MAX];
+    ++ur_burst[axis];
+    if (ur_burst[axis] == 1u || (ur_burst[axis] & 15u) == 0u) {
+      protocol_debug(2, "D:underrun a=%d n=%lu\n", axis, (unsigned long)ur_burst[axis]);
+    }
 #ifndef HOST_TEST
 #ifdef DEBUG_HW
     dbg_hw_set(PIN_DBG_UNDERRUN, 1);
@@ -1344,10 +1373,7 @@ void planner_tick_axis(int axis, float dt_s) {
   }
 
   if (AX.st.moving) {
-    if (!pio_step_tx_empty(axis) || fabsf(AX.vel_mm_s) > 0.01f ||
-        AX.pos_steps != AX.target_steps || AX.stopping) {
-      pio_step_start(axis);
-    }
+    pio_step_start_if_ready(axis);
     settle_if_done(axis);
   }
   home_poll_fsm(axis, dt_s);
@@ -1408,7 +1434,6 @@ void planner_request_move_to(int axis, float mm) {
   AX.braking = false;
   AX.brake_d = 0;
   pio_step_clear_stall(axis);
-  pio_step_start(axis);
   pio_step_kick_feed();
   refresh_state(axis);
 }
@@ -1475,7 +1500,6 @@ static void planner_request_joy(int axis, float signed_v) {
   AX.brake_d = 0;
   begin_ramp(axis, (float)sign * cruise_cap(axis));
   pio_step_clear_stall(axis);
-  pio_step_start(axis);
   pio_step_kick_feed();
   refresh_state(axis);
 }
@@ -1702,12 +1726,21 @@ void planner_get_status(McStatus *out) {
   out->state = merge_state();
   out->pos_mm = (float)g_ax[0].pos_steps / (g_ax[0].spmm > 1e-3f ? g_ax[0].spmm : 1.0f);
   out->pos_mm_2 = 0.0f;
-  if (config_axis2_enabled()) {
+  out->pos_mm_3 = 0.0f;
+  int n = axis_count();
+  if (n >= 2) {
     out->pos_mm_2 = (float)g_ax[1].pos_steps / (g_ax[1].spmm > 1e-3f ? g_ax[1].spmm : 1.0f);
   }
+  if (n >= 3) {
+    out->pos_mm_3 = (float)g_ax[2].pos_steps / (g_ax[2].spmm > 1e-3f ? g_ax[2].spmm : 1.0f);
+  }
   out->moving = planner_is_moving();
-  out->homing = g_ax[0].st.homing || (config_axis2_enabled() && g_ax[1].st.homing);
-  out->hard_limit = g_ax[0].st.hard_limit || (config_axis2_enabled() && g_ax[1].st.hard_limit);
+  out->homing = false;
+  out->hard_limit = false;
+  for (int axis = 0; axis < n; ++axis) {
+    out->homing = out->homing || AX.st.homing;
+    out->hard_limit = out->hard_limit || AX.st.hard_limit;
+  }
   out->at_soft_limit = g_ax[0].st.at_soft_limit;
   out->has_target = g_ax[0].st.has_target;
   out->target_mm = g_ax[0].st.target_mm;
@@ -1716,10 +1749,18 @@ void planner_get_status(McStatus *out) {
   out->target_mm_2 = 0.0f;
   out->vel_mm_s_2 = 0.0f;
   out->acc_mm_s2_2 = 0.0f;
-  if (config_axis2_enabled()) {
+  out->target_mm_3 = 0.0f;
+  out->vel_mm_s_3 = 0.0f;
+  out->acc_mm_s2_3 = 0.0f;
+  if (n >= 2) {
     out->target_mm_2 = g_ax[1].st.target_mm;
     out->vel_mm_s_2 = g_ax[1].st.vel_mm_s;
     out->acc_mm_s2_2 = g_ax[1].st.acc_mm_s2;
+  }
+  if (n >= 3) {
+    out->target_mm_3 = g_ax[2].st.target_mm;
+    out->vel_mm_s_3 = g_ax[2].st.vel_mm_s;
+    out->acc_mm_s2_3 = g_ax[2].st.acc_mm_s2;
   }
 }
 
@@ -1734,12 +1775,15 @@ void motion_init(void) {
   }
   once = true;
   config_init_defaults();
-  (void)config_axis2_enabled();
+  (void)config_axis_count();
   planner_init();
   motion_path_init();
 }
 
 bool motion_enable(bool on) {
+  if (on && !pio_step_ok()) {
+    return false;
+  }
   g_enabled = on;
   for (int axis = 0; axis < axis_count(); ++axis) {
     AX.st.enabled = on;
@@ -1789,82 +1833,81 @@ bool motion_move_to(float mm) {
   return true;
 }
 
-bool motion_move_to2(float mm1_or_nan, float mm2_or_nan) {
+bool motion_move_to_n(float mm0_or_nan, float mm1_or_nan, float mm2_or_nan) {
   if (!g_enabled) {
     return false;
   }
-  bool do0 = !isnan(mm1_or_nan);
-  bool do1 = config_axis2_enabled() && !isnan(mm2_or_nan);
-  if (!do0 && !do1) {
-    return true;
-  }
-  if (do0) {
-    float mn = axis_hw_window_min(0);
-    float mx = axis_hw_window_max(0);
-    if ((!isnan(mn) && mm1_or_nan < mn) || (!isnan(mx) && mm1_or_nan > mx)) {
-      g_ax[0].st.at_soft_limit = true;
-      return false;
-    }
-  }
-  if (do1) {
-    float mn = axis_hw_window_min(1);
-    float mx = axis_hw_window_max(1);
-    if ((!isnan(mn) && mm2_or_nan < mn) || (!isnan(mx) && mm2_or_nan > mx)) {
-      g_ax[1].st.at_soft_limit = true;
-      return false;
-    }
-  }
+  float dest[AXIS_MAX] = {mm0_or_nan, mm1_or_nan, mm2_or_nan};
+  bool want[AXIS_MAX] = {false, false, false};
+  float dist[AXIS_MAX] = {0.0f, 0.0f, 0.0f};
+  int n = axis_count();
+  int movers = 0;
+  int master = -1;
 
-  float pos0 = (float)g_ax[0].pos_steps / (g_ax[0].spmm > 1e-3f ? g_ax[0].spmm : 1.0f);
-  float pos1 = (float)g_ax[1].pos_steps / (g_ax[1].spmm > 1e-3f ? g_ax[1].spmm : 1.0f);
-  float d0 = do0 ? (mm1_or_nan - pos0) : 0.0f;
-  float d1 = do1 ? (mm2_or_nan - pos1) : 0.0f;
-  if (do0 && fabsf(d0) < 1e-6f) {
-    do0 = false;
+  for (int axis = 0; axis < n; ++axis) {
+    if (isnan(dest[axis])) {
+      continue;
+    }
+    float mn = axis_hw_window_min(axis);
+    float mx = axis_hw_window_max(axis);
+    if ((!isnan(mn) && dest[axis] < mn) || (!isnan(mx) && dest[axis] > mx)) {
+      AX.st.at_soft_limit = true;
+      return false;
+    }
+    float pos = (float)AX.pos_steps / (AX.spmm > 1e-3f ? AX.spmm : 1.0f);
+    dist[axis] = dest[axis] - pos;
+    if (fabsf(dist[axis]) < 1e-6f) {
+      continue;
+    }
+    if (planner_hard_limit_blocks_sign(axis, dist[axis] > 0 ? 1 : -1)) {
+      return false;
+    }
+    want[axis] = true;
+    if (master < 0) {
+      master = axis;
+    }
+    ++movers;
   }
-  if (do1 && fabsf(d1) < 1e-6f) {
-    do1 = false;
-  }
-  if (!do0 && !do1) {
+  if (movers == 0) {
     joy_clear();
     coord_clear();
     return true;
   }
 
-  if (do0 && planner_hard_limit_blocks_sign(0, d0 > 0 ? 1 : -1)) {
-    return false;
-  }
-  if (do1 && planner_hard_limit_blocks_sign(1, d1 > 0 ? 1 : -1)) {
-    return false;
-  }
-
   joy_clear();
-  /* Coordinated: session speed/accel on axis0; scale axis1 to match duration. */
-  if (do0 && do1) {
+  if (movers >= 2) {
     g_coord_active = true;
-    g_coord_ratio = fabsf(d1) / fabsf(d0);
+    g_coord_master = master;
+    float dmaster = fabsf(dist[master]);
+    if (dmaster < 1e-6f) {
+      dmaster = 1e-6f;
+    }
+    for (int axis = 0; axis < n; ++axis) {
+      g_coord_ratio[axis] = want[axis] ? (fabsf(dist[axis]) / dmaster) : 0.0f;
+    }
     apply_session_cruise_accel();
   } else {
     coord_clear();
     float v0 = session_get()->speed_mm_s;
     float a0 = session_get()->accel_mm_s2;
-    if (do0) {
-      g_ax[0].cruise_mm_s = v0;
-      g_ax[0].accel_mm_s2 = a0;
-    }
-    if (do1) {
-      g_ax[1].cruise_mm_s = v0;
-      g_ax[1].accel_mm_s2 = a0;
+    for (int axis = 0; axis < n; ++axis) {
+      if (want[axis]) {
+        AX.cruise_mm_s = v0;
+        AX.accel_mm_s2 = a0;
+      }
     }
   }
 
-  if (do0) {
-    planner_request_move_to(0, mm1_or_nan);
-  }
-  if (do1) {
-    planner_request_move_to(1, mm2_or_nan);
+  for (int axis = 0; axis < n; ++axis) {
+    if (want[axis]) {
+      planner_request_move_to(axis, dest[axis]);
+    }
   }
   return true;
+}
+
+bool motion_move_to2(float mm1_or_nan, float mm2_or_nan) {
+  return motion_move_to_n(mm1_or_nan, mm2_or_nan, NAN);
 }
 
 bool motion_move_by(float mm) {
@@ -1922,27 +1965,37 @@ bool motion_jog(int dir, int axis_mask) {
     planner_request_jog(1, dir);
     return true;
   }
+  if (axis_mask == 3 && config_axis3_enabled()) {
+    if (planner_hard_limit_blocks_sign(2, sign)) {
+      return false;
+    }
+    joy_clear();
+    coord_clear();
+    apply_session_cruise_accel();
+    planner_request_jog(2, dir);
+    return true;
+  }
   return false;
 }
 
-bool motion_joy(float pct0, float pct1_or_nan) {
+bool motion_joy(float pct0, float pct1_or_nan, float pct2_or_nan) {
   if (!g_enabled) {
     return false;
   }
   coord_clear();
   g_joy_active = true;
-  if (isnan(pct0) || fabsf(pct0) < 1e-3f) {
-    pct0 = 0.0f;
+  float pct[3] = {pct0, pct1_or_nan, pct2_or_nan};
+  int n = axis_count();
+  for (int axis = 0; axis < AXIS_MAX; ++axis) {
+    float p = pct[axis];
+    if (axis >= n || isnan(p) || fabsf(p) < 1e-3f) {
+      p = 0.0f;
+    }
+    g_joy_pct[axis] = p;
+    if (axis < n) {
+      planner_request_joy(axis, signed_cruise_from_pct(axis, p));
+    }
   }
-  g_joy_pct[0] = pct0;
-  planner_request_joy(0, signed_cruise_from_pct(0, pct0));
-  if (!config_axis2_enabled()) {
-    g_joy_pct[1] = 0.0f;
-    return true;
-  }
-  float pct1 = (isnan(pct1_or_nan) || fabsf(pct1_or_nan) < 1e-3f) ? 0.0f : pct1_or_nan;
-  g_joy_pct[1] = pct1;
-  planner_request_joy(1, signed_cruise_from_pct(1, pct1));
   return true;
 }
 
@@ -1984,15 +2037,16 @@ bool motion_soft_reset(void) {
   return true;
 }
 
-bool motion_set_position(float mm0_or_nan, float mm1_or_nan) {
+bool motion_set_position(float mm0_or_nan, float mm1_or_nan, float mm2_or_nan) {
   if (motion_path_is_active() || planner_is_busy()) {
     return false;
   }
-  if (!isnan(mm0_or_nan)) {
-    planner_set_position(0, mm0_or_nan);
-  }
-  if (!isnan(mm1_or_nan) && config_axis2_enabled()) {
-    planner_set_position(1, mm1_or_nan);
+  float mm[3] = {mm0_or_nan, mm1_or_nan, mm2_or_nan};
+  int n = axis_count();
+  for (int axis = 0; axis < n; ++axis) {
+    if (!isnan(mm[axis])) {
+      planner_set_position(axis, mm[axis]);
+    }
   }
   return true;
 }
@@ -2022,12 +2076,12 @@ bool motion_set_max_speed(float mm_s) {
   return true;
 }
 
-bool motion_set_window_left(bool set0, float mm0, bool set1, float mm1) {
-  return session_set_window_left(set0, mm0, set1, mm1);
+bool motion_set_window_left(bool set0, float mm0, bool set1, float mm1, bool set2, float mm2) {
+  return session_set_window_left(set0, mm0, set1, mm1, set2, mm2);
 }
 
-bool motion_set_window_right(bool set0, float mm0, bool set1, float mm1) {
-  return session_set_window_right(set0, mm0, set1, mm1);
+bool motion_set_window_right(bool set0, float mm0, bool set1, float mm1, bool set2, float mm2) {
+  return session_set_window_right(set0, mm0, set1, mm1, set2, mm2);
 }
 
 void motion_reset_window_left(void) { session_reset_left(); }

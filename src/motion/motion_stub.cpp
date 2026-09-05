@@ -3,6 +3,7 @@
 #include "motion_path.h"
 #include "axis_hw.h"
 #include "pins.h"
+#include "protocol.h"
 
 #include <math.h>
 
@@ -13,48 +14,51 @@
  */
 
 static McStatus g_st;
-static float g_pending_target;
-static float g_pending_target_2;
-static bool g_pending;
-static bool g_pending_2;
-static unsigned g_eta_ms;
-static unsigned g_eta_ms_2;
-static unsigned g_eta_total[2];
-static float g_move_start[2];
+static float g_pending_target[3];
+static bool g_pending[3];
+static unsigned g_eta_ms[3];
+static unsigned g_eta_total[3];
+static float g_move_start[3];
 static McState g_move_phase;
-static float g_cruise[2];
-static float g_accel[2];
+static float g_cruise[3];
+static float g_accel[3];
 static bool g_coord_active;
-static float g_coord_ratio;
+static int g_coord_master;
+static float g_coord_ratio[3];
 static bool g_joy_active;
-static float g_joy_pct[2];
+static float g_joy_pct[3];
+
+static int stub_naxes(void) { return config_axis_count(); }
 
 static void coord_clear(void) {
   g_coord_active = false;
-  g_coord_ratio = 1.0f;
+  g_coord_master = 0;
+  g_coord_ratio[0] = g_coord_ratio[1] = g_coord_ratio[2] = 1.0f;
 }
 
 static void joy_clear(void) {
   g_joy_active = false;
-  g_joy_pct[0] = 0.0f;
-  g_joy_pct[1] = 0.0f;
+  g_joy_pct[0] = g_joy_pct[1] = g_joy_pct[2] = 0.0f;
 }
+
+static bool any_pending(void) { return g_pending[0] || g_pending[1] || g_pending[2]; }
 
 static void coord_clear_if_idle(void) {
   if (!g_coord_active) {
     return;
   }
-  if (g_st.moving || g_st.homing || g_pending || g_pending_2) {
+  if (g_st.moving || g_st.homing || any_pending()) {
     return;
   }
   coord_clear();
 }
 
-static void scale_cruise_accel(float v0, float a0, float ratio, float *v_out, float *a_out) {
+static void scale_cruise_accel(int axis, float v0, float a0, float ratio, float *v_out,
+                               float *a_out) {
   float v1 = v0 * ratio;
   float a1 = a0 * ratio;
-  float vmax = config_get()->max_speed_mm_s_2;
-  float amax = config_get()->max_accel_mm_s2_2;
+  float vmax = axis_hw_max_speed(axis);
+  float amax = axis_hw_max_accel(axis);
   if (v1 > vmax) {
     v1 = vmax;
   }
@@ -71,9 +75,48 @@ static void scale_cruise_accel(float v0, float a0, float ratio, float *v_out, fl
   *a_out = a1;
 }
 
+static float *st_pos(int axis) {
+  if (axis == 2) {
+    return &g_st.pos_mm_3;
+  }
+  if (axis == 1) {
+    return &g_st.pos_mm_2;
+  }
+  return &g_st.pos_mm;
+}
+
+static float *st_tgt(int axis) {
+  if (axis == 2) {
+    return &g_st.target_mm_3;
+  }
+  if (axis == 1) {
+    return &g_st.target_mm_2;
+  }
+  return &g_st.target_mm;
+}
+
+static float *st_vel(int axis) {
+  if (axis == 2) {
+    return &g_st.vel_mm_s_3;
+  }
+  if (axis == 1) {
+    return &g_st.vel_mm_s_2;
+  }
+  return &g_st.vel_mm_s;
+}
+
+static float *st_acc(int axis) {
+  if (axis == 2) {
+    return &g_st.acc_mm_s2_3;
+  }
+  if (axis == 1) {
+    return &g_st.acc_mm_s2_2;
+  }
+  return &g_st.acc_mm_s2;
+}
+
 static float clamp_speed_axis(int axis, float v) {
-  const McConfig *c = config_get();
-  float mx = (axis == 1) ? c->max_speed_mm_s_2 : c->max_speed_mm_s;
+  float mx = axis_hw_max_speed(axis);
   if (v > mx) {
     v = mx;
   }
@@ -84,8 +127,7 @@ static float clamp_speed_axis(int axis, float v) {
 }
 
 static float clamp_accel_axis(int axis, float a) {
-  const McConfig *c = config_get();
-  float mx = (axis == 1) ? c->max_accel_mm_s2_2 : c->max_accel_mm_s2;
+  float mx = axis_hw_max_accel(axis);
   if (a > mx) {
     a = mx;
   }
@@ -96,22 +138,31 @@ static float clamp_accel_axis(int axis, float a) {
 }
 
 static void apply_cruise_accel(float v0, float a0) {
-  g_cruise[0] = clamp_speed_axis(0, v0);
-  g_accel[0] = clamp_accel_axis(0, a0);
-  if (g_coord_active && config_axis2_enabled()) {
-    scale_cruise_accel(v0, a0, g_coord_ratio, &g_cruise[1], &g_accel[1]);
+  int n = stub_naxes();
+  int master = g_coord_active ? g_coord_master : 0;
+  if (master < 0 || master >= n) {
+    master = 0;
+  }
+  if (g_coord_active) {
+    g_cruise[master] = clamp_speed_axis(master, v0);
+    g_accel[master] = clamp_accel_axis(master, a0);
+    for (int axis = 0; axis < n; ++axis) {
+      if (axis == master) {
+        continue;
+      }
+      scale_cruise_accel(axis, v0, a0, g_coord_ratio[axis], &g_cruise[axis], &g_accel[axis]);
+    }
   } else {
-    g_cruise[1] = clamp_speed_axis(1, v0);
-    g_accel[1] = clamp_accel_axis(1, a0);
+    for (int axis = 0; axis < 3; ++axis) {
+      g_cruise[axis] = clamp_speed_axis(axis, v0);
+      g_accel[axis] = clamp_accel_axis(axis, a0);
+    }
   }
-  /* Refresh live status speeds if a move is in progress. */
-  if (g_pending) {
-    g_st.vel_mm_s = (g_pending_target >= g_st.pos_mm) ? g_cruise[0] : -g_cruise[0];
-    g_st.acc_mm_s2 = g_accel[0];
-  }
-  if (g_pending_2) {
-    g_st.vel_mm_s_2 = (g_pending_target_2 >= g_st.pos_mm_2) ? g_cruise[1] : -g_cruise[1];
-    g_st.acc_mm_s2_2 = g_accel[1];
+  for (int axis = 0; axis < n; ++axis) {
+    if (g_pending[axis]) {
+      *st_vel(axis) = (g_pending_target[axis] >= *st_pos(axis)) ? g_cruise[axis] : -g_cruise[axis];
+      *st_acc(axis) = g_accel[axis];
+    }
   }
 }
 
@@ -129,7 +180,7 @@ static float signed_cruise_from_pct(int axis, float pct) {
 }
 
 static void apply_joy_cruise_accel(void) {
-  for (int axis = 0; axis < 2; ++axis) {
+  for (int axis = 0; axis < stub_naxes(); ++axis) {
     g_accel[axis] = clamp_accel_axis(axis, session_get()->accel_mm_s2);
     float pct = g_joy_pct[axis];
     if (fabsf(pct) < 1e-3f) {
@@ -137,13 +188,9 @@ static void apply_joy_cruise_accel(void) {
     }
     float signed_v = signed_cruise_from_pct(axis, pct);
     g_cruise[axis] = fabsf(signed_v);
-    if (axis == 0 && g_pending) {
-      g_st.vel_mm_s = (signed_v >= 0.0f) ? g_cruise[0] : -g_cruise[0];
-      g_st.acc_mm_s2 = g_accel[0];
-    }
-    if (axis == 1 && g_pending_2) {
-      g_st.vel_mm_s_2 = (signed_v >= 0.0f) ? g_cruise[1] : -g_cruise[1];
-      g_st.acc_mm_s2_2 = g_accel[1];
+    if (g_pending[axis]) {
+      *st_vel(axis) = (signed_v >= 0.0f) ? g_cruise[axis] : -g_cruise[axis];
+      *st_acc(axis) = g_accel[axis];
     }
   }
 }
@@ -159,18 +206,23 @@ void motion_init(void) {
   g_st.has_target = false;
   g_st.pos_mm = 0.0f;
   g_st.pos_mm_2 = 0.0f;
+  g_st.pos_mm_3 = 0.0f;
   g_st.target_mm = 0.0f;
   g_st.target_mm_2 = 0.0f;
+  g_st.target_mm_3 = 0.0f;
   g_st.vel_mm_s = 0.0f;
   g_st.vel_mm_s_2 = 0.0f;
+  g_st.vel_mm_s_3 = 0.0f;
   g_st.acc_mm_s2 = 0.0f;
   g_st.acc_mm_s2_2 = 0.0f;
-  g_pending = false;
-  g_pending_2 = false;
-  g_eta_ms = 0;
-  g_eta_ms_2 = 0;
-  g_eta_total[0] = g_eta_total[1] = 0;
-  g_move_start[0] = g_move_start[1] = 0.0f;
+  g_st.acc_mm_s2_3 = 0.0f;
+  for (int i = 0; i < 3; ++i) {
+    g_pending[i] = false;
+    g_eta_ms[i] = 0;
+    g_eta_total[i] = 0;
+    g_move_start[i] = 0.0f;
+    g_pending_target[i] = 0.0f;
+  }
   g_move_phase = MC_STATE_IDLE;
   coord_clear();
   joy_clear();
@@ -208,7 +260,7 @@ static bool soft_ok(float dest, int axis) {
 }
 
 static void start_move_axis(int axis, float dest) {
-  float pos = (axis == 1) ? g_st.pos_mm_2 : g_st.pos_mm;
+  float pos = *st_pos(axis);
   float dist = fabsf(dest - pos);
   float v = g_cruise[axis];
   if (v < 0.001f) {
@@ -221,20 +273,13 @@ static void start_move_axis(int axis, float dest) {
   g_move_start[axis] = pos;
   g_eta_total[axis] = ms;
   g_move_phase = MC_STATE_ACCELERATING;
-  if (axis == 1) {
-    g_pending_target_2 = dest;
-    g_pending_2 = true;
-    g_eta_ms_2 = ms;
-    g_st.target_mm_2 = dest;
-    g_st.vel_mm_s_2 = (dest >= g_st.pos_mm_2) ? v : -v;
-    g_st.acc_mm_s2_2 = g_accel[1];
-  } else {
-    g_pending_target = dest;
-    g_pending = true;
-    g_eta_ms = ms;
-    g_st.target_mm = dest;
-    g_st.vel_mm_s = (dest >= g_st.pos_mm) ? v : -v;
-    g_st.acc_mm_s2 = g_accel[0];
+  g_pending_target[axis] = dest;
+  g_pending[axis] = true;
+  g_eta_ms[axis] = ms;
+  *st_tgt(axis) = dest;
+  *st_vel(axis) = (dest >= pos) ? v : -v;
+  *st_acc(axis) = g_accel[axis];
+  if (axis == 0) {
     g_st.has_target = true;
   }
   g_st.moving = true;
@@ -246,12 +291,13 @@ bool motion_enable(bool on) {
   if (!on) {
     g_st.moving = false;
     g_st.homing = false;
-    g_pending = false;
-    g_pending_2 = false;
+    g_pending[0] = g_pending[1] = g_pending[2] = false;
     g_st.vel_mm_s = 0.0f;
     g_st.vel_mm_s_2 = 0.0f;
+    g_st.vel_mm_s_3 = 0.0f;
     g_st.acc_mm_s2 = 0.0f;
     g_st.acc_mm_s2_2 = 0.0f;
+    g_st.acc_mm_s2_3 = 0.0f;
     g_st.has_target = false;
     joy_clear();
     coord_clear();
@@ -274,47 +320,64 @@ bool motion_move_to(float mm) {
   return true;
 }
 
-bool motion_move_to2(float mm1_or_nan, float mm2_or_nan) {
+bool motion_move_to_n(float mm0_or_nan, float mm1_or_nan, float mm2_or_nan) {
   if (!g_st.enabled || g_st.drv_error) {
     return false;
   }
-  bool do0 = !isnan(mm1_or_nan);
-  bool do1 = config_axis2_enabled() && !isnan(mm2_or_nan);
-  if (do0 && !soft_ok(mm1_or_nan, 0)) {
-    return false;
+  float dest[3] = {mm0_or_nan, mm1_or_nan, mm2_or_nan};
+  bool want[3] = {false, false, false};
+  float dist[3] = {0.0f, 0.0f, 0.0f};
+  int n = stub_naxes();
+  int movers = 0;
+  int master = -1;
+  for (int axis = 0; axis < n; ++axis) {
+    if (isnan(dest[axis])) {
+      continue;
+    }
+    if (!soft_ok(dest[axis], axis)) {
+      return false;
+    }
+    dist[axis] = dest[axis] - *st_pos(axis);
+    if (fabsf(dist[axis]) < 1e-6f) {
+      continue;
+    }
+    want[axis] = true;
+    if (master < 0) {
+      master = axis;
+    }
+    ++movers;
   }
-  if (do1 && !soft_ok(mm2_or_nan, 1)) {
-    return false;
-  }
-  float d0 = do0 ? (mm1_or_nan - g_st.pos_mm) : 0.0f;
-  float d1 = do1 ? (mm2_or_nan - g_st.pos_mm_2) : 0.0f;
-  if (do0 && fabsf(d0) < 1e-6f) {
-    do0 = false;
-  }
-  if (do1 && fabsf(d1) < 1e-6f) {
-    do1 = false;
-  }
-  if (!do0 && !do1) {
+  if (movers == 0) {
     joy_clear();
     coord_clear();
     return true;
   }
   joy_clear();
-  if (do0 && do1) {
+  if (movers >= 2) {
     g_coord_active = true;
-    g_coord_ratio = fabsf(d1) / fabsf(d0);
+    g_coord_master = master;
+    float dmaster = fabsf(dist[master]);
+    if (dmaster < 1e-6f) {
+      dmaster = 1e-6f;
+    }
+    for (int axis = 0; axis < n; ++axis) {
+      g_coord_ratio[axis] = want[axis] ? (fabsf(dist[axis]) / dmaster) : 0.0f;
+    }
     apply_session_cruise_accel();
   } else {
     coord_clear();
     apply_session_cruise_accel();
   }
-  if (do0) {
-    start_move_axis(0, mm1_or_nan);
-  }
-  if (do1) {
-    start_move_axis(1, mm2_or_nan);
+  for (int axis = 0; axis < n; ++axis) {
+    if (want[axis]) {
+      start_move_axis(axis, dest[axis]);
+    }
   }
   return true;
+}
+
+bool motion_move_to2(float mm1_or_nan, float mm2_or_nan) {
+  return motion_move_to_n(mm1_or_nan, mm2_or_nan, NAN);
 }
 
 bool motion_move_by(float mm) { return motion_move_to(g_st.pos_mm + mm); }
@@ -341,6 +404,16 @@ bool motion_jog(int dir, int axis_mask) {
     coord_clear();
     apply_session_cruise_accel();
     start_move_axis(0, dest);
+  }
+  if (config_axis3_enabled() && (axis_mask == 0 || axis_mask == 3)) {
+    float dest = g_st.pos_mm_3 + delta;
+    if (!isnan(axis_hw_window_max(2)) && dest > axis_hw_window_max(2)) {
+      dest = axis_hw_window_max(2);
+    }
+    if (!isnan(axis_hw_window_min(2)) && dest < axis_hw_window_min(2)) {
+      dest = axis_hw_window_min(2);
+    }
+    start_move_axis(2, dest);
   }
   if (ax2 && (axis_mask == 0 || axis_mask == 2)) {
     float dest = g_st.pos_mm_2 + delta;
@@ -370,16 +443,10 @@ static float joy_dest_mm(int axis, int sign) {
 }
 
 static void stop_axis_stub(int axis) {
-  if (axis == 0) {
-    g_pending = false;
-    g_st.vel_mm_s = 0.0f;
-    g_st.acc_mm_s2 = 0.0f;
-  } else {
-    g_pending_2 = false;
-    g_st.vel_mm_s_2 = 0.0f;
-    g_st.acc_mm_s2_2 = 0.0f;
-  }
-  if (!g_pending && !g_pending_2) {
+  g_pending[axis] = false;
+  *st_vel(axis) = 0.0f;
+  *st_acc(axis) = 0.0f;
+  if (!any_pending()) {
     g_st.moving = false;
     g_st.has_target = false;
   }
@@ -394,7 +461,21 @@ static void request_joy_axis(int axis, float signed_v) {
   }
   int sign = signed_v > 0.0f ? 1 : -1;
   float dest = joy_dest_mm(axis, sign);
-  float pos = (axis == 1) ? g_st.pos_mm_2 : g_st.pos_mm;
+  float pos = *st_pos(axis);
+  float mn = axis_hw_window_min(axis);
+  float mx = axis_hw_window_max(axis);
+  if (sign < 0 && !isnan(mn) && pos < mn) {
+    dest = mn; /* outside left wall: snap inward */
+    *st_pos(axis) = dest;
+    stop_axis_stub(axis);
+    return;
+  }
+  if (sign > 0 && !isnan(mx) && pos > mx) {
+    dest = mx;
+    *st_pos(axis) = dest;
+    stop_axis_stub(axis);
+    return;
+  }
   if ((sign > 0 && dest <= pos + 1e-6f) || (sign < 0 && dest >= pos - 1e-6f)) {
     stop_axis_stub(axis);
     return;
@@ -403,24 +484,24 @@ static void request_joy_axis(int axis, float signed_v) {
   start_move_axis(axis, dest);
 }
 
-bool motion_joy(float pct0, float pct1_or_nan) {
+bool motion_joy(float pct0, float pct1_or_nan, float pct2_or_nan) {
   if (!g_st.enabled || g_st.drv_error) {
     return false;
   }
   coord_clear();
   g_joy_active = true;
-  if (isnan(pct0) || fabsf(pct0) < 1e-3f) {
-    pct0 = 0.0f;
+  float pct[3] = {pct0, pct1_or_nan, pct2_or_nan};
+  int n = stub_naxes();
+  for (int axis = 0; axis < 3; ++axis) {
+    float p = pct[axis];
+    if (axis >= n || isnan(p) || fabsf(p) < 1e-3f) {
+      p = 0.0f;
+    }
+    g_joy_pct[axis] = p;
+    if (axis < n) {
+      request_joy_axis(axis, signed_cruise_from_pct(axis, p));
+    }
   }
-  g_joy_pct[0] = pct0;
-  request_joy_axis(0, signed_cruise_from_pct(0, pct0));
-  if (!config_axis2_enabled()) {
-    g_joy_pct[1] = 0.0f;
-    return true;
-  }
-  float pct1 = (isnan(pct1_or_nan) || fabsf(pct1_or_nan) < 1e-3f) ? 0.0f : pct1_or_nan;
-  g_joy_pct[1] = pct1;
-  request_joy_axis(1, signed_cruise_from_pct(1, pct1));
   return true;
 }
 
@@ -428,39 +509,36 @@ void motion_end_joy(void) { joy_clear(); }
 
 bool motion_stop(void) {
   joy_clear();
-  if (g_pending) {
-    g_st.pos_mm = g_pending_target;
+  for (int axis = 0; axis < 3; ++axis) {
+    if (g_pending[axis]) {
+      *st_pos(axis) = g_pending_target[axis];
+    }
+    g_pending[axis] = false;
+    *st_vel(axis) = 0.0f;
+    *st_acc(axis) = 0.0f;
   }
-  if (g_pending_2) {
-    g_st.pos_mm_2 = g_pending_target_2;
-  }
-  g_pending = false;
-  g_pending_2 = false;
   g_st.moving = false;
   g_st.homing = false;
   g_st.has_target = false;
-  g_st.vel_mm_s = 0.0f;
-  g_st.vel_mm_s_2 = 0.0f;
-  g_st.acc_mm_s2 = 0.0f;
-  g_st.acc_mm_s2_2 = 0.0f;
   refresh_state();
   coord_clear_if_idle();
   return true;
 }
 
 bool motion_halt(void) {
-  g_pending = false;
-  g_pending_2 = false;
+  g_pending[0] = g_pending[1] = g_pending[2] = false;
   g_st.moving = false;
   g_st.homing = false;
   g_st.has_target = false;
   g_st.vel_mm_s = 0.0f;
   g_st.vel_mm_s_2 = 0.0f;
+  g_st.vel_mm_s_3 = 0.0f;
   g_st.acc_mm_s2 = 0.0f;
   g_st.acc_mm_s2_2 = 0.0f;
-  g_st.enabled = false;
+  g_st.acc_mm_s2_3 = 0.0f;
   joy_clear();
   coord_clear();
+  protocol_cancel_waits_and_chain();
   refresh_state();
   return true;
 }
@@ -470,20 +548,19 @@ bool motion_home(int axis_1based) {
     return false;
   }
   int axis = axis_1based - 1;
-  if (axis < 0 || axis > 1 || (axis == 1 && !config_axis2_enabled())) {
+  if (axis < 0 || axis >= stub_naxes()) {
     return false;
   }
-  const McConfig *c = config_get();
-  int hm = (axis == 1) ? c->home_mode_2 : c->home_mode;
+  int hm = axis_hw_home_mode(axis);
   if (hm == 0) {
     joy_clear();
     return true;
   }
   bool cfg_ok = false;
   if (hm == 1) {
-    cfg_ok = ((axis == 1) ? c->sw_limit_l_use_2 : c->sw_limit_l_use) != 0;
+    cfg_ok = axis_hw_limit_l_use(axis) != 0;
   } else if (hm == 2) {
-    cfg_ok = ((axis == 1) ? c->sw_limit_r_use_2 : c->sw_limit_r_use) != 0;
+    cfg_ok = axis_hw_limit_r_use(axis) != 0;
   } else if (hm == 3 || hm == 4) {
     cfg_ok = true;
   }
@@ -491,20 +568,20 @@ bool motion_home(int axis_1based) {
     return false;
   }
   joy_clear();
-  float mn = (axis == 1) ? c->slider_min_mm_2 : c->slider_min_mm;
-  float mx = (axis == 1) ? c->slider_max_mm_2 : c->slider_max_mm;
+  float mn = axis_hw_slider_min(axis);
+  float mx = axis_hw_slider_max(axis);
   float target;
   if (hm == 1 || hm == 3) {
     target = isnan(mn) ? 0.0f : mn;
   } else {
     target = isnan(mx) ? 0.0f : mx;
   }
-  float v = (axis == 1) ? c->home_speed_mm_s_2 : c->home_speed_mm_s;
+  float v = axis_hw_home_speed(axis);
   if (v < 0.001f) {
     v = 0.001f;
   }
-  float pos = (axis == 1) ? g_st.pos_mm_2 : g_st.pos_mm;
-  float out = (axis == 1) ? c->home_move_out_mm_2 : c->home_move_out_mm;
+  float pos = *st_pos(axis);
+  float out = axis_hw_home_move_out(axis);
   float dist = fabsf(target - pos) + out;
   unsigned ms = (unsigned)(dist / v * 1000.0f);
   if (ms < 50) {
@@ -513,37 +590,29 @@ bool motion_home(int axis_1based) {
   g_st.homing = true;
   g_st.moving = true;
   g_st.has_target = true;
-  if (axis == 0) {
-    g_st.target_mm = target;
-    g_pending = true;
-    g_pending_target = target;
-    g_eta_ms = ms;
-    g_eta_total[0] = ms;
-    g_move_start[0] = g_st.pos_mm;
-    g_st.vel_mm_s = (target >= g_st.pos_mm) ? v : -v;
-    g_st.acc_mm_s2 = c->home_accel_mm_s2;
-  } else {
-    g_pending_2 = true;
-    g_pending_target_2 = target;
-    g_eta_ms_2 = ms;
-    g_eta_total[1] = ms;
-    g_move_start[1] = g_st.pos_mm_2;
-  }
+  *st_tgt(axis) = target;
+  g_pending[axis] = true;
+  g_pending_target[axis] = target;
+  g_eta_ms[axis] = ms;
+  g_eta_total[axis] = ms;
+  g_move_start[axis] = pos;
+  *st_vel(axis) = (target >= pos) ? v : -v;
+  *st_acc(axis) = axis_hw_home_accel(axis);
   refresh_state();
   return true;
 }
 
-bool motion_set_position(float mm0_or_nan, float mm1_or_nan) {
+bool motion_set_position(float mm0_or_nan, float mm1_or_nan, float mm2_or_nan) {
   if (g_st.moving || g_st.homing) {
     return false;
   }
-  if (!isnan(mm0_or_nan)) {
-    g_st.pos_mm = mm0_or_nan;
-    g_st.target_mm = mm0_or_nan;
-  }
-  if (!isnan(mm1_or_nan) && config_axis2_enabled()) {
-    g_st.pos_mm_2 = mm1_or_nan;
-    g_st.target_mm_2 = mm1_or_nan;
+  float mm[3] = {mm0_or_nan, mm1_or_nan, mm2_or_nan};
+  int n = stub_naxes();
+  for (int axis = 0; axis < n; ++axis) {
+    if (!isnan(mm[axis])) {
+      *st_pos(axis) = mm[axis];
+      *st_tgt(axis) = mm[axis];
+    }
   }
   refresh_state();
   return true;
@@ -551,13 +620,13 @@ bool motion_set_position(float mm0_or_nan, float mm1_or_nan) {
 
 bool motion_soft_reset(void) {
   g_st.drv_error = false;
-  g_pending = false;
-  g_pending_2 = false;
+  g_pending[0] = g_pending[1] = g_pending[2] = false;
   g_st.moving = false;
   g_st.homing = false;
   g_st.has_target = false;
   g_st.vel_mm_s = 0.0f;
   g_st.vel_mm_s_2 = 0.0f;
+  g_st.vel_mm_s_3 = 0.0f;
   g_st.acc_mm_s2 = 0.0f;
   g_st.acc_mm_s2_2 = 0.0f;
   joy_clear();
@@ -591,12 +660,12 @@ bool motion_set_max_speed(float mm_s) {
   return true;
 }
 
-bool motion_set_window_left(bool set0, float mm0, bool set1, float mm1) {
-  return session_set_window_left(set0, mm0, set1, mm1);
+bool motion_set_window_left(bool set0, float mm0, bool set1, float mm1, bool set2, float mm2) {
+  return session_set_window_left(set0, mm0, set1, mm1, set2, mm2);
 }
 
-bool motion_set_window_right(bool set0, float mm0, bool set1, float mm1) {
-  return session_set_window_right(set0, mm0, set1, mm1);
+bool motion_set_window_right(bool set0, float mm0, bool set1, float mm1, bool set2, float mm2) {
+  return session_set_window_right(set0, mm0, set1, mm1, set2, mm2);
 }
 
 void motion_reset_window_left(void) { session_reset_left(); }
@@ -615,6 +684,12 @@ void motion_get_status(McStatus *out) {
       out->target_mm_2 = 0.0f;
       out->vel_mm_s_2 = 0.0f;
       out->acc_mm_s2_2 = 0.0f;
+    }
+    if (!config_axis3_enabled()) {
+      out->pos_mm_3 = 0.0f;
+      out->target_mm_3 = 0.0f;
+      out->vel_mm_s_3 = 0.0f;
+      out->acc_mm_s2_3 = 0.0f;
     }
   }
 }
@@ -636,69 +711,74 @@ static McState phase_from_remain(unsigned remain, unsigned total) {
 }
 
 static void stub_advance_axis(int axis, unsigned ms) {
-  bool *pending = (axis == 1) ? &g_pending_2 : &g_pending;
-  unsigned *eta = (axis == 1) ? &g_eta_ms_2 : &g_eta_ms;
-  float *pos = (axis == 1) ? &g_st.pos_mm_2 : &g_st.pos_mm;
-  float target = (axis == 1) ? g_pending_target_2 : g_pending_target;
-  if (!*pending) {
+  if (!g_pending[axis]) {
     return;
   }
-  if (ms >= *eta) {
-    *eta = 0;
-    *pos = target;
-    *pending = false;
+  if (ms >= g_eta_ms[axis]) {
+    g_eta_ms[axis] = 0;
+    *st_pos(axis) = g_pending_target[axis];
+    g_pending[axis] = false;
     return;
   }
-  *eta -= ms;
+  g_eta_ms[axis] -= ms;
   unsigned total = g_eta_total[axis];
-  float prog = (total > 0) ? (1.0f - (float)*eta / (float)total) : 1.0f;
+  float prog = (total > 0) ? (1.0f - (float)g_eta_ms[axis] / (float)total) : 1.0f;
   if (prog < 0.0f) {
     prog = 0.0f;
   }
   if (prog > 1.0f) {
     prog = 1.0f;
   }
-  *pos = g_move_start[axis] + (target - g_move_start[axis]) * prog;
+  *st_pos(axis) = g_move_start[axis] + (g_pending_target[axis] - g_move_start[axis]) * prog;
 }
 
 void motion_stub_tick_ms(unsigned ms) {
   stub_advance_axis(0, ms);
   stub_advance_axis(1, ms);
-  if (!g_pending && !g_pending_2) {
+  stub_advance_axis(2, ms);
+  if (!any_pending()) {
     g_st.moving = false;
     g_st.homing = false;
     g_st.has_target = false;
     g_st.vel_mm_s = 0.0f;
     g_st.vel_mm_s_2 = 0.0f;
+    g_st.vel_mm_s_3 = 0.0f;
     g_st.acc_mm_s2 = 0.0f;
     g_st.acc_mm_s2_2 = 0.0f;
+    g_st.acc_mm_s2_3 = 0.0f;
     g_move_phase = MC_STATE_IDLE;
     refresh_state();
     coord_clear_if_idle();
     return;
   }
-  McState p0 = g_pending ? phase_from_remain(g_eta_ms, g_eta_total[0]) : MC_STATE_IDLE;
-  McState p1 = g_pending_2 ? phase_from_remain(g_eta_ms_2, g_eta_total[1]) : MC_STATE_IDLE;
-  if (p0 == MC_STATE_DECELERATING || p1 == MC_STATE_DECELERATING) {
-    g_move_phase = MC_STATE_DECELERATING;
-  } else if (p0 == MC_STATE_ACCELERATING || p1 == MC_STATE_ACCELERATING) {
-    g_move_phase = MC_STATE_ACCELERATING;
-  } else {
-    g_move_phase = MC_STATE_MOVING;
+  McState phase = MC_STATE_IDLE;
+  for (int axis = 0; axis < 3; ++axis) {
+    if (!g_pending[axis]) {
+      continue;
+    }
+    McState p = phase_from_remain(g_eta_ms[axis], g_eta_total[axis]);
+    if (p == MC_STATE_DECELERATING) {
+      phase = MC_STATE_DECELERATING;
+    } else if (p == MC_STATE_ACCELERATING && phase != MC_STATE_DECELERATING) {
+      phase = MC_STATE_ACCELERATING;
+    } else if (phase == MC_STATE_IDLE) {
+      phase = MC_STATE_MOVING;
+    }
   }
+  g_move_phase = phase;
   refresh_state();
 }
 
 #ifdef HOST_TEST
 float motion_host_axis_cruise(int axis) {
-  if (axis < 0 || axis > 1) {
+  if (axis < 0 || axis > 2) {
     return 0.0f;
   }
   return g_cruise[axis];
 }
 
 float motion_host_axis_accel(int axis) {
-  if (axis < 0 || axis > 1) {
+  if (axis < 0 || axis > 2) {
     return 0.0f;
   }
   return g_accel[axis];

@@ -5,12 +5,23 @@
 #if defined(DEBUG_HW) && !defined(HOST_TEST)
 #include <Arduino.h>
 
-/* On Pico, DBG GPIOs overlap axis2 (GP10–13) — never drive them when axis2 on.
- * On Zero, DBG and axis2 are disjoint; both may be active together. */
+/* Pico: DBG overlaps axis2 (GP10–13) and EXT (GP14–15).
+ * Zero: DBG overlaps EXT (GP21–23) and LIMIT3 (GP18).
+ * EXT is always claimed, so overlapping boards never drive DBG. */
 static inline bool dbg_hw_allowed(void) {
-#if PIN_DBG_OVERLAPS_AXIS2
-  return !config_axis2_enabled();
+#if PIN_DBG_OVERLAPS_EXT
+  return false;
 #else
+#if PIN_DBG_OVERLAPS_AXIS2
+  if (config_axis2_enabled()) {
+    return false;
+  }
+#endif
+#if PIN_DBG_OVERLAPS_AXIS3
+  if (config_axis3_enabled()) {
+    return false;
+  }
+#endif
   return true;
 #endif
 }

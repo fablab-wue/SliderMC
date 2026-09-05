@@ -11,17 +11,25 @@ extern "C" {
  * PIO STEP generator (per-axis SM).
  *
  * Word = delay[25:0] | (repeat[5:0] << 26); repeat R → R+1 pulses.
- * High phase ~1.5 µs @ 125 MHz (allows ≥300 kHz with short delay).
- * Polarity from config DRV_STEP_active / _2 via pio_step_reconfigure().
+ * High phase ~3.8 µs @ 50 MHz SM clock (clk_sys / clkdiv). Max ≈ 259 kHz.
+ * Polarity programs (active-high / active-low) are shared across SMs.
+ * Axis 3 STEP polarity follows axis 2.
  *
- * axis: 0 = primary, 1 = optional 2nd axis (when config_axis2_enabled).
+ * axis: 0 = primary, 1/2 = optional extras when config axis >= 2/3.
  */
 
 #define PIO_STEP_REPEAT_SHIFT 26
 #define PIO_STEP_DELAY_MASK 0x03FFFFFFu
 #define PIO_STEP_REPEAT_MAX 63
 #define PIO_STEP_HIGH_CYCLES 188u
-#define PIO_STEP_SM_CLKDIV 2.5f /* 125 MHz / 2.5 = 50 MHz effective PIO SM clock */
+#define PIO_STEP_SM_HZ 50000000u /* STEP SM clock; clkdiv = clk_sys / this */
+#ifndef PIO_STEP_SYSCLK_KHZ
+#if defined(PICO_RP2350)
+#define PIO_STEP_SYSCLK_KHZ 150000 /* RP2350 in-spec default */
+#else
+#define PIO_STEP_SYSCLK_KHZ 133000 /* RP2040 in-spec */
+#endif
+#endif
 /* Full period overhead before delay loop: high + SET lo + MOV X,ISR + JMP X--(+1) + JMP Y-- */
 #define PIO_STEP_PERIOD_FIXED 192u
 
@@ -32,8 +40,15 @@ typedef struct {
 
 void pio_step_init(void);
 bool pio_step_reconfigure(void);
+/** False if an enabled axis failed to claim an SM / program. */
+bool pio_step_ok(void);
+
+#define PIO_STEP_START_MIN_LEVEL 4u /* prefill this many words before enabling SM */
 
 void pio_step_start(int axis);
+/** Enable SM only after TX has PIO_STEP_START_MIN_LEVEL words (avoids launch stall). */
+void pio_step_start_if_ready(int axis);
+bool pio_step_is_running(int axis);
 void pio_step_stop_hard(int axis);
 void pio_step_stop_soft(int axis);
 
@@ -50,7 +65,7 @@ void pio_step_clear_stall(int axis);
 
 int pio_step_pending_steps(int axis);
 
-/** Set DIR GPIO for positive (+mm) travel sense using DRV_DIR_active / _2. */
+/** Set DIR GPIO for positive (+mm) travel sense using DRV_DIR_N_active. */
 void pio_step_set_dir(int axis, int sign_pos);
 
 uint32_t pio_step_sysclk_hz(void);

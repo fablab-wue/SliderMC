@@ -8,7 +8,7 @@
 #include <Arduino.h>
 #endif
 
-#define DIAG_MAGIC 0x4D444741u /* 'MDGA' */
+#define DIAG_MAGIC 0x4D444742u /* 'MDGB' — per-axis underrun / fifo_min */
 
 static MotionDiag g_diag;
 
@@ -19,6 +19,13 @@ static uint32_t g_diag_magic __attribute__((section(".noinit")));
 #endif
 static uint8_t g_restored_from_noinit;
 
+static void fifo_min_clear(void) {
+  g_diag.fifo_min_level = 0xFFFFFFFFu;
+  for (int i = 0; i < MOTION_DIAG_AXES; ++i) {
+    g_diag.fifo_min_axis[i] = 0xFFFFFFFFu;
+  }
+}
+
 static void diag_persist(void) {
 #if !defined(HOST_TEST)
   g_diag_noinit = g_diag;
@@ -28,7 +35,7 @@ static void diag_persist(void) {
 
 void motion_diag_reset(void) {
   memset(&g_diag, 0, sizeof(g_diag));
-  g_diag.fifo_min_level = 0xFFFFFFFFu;
+  fifo_min_clear();
   g_restored_from_noinit = 0;
   diag_persist();
 }
@@ -54,8 +61,11 @@ void motion_diag_get(MotionDiag *out) {
   }
 }
 
-void motion_diag_note_underrun(void) {
+void motion_diag_note_underrun(int axis) {
   ++g_diag.underrun_count;
+  if (axis >= 0 && axis < MOTION_DIAG_AXES) {
+    ++g_diag.underrun_axis[axis];
+  }
   diag_persist();
 }
 
@@ -73,24 +83,36 @@ void motion_diag_note_overshoot(int steps) {
   }
 }
 
-void motion_diag_note_fifo_level(unsigned level) {
+void motion_diag_note_fifo_level(int axis, unsigned level) {
   if (level < g_diag.fifo_min_level) {
     g_diag.fifo_min_level = level;
-    diag_persist();
   }
+  if (axis >= 0 && axis < MOTION_DIAG_AXES && level < g_diag.fifo_min_axis[axis]) {
+    g_diag.fifo_min_axis[axis] = level;
+  }
+  diag_persist();
 }
 
 void motion_diag_boot_report(void) {
   if (!g_restored_from_noinit || config_get()->init_debug_level < 2) {
     return;
   }
-  unsigned fifo_min = g_diag.fifo_min_level;
-  if (fifo_min == 0xFFFFFFFFu) {
-    fifo_min = 0;
+  unsigned f0 = g_diag.fifo_min_axis[0];
+  unsigned f1 = g_diag.fifo_min_axis[1];
+  unsigned f2 = g_diag.fifo_min_axis[2];
+  if (f0 == 0xFFFFFFFFu) {
+    f0 = 0;
   }
-  protocol_debug(2, "D:diag_restored underrun=%lu peak_hz=%.0f overshoot=%ld fifo_min=%u\n",
-                 (unsigned long)g_diag.underrun_count, (double)g_diag.peak_step_hz,
-                 (long)g_diag.overshoot_steps, fifo_min);
+  if (f1 == 0xFFFFFFFFu) {
+    f1 = 0;
+  }
+  if (f2 == 0xFFFFFFFFu) {
+    f2 = 0;
+  }
+  protocol_debug(2, "D:diag_restored underrun=%lu,%lu,%lu peak_hz=%.0f overshoot=%ld fifo_min=%u,%u,%u\n",
+                 (unsigned long)g_diag.underrun_axis[0], (unsigned long)g_diag.underrun_axis[1],
+                 (unsigned long)g_diag.underrun_axis[2], (double)g_diag.peak_step_hz,
+                 (long)g_diag.overshoot_steps, f0, f1, f2);
 #ifndef HOST_TEST
   if (rp2040.getResetReason() == RP2040::WDT_RESET) {
     protocol_debug(2, "D:reset=wdt\n");

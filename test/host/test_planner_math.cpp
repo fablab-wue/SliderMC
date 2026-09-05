@@ -33,6 +33,9 @@ int main(void) {
   expect_true("pack rem 0", planner_pack_n(100.0f, 0, 0) == 0);
   expect_true("pack rem neg", planner_pack_n(100.0f, -3, 0) == 0);
   expect_true("pack low hz single", planner_pack_n(100.0f, 10, 0) == 1);
+  expect_true("pack 3-axis min at 2000 Hz > 1",
+              planner_pack_n_min(2000.0f, 100, 0, PLANNER_PACK_MIN_HZ_3AXIS) > 1);
+  expect_true("pack 1-axis min at 2000 Hz is 1", planner_pack_n(2000.0f, 100, 0) == 1);
   int n = planner_pack_n(50000.0f, 100, 0);
   expect_true("pack high hz bounded", n >= 1 && n <= 64 && n <= 100);
   expect_true("pack never past rem", planner_pack_n(50000.0f, 3, 0) <= 3);
@@ -64,6 +67,25 @@ int main(void) {
   expect_near("sine phi1", planner_sine_vel(0.0f, 10.0f, 1.0f), 10.0f, 1e-5f);
   float mid = planner_sine_vel(0.0f, 10.0f, 0.5f);
   expect_near("sine mid", mid, 5.0f, 0.05f);
+
+  /* LUT trig: endpoints exact, lerp stays within linear-interp bound vs libm */
+  expect_near("lut sin 0", planner_sinf(0.0f), 0.0f, 1e-6f);
+  expect_near("lut sin pi/2", planner_sinf((float)(0.5 * M_PI)), 1.0f, 1e-6f);
+  expect_near("lut sin pi", planner_sinf((float)M_PI), 0.0f, 2e-4f);
+  expect_near("lut cos 0", planner_cosf(0.0f), 1.0f, 1e-6f);
+  expect_near("lut cos pi", planner_cosf((float)M_PI), -1.0f, 1e-6f);
+  {
+    float max_err = 0.0f;
+    for (int i = 0; i <= 256; ++i) {
+      float x = (float)M_PI * (float)i / 256.0f;
+      float e = std::fabs(planner_sinf(x) - std::sinf(x));
+      if (e > max_err) {
+        max_err = e;
+      }
+    }
+    expect_true("lut sin vs libm < 2e-4", max_err < 2e-4f);
+    std::printf("     lut_sin_max_err=%.3e\n", (double)max_err);
+  }
 
   /* pack-dt invariant: phi advance scales with packed pulse count n */
   {

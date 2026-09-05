@@ -14,51 +14,65 @@
 #endif
 
 #define PATH_FILL_SCAN_BUDGET 256
+#define PATH_AXES 3
 
-static int16_t g_path_buf[2][PATH_BUFFER_MAX];
+static int16_t g_path_pool[PATH_POOL_SAMPLES];
 static uint32_t g_path_count;
 static uint32_t g_path_play_index;
 static bool g_path_active;
 
 static uint32_t g_path_slice_us_active;
-static double g_step_err[2];
+static double g_step_err[PATH_AXES];
 static double g_time_err;
 static double g_gap_cycles;
 
-static int64_t g_path_pos_steps[2];
-static float g_path_last_vel_mm_s[2];
+static int64_t g_path_pos_steps[PATH_AXES];
+static float g_path_last_vel_mm_s[PATH_AXES];
 
 static bool g_slice_in_progress;
-static int32_t g_slice_steps_left[2];
-static int g_slice_sign[2];
-static uint32_t g_slice_delay_cycles[2];
-static bool g_slice_has_steps[2];
+static bool g_slice_drain_wait;
+static bool g_slice_had_steps[PATH_AXES];
+static int32_t g_slice_steps_left[PATH_AXES];
+static int g_slice_sign[PATH_AXES];
+static uint32_t g_slice_delay_cycles[PATH_AXES];
+static bool g_slice_has_steps[PATH_AXES];
+
+static int path_naxes(void) { return axis_hw_count(); }
+
+static int path_stride(void) { return PATH_POOL_SAMPLES / path_naxes(); }
+
+static int16_t *path_col(int axis) { return &g_path_pool[axis * path_stride()]; }
 
 void motion_path_init(void) {
-  memset(g_path_buf, 0, sizeof(g_path_buf));
+  memset(g_path_pool, 0, sizeof(g_path_pool));
   g_path_count = 0;
   g_path_play_index = 0;
   g_path_active = false;
   g_path_slice_us_active = 0;
-  g_step_err[0] = g_step_err[1] = 0.0;
+  for (int a = 0; a < PATH_AXES; ++a) {
+    g_step_err[a] = 0.0;
+    g_path_pos_steps[a] = 0;
+    g_path_last_vel_mm_s[a] = 0.0f;
+    g_slice_steps_left[a] = 0;
+    g_slice_sign[a] = 0;
+    g_slice_delay_cycles[a] = 0;
+    g_slice_has_steps[a] = false;
+    g_slice_had_steps[a] = false;
+  }
   g_time_err = 0.0;
   g_gap_cycles = 0.0;
-  g_path_pos_steps[0] = g_path_pos_steps[1] = 0;
-  g_path_last_vel_mm_s[0] = g_path_last_vel_mm_s[1] = 0.0f;
   g_slice_in_progress = false;
-  g_slice_steps_left[0] = g_slice_steps_left[1] = 0;
-  g_slice_sign[0] = g_slice_sign[1] = 0;
-  g_slice_delay_cycles[0] = g_slice_delay_cycles[1] = 0;
-  g_slice_has_steps[0] = g_slice_has_steps[1] = false;
+  g_slice_drain_wait = false;
 }
 
 static int path_buffer_limit(void) {
   int limit = config_get()->path_buffer_size;
+  int cap = config_path_per_axis_max();
   if (limit < 1) {
     limit = 1;
   }
-  if (limit > PATH_BUFFER_MAX) {
-    limit = PATH_BUFFER_MAX;
+  if (limit > cap) {
+    limit = cap;
   }
   return limit;
 }
@@ -72,17 +86,22 @@ bool motion_path_clear(void) {
   return true;
 }
 
-bool motion_path_add2(int16_t a_um, int16_t b_um) {
+bool motion_path_add3(int16_t a_um, int16_t b_um, int16_t c_um) {
   if ((int)g_path_count >= path_buffer_limit()) {
     return false;
   }
-  g_path_buf[0][g_path_count] = a_um;
-  g_path_buf[1][g_path_count] = b_um;
+  int n = path_naxes();
+  int16_t v[3] = {a_um, b_um, c_um};
+  for (int a = 0; a < n; ++a) {
+    path_col(a)[g_path_count] = v[a];
+  }
   ++g_path_count;
   return true;
 }
 
-bool motion_path_add(int16_t distance_um) { return motion_path_add2(distance_um, 0); }
+bool motion_path_add2(int16_t a_um, int16_t b_um) { return motion_path_add3(a_um, b_um, 0); }
+
+bool motion_path_add(int16_t distance_um) { return motion_path_add3(distance_um, 0, 0); }
 
 uint32_t motion_path_count(void) { return g_path_count; }
 
@@ -116,6 +135,14 @@ uint32_t motion_path_diffuse_cycles(uint32_t slice_us, uint32_t sysclk_hz, doubl
   return cycles_i;
 }
 
+static float path_pos_mm(int axis) {
+  float spmm = axis_hw_steps_per_unit(axis);
+  if (spmm < 1e-3f) {
+    spmm = 1.0f;
+  }
+  return (float)g_path_pos_steps[axis] / spmm;
+}
+
 void motion_path_get_status(McStatus *out) {
   if (!out) {
     return;
@@ -124,28 +151,19 @@ void motion_path_get_status(McStatus *out) {
   out->state = MC_STATE_PATH;
   out->enabled = true;
   out->moving = true;
-  float spmm0 = axis_hw_steps_per_unit(0);
-  if (spmm0 < 1e-3f) {
-    spmm0 = 1.0f;
-  }
-  out->pos_mm = (float)g_path_pos_steps[0] / spmm0;
-  out->pos_mm_2 = 0.0f;
-  if (config_axis2_enabled()) {
-    float spmm1 = axis_hw_steps_per_unit(1);
-    if (spmm1 < 1e-3f) {
-      spmm1 = 1.0f;
-    }
-    out->pos_mm_2 = (float)g_path_pos_steps[1] / spmm1;
-  }
+  int n = path_naxes();
+  out->pos_mm = path_pos_mm(0);
   out->vel_mm_s = g_path_last_vel_mm_s[0];
-  out->vel_mm_s_2 = 0.0f;
-  out->acc_mm_s2 = 0.0f;
-  out->acc_mm_s2_2 = 0.0f;
   out->target_mm = out->pos_mm;
-  out->target_mm_2 = out->pos_mm_2;
-  out->has_target = false;
-  if (config_axis2_enabled()) {
+  if (n >= 2) {
+    out->pos_mm_2 = path_pos_mm(1);
     out->vel_mm_s_2 = g_path_last_vel_mm_s[1];
+    out->target_mm_2 = out->pos_mm_2;
+  }
+  if (n >= 3) {
+    out->pos_mm_3 = path_pos_mm(2);
+    out->vel_mm_s_3 = g_path_last_vel_mm_s[2];
+    out->target_mm_3 = out->pos_mm_3;
   }
 }
 
@@ -161,36 +179,32 @@ bool motion_path_go(void) {
     return false;
   }
   motion_end_joy();
-  float spmm0 = axis_hw_steps_per_unit(0);
-  if (spmm0 < 1e-3f) {
-    spmm0 = 1.0f;
-  }
-  g_path_pos_steps[0] = (int64_t)lroundf(st.pos_mm * spmm0);
-  g_path_pos_steps[1] = 0;
-  if (config_axis2_enabled()) {
-    float spmm1 = axis_hw_steps_per_unit(1);
-    if (spmm1 < 1e-3f) {
-      spmm1 = 1.0f;
+  int n = path_naxes();
+  float pos[3] = {st.pos_mm, st.pos_mm_2, st.pos_mm_3};
+  for (int a = 0; a < PATH_AXES; ++a) {
+    float spmm = axis_hw_steps_per_unit(a);
+    if (spmm < 1e-3f) {
+      spmm = 1.0f;
     }
-    g_path_pos_steps[1] = (int64_t)lroundf(st.pos_mm_2 * spmm1);
+    g_path_pos_steps[a] = (a < n) ? (int64_t)lroundf(pos[a] * spmm) : 0;
+    g_step_err[a] = 0.0;
+    g_path_last_vel_mm_s[a] = 0.0f;
+    g_slice_steps_left[a] = 0;
+    g_slice_has_steps[a] = false;
+    g_slice_had_steps[a] = false;
   }
   g_path_play_index = 0;
-  g_step_err[0] = g_step_err[1] = 0.0;
   g_time_err = 0.0;
   g_gap_cycles = 0.0;
-  g_path_last_vel_mm_s[0] = g_path_last_vel_mm_s[1] = 0.0f;
   g_slice_in_progress = false;
-  g_slice_steps_left[0] = g_slice_steps_left[1] = 0;
+  g_slice_drain_wait = false;
   g_path_slice_us_active = (uint32_t)session_get()->path_slice_us;
   if (g_path_slice_us_active < (uint32_t)PATH_SLICE_US_MIN) {
     g_path_slice_us_active = (uint32_t)PATH_SLICE_US_MIN;
   }
   g_path_active = true;
-  pio_step_clear_stall(0);
-  pio_step_start(0);
-  if (config_axis2_enabled()) {
-    pio_step_clear_stall(1);
-    pio_step_start(1);
+  for (int a = 0; a < n; ++a) {
+    pio_step_clear_stall(a);
   }
   pio_step_kick_feed();
   return true;
@@ -200,36 +214,42 @@ void motion_path_abort_to_planner(void) {
   if (!g_path_active) {
     return;
   }
-  planner_takeover_from_path(0, g_path_pos_steps[0], g_path_last_vel_mm_s[0]);
-  if (config_axis2_enabled()) {
-    planner_takeover_from_path(1, g_path_pos_steps[1], g_path_last_vel_mm_s[1]);
+  int n = path_naxes();
+  for (int a = 0; a < n; ++a) {
+    planner_takeover_from_path(a, g_path_pos_steps[a], g_path_last_vel_mm_s[a]);
   }
   g_path_active = false;
   g_slice_in_progress = false;
+  g_slice_drain_wait = false;
 }
 
 int motion_path_fill_fifo(void) {
   int emitted = 0;
   unsigned scan_budget = PATH_FILL_SCAN_BUDGET;
   uint32_t sysclk = pio_step_sysclk_hz();
-  const bool ax2 = config_axis2_enabled();
-  float spmm[2];
-  spmm[0] = axis_hw_steps_per_unit(0);
-  if (spmm[0] < 1e-3f) {
-    spmm[0] = 1.0f;
-  }
-  spmm[1] = ax2 ? axis_hw_steps_per_unit(1) : 1.0f;
-  if (spmm[1] < 1e-3f) {
-    spmm[1] = 1.0f;
+  const int n = path_naxes();
+  float spmm[PATH_AXES];
+  for (int a = 0; a < n; ++a) {
+    spmm[a] = axis_hw_steps_per_unit(a);
+    if (spmm[a] < 1e-3f) {
+      spmm[a] = 1.0f;
+    }
   }
 
   while (g_path_active && scan_budget--) {
-    /* Lockstep: both SMs must have room when axis2 is active. */
-    if (pio_step_tx_room(0) == 0) {
-      break;
-    }
-    if (ax2 && pio_step_tx_room(1) == 0) {
-      break;
+    if (g_slice_drain_wait) {
+      bool drained = true;
+      for (int a = 0; a < n; ++a) {
+        if (g_slice_had_steps[a] && !pio_step_tx_empty(a)) {
+          drained = false;
+          break;
+        }
+      }
+      if (!drained) {
+        break;
+      }
+      g_slice_drain_wait = false;
+      g_slice_in_progress = false;
     }
 
     if (!g_slice_in_progress) {
@@ -238,73 +258,92 @@ int motion_path_fill_fifo(void) {
         planner_request_stop();
         break;
       }
-      int16_t d0 = g_path_buf[0][g_path_play_index];
-      int16_t d1 = g_path_buf[1][g_path_play_index];
+      int16_t d[PATH_AXES];
+      int32_t steps[PATH_AXES];
+      bool any_steps = false;
+      for (int a = 0; a < n; ++a) {
+        d[a] = path_col(a)[g_path_play_index];
+        steps[a] = motion_path_diffuse_steps(d[a], spmm[a], &g_step_err[a]);
+        if (steps[a] != 0) {
+          any_steps = true;
+        }
+      }
       ++g_path_play_index;
-
-      int32_t steps0 = motion_path_diffuse_steps(d0, spmm[0], &g_step_err[0]);
-      int32_t steps1 = ax2 ? motion_path_diffuse_steps(d1, spmm[1], &g_step_err[1]) : 0;
       uint32_t cycles = motion_path_diffuse_cycles(g_path_slice_us_active, sysclk, &g_time_err);
 
-      if (steps0 == 0 && steps1 == 0) {
+      if (!any_steps) {
         g_gap_cycles += (double)cycles;
-        g_path_last_vel_mm_s[0] = 0.0f;
-        g_path_last_vel_mm_s[1] = 0.0f;
+        for (int a = 0; a < n; ++a) {
+          g_path_last_vel_mm_s[a] = 0.0f;
+        }
         continue;
       }
 
       double total_cycles = (double)cycles + g_gap_cycles;
       g_gap_cycles = 0.0;
-
-      for (int a = 0; a < (ax2 ? 2 : 1); ++a) {
-        int32_t steps = (a == 0) ? steps0 : steps1;
-        if (steps == 0) {
+      bool mixed = false;
+      for (int a = 0; a < n; ++a) {
+        if (steps[a] == 0) {
+          mixed = true;
           g_slice_has_steps[a] = false;
+          g_slice_had_steps[a] = false;
           g_slice_steps_left[a] = 0;
           g_path_last_vel_mm_s[a] = 0.0f;
           continue;
         }
-        int32_t n_total = steps < 0 ? -steps : steps;
+        int32_t n_total = steps[a] < 0 ? -steps[a] : steps[a];
         double period_cycles = total_cycles / (double)n_total;
         double step_hz = (double)sysclk / period_cycles;
         g_slice_delay_cycles[a] = planner_hz_to_delay((float)step_hz, sysclk, PIO_STEP_PERIOD_FIXED);
-        g_slice_sign[a] = steps > 0 ? 1 : -1;
+        g_slice_sign[a] = steps[a] > 0 ? 1 : -1;
         g_slice_steps_left[a] = n_total;
         g_slice_has_steps[a] = true;
+        g_slice_had_steps[a] = true;
         g_path_last_vel_mm_s[a] = (float)(step_hz / (double)spmm[a]) * (float)g_slice_sign[a];
       }
+      (void)mixed;
       g_slice_in_progress = true;
     }
 
     bool progressed = false;
-    for (int a = 0; a < (ax2 ? 2 : 1); ++a) {
+    for (int a = 0; a < n; ++a) {
       if (!g_slice_has_steps[a] || g_slice_steps_left[a] <= 0) {
         continue;
       }
-      int n = g_slice_steps_left[a];
-      if (n > PLANNER_PACK_MAX) {
-        n = PLANNER_PACK_MAX;
+      if (pio_step_tx_room(a) == 0) {
+        continue;
+      }
+      int nput = g_slice_steps_left[a];
+      if (nput > PLANNER_PACK_MAX) {
+        nput = PLANNER_PACK_MAX;
       }
       pio_step_set_dir(a, g_slice_sign[a]);
-      if (!pio_step_put_word(a, g_slice_delay_cycles[a], (uint8_t)n)) {
-        /* TX full — keep slice in progress */
-        g_slice_in_progress = true;
-        return emitted;
+      if (!pio_step_put_word(a, g_slice_delay_cycles[a], (uint8_t)nput)) {
+        continue;
       }
-      g_path_pos_steps[a] += (int64_t)n * (int64_t)g_slice_sign[a];
-      g_slice_steps_left[a] -= n;
+      pio_step_start(a);
+      g_path_pos_steps[a] += (int64_t)nput * (int64_t)g_slice_sign[a];
+      g_slice_steps_left[a] -= nput;
       progressed = true;
       ++emitted;
     }
 
-    bool done = true;
-    for (int a = 0; a < (ax2 ? 2 : 1); ++a) {
+    bool queued = true;
+    bool any_idle = false;
+    for (int a = 0; a < n; ++a) {
       if (g_slice_has_steps[a] && g_slice_steps_left[a] > 0) {
-        done = false;
+        queued = false;
+      }
+      if (!g_slice_had_steps[a]) {
+        any_idle = true;
       }
     }
-    if (done) {
-      g_slice_in_progress = false;
+    if (queued) {
+      if (any_idle) {
+        g_slice_drain_wait = true;
+      } else {
+        g_slice_in_progress = false;
+      }
     }
     if (!progressed && g_slice_in_progress) {
       break;
@@ -333,6 +372,7 @@ bool motion_path_go(void) {
 void motion_path_abort_to_planner(void) {
   g_path_active = false;
   g_slice_in_progress = false;
+  g_slice_drain_wait = false;
 }
 
 int motion_path_fill_fifo(void) { return 0; }

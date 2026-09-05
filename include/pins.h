@@ -1,19 +1,30 @@
 #pragma once
 
 // Hardware pin map — compile-time only (not changeable by commands).
-// Select exactly one board: BOARD_PICO (default), BOARD_PICO_W, or BOARD_RP2040_ZERO.
+// Pico 2 / Pico 2 W reuse the Pico / Pico W header map.
+// RP2350 Mini (Waveshare RP2350-Zero) reuses the RP2040-Zero map.
+
+#if defined(BOARD_PICO2) && !defined(BOARD_PICO)
+#define BOARD_PICO 1
+#endif
+#if defined(BOARD_PICO2_W) && !defined(BOARD_PICO_W)
+#define BOARD_PICO_W 1
+#endif
+#if defined(BOARD_RP2350_MINI) && !defined(BOARD_RP2040_ZERO)
+#define BOARD_RP2040_ZERO 1
+#endif
 
 #if !defined(BOARD_PICO) && !defined(BOARD_PICO_W) && !defined(BOARD_RP2040_ZERO)
 #define BOARD_PICO 1
 #endif
 #if (defined(BOARD_PICO) + defined(BOARD_PICO_W) + defined(BOARD_RP2040_ZERO)) > 1
-#error "pins.h: define exactly one of BOARD_PICO, BOARD_PICO_W, BOARD_RP2040_ZERO"
+#error "pins.h: define exactly one board (Pico / Pico W / Pico2 / Pico2 W / RP2040-Zero / RP2350 Mini)"
 #endif
 
 /* Oscilloscope HW debug pins (compile-time). Define DEBUG_HW to enable.
- * Off by default. On Pico, DEBUG_HW GPIOs overlap axis2 (GP10–13); when
- * axis2_use=1, runtime gates dbg_hw_* so those pins stay on the 2nd axis.
- * On Zero, DBG and axis2 use disjoint GPIOs and may be active together. */
+ * Off by default. On Pico, DEBUG_HW GPIOs overlap axis2 (GP10–13) and EXT
+ * (GP14–15); runtime gates dbg_hw_* when those functions are claimed.
+ * On Zero, DBG overlaps EXT / LIMIT3 (GP18, 21–23). */
 /* #define DEBUG_HW 1 */
 
 #define PIN_EXT_COUNT 4 /* only PIN_EXT_0…3 */
@@ -23,11 +34,11 @@
 #if defined(BOARD_RP2040_ZERO)
 
 /* Waveshare RP2040-Zero — see SliderDoc mc/pins.md / assets/img/rp2040zero_pinout_mc.png
- * axis2_use is supported; DBG (if DEBUG_HW) does not overlap axis2. */
-#define PIN_EXT_0 27
-#define PIN_EXT_1 26
-#define PIN_EXT_2 15
-#define PIN_EXT_3 14
+ * axis 2 and 3 are supported; DBG (if DEBUG_HW) overlaps new EXT / LIMIT3. */
+#define PIN_EXT_0 24
+#define PIN_EXT_1 23
+#define PIN_EXT_2 22
+#define PIN_EXT_3 21
 
 #define PIN_DRV_STEP 0
 #define PIN_DRV_DIR 1
@@ -36,7 +47,7 @@
 #define PIN_SW_LIMIT_L 4
 #define PIN_SW_LIMIT_R 5
 
-/* Optional 2nd STEP/DIR axis (axis2_use=1). Disjoint from DBG. */
+/* Optional 2nd STEP/DIR axis (axis>=2). */
 #define PIN_DRV_STEP2 6
 #define PIN_DRV_DIR2 7
 #define PIN_DRV_EN2 11
@@ -44,8 +55,21 @@
 #define PIN_SW_LIMIT_L2 9
 #define PIN_SW_LIMIT_R2 10
 
+/* Optional 3rd STEP/DIR axis (axis>=3). STEP polarity follows axis 2. */
+#define PIN_DRV_STEP3 27
+#define PIN_DRV_DIR3 26
+#define PIN_DRV_EN3 15
+#define PIN_DRV_ERROR3 14
+#define PIN_SW_LIMIT_L3 18
+#define PIN_SW_LIMIT_R3 17
+
+#define PIN_CAMERA_CTRL 25
+
 #define PIN_AXIS2_SUPPORTED 1
+#define PIN_AXIS3_SUPPORTED 1
 #define PIN_DBG_OVERLAPS_AXIS2 0
+#define PIN_DBG_OVERLAPS_EXT 1
+#define PIN_DBG_OVERLAPS_AXIS3 1
 
 /* UART0 TX/RX on GP12/13 → Serial1 */
 #define PIN_UART_TX 12
@@ -66,10 +90,10 @@
 #else /* BOARD_PICO / BOARD_PICO_W — classic Pico header map */
 
 /* General-purpose extender outputs (logical on/off via Xn / Extn). */
-#define PIN_EXT_0 2
-#define PIN_EXT_1 3
-#define PIN_EXT_2 4
-#define PIN_EXT_3 5
+#define PIN_EXT_0 8
+#define PIN_EXT_1 9
+#define PIN_EXT_2 14
+#define PIN_EXT_3 15
 
 #define PIN_DRV_STEP 18
 #define PIN_DRV_DIR 19
@@ -78,15 +102,29 @@
 #define PIN_SW_LIMIT_L 26
 #define PIN_SW_LIMIT_R 27
 
-/* Optional 2nd STEP/DIR axis (axis2_use=1). Overlaps DBG GP10–13. */
+/* Optional 2nd STEP/DIR axis (axis>=2). Overlaps DBG GP10–13. */
 #define PIN_DRV_STEP2 13
 #define PIN_DRV_DIR2 12
 #define PIN_DRV_EN2 11
 #define PIN_DRV_ERROR2 10
 #define PIN_SW_LIMIT_L2 7
 #define PIN_SW_LIMIT_R2 6
+
+/* Optional 3rd STEP/DIR axis (axis>=3). STEP polarity follows axis 2. */
+#define PIN_DRV_STEP3 5
+#define PIN_DRV_DIR3 4
+#define PIN_DRV_EN3 3
+#define PIN_DRV_ERROR3 2
+#define PIN_SW_LIMIT_L3 1
+#define PIN_SW_LIMIT_R3 0
+
+#define PIN_CAMERA_CTRL 22
+
 #define PIN_AXIS2_SUPPORTED 1
+#define PIN_AXIS3_SUPPORTED 1
 #define PIN_DBG_OVERLAPS_AXIS2 1
+#define PIN_DBG_OVERLAPS_EXT 1
+#define PIN_DBG_OVERLAPS_AXIS3 0
 
 // UART to UI controller (115200 baud).
 // Available HW UART pins (RP2040 / earlephilhower Arduino core):
@@ -101,7 +139,7 @@
 #if defined(BOARD_PICO_W)
 /* External LED on GP28. Pico W onboard LED is CYW43 WL_GPIO0 (LED_BUILTIN=32);
  * earlephilhower does not support CYW43 access from FreeRTOS tasks (heartbeat
- * runs on proto). Use PlatformIO env picow (board=rpipicow, -DBOARD_PICO_W). */
+ * runs on proto). Use PlatformIO env picow or pico2w. */
 #define PIN_LED 28
 #else
 /* Classic Pico onboard LED (GP25 via board package LED_BUILTIN). */
@@ -126,6 +164,15 @@
 #ifndef PIN_AXIS2_SUPPORTED
 #define PIN_AXIS2_SUPPORTED 0
 #endif
+#ifndef PIN_AXIS3_SUPPORTED
+#define PIN_AXIS3_SUPPORTED 0
+#endif
 #ifndef PIN_DBG_OVERLAPS_AXIS2
 #define PIN_DBG_OVERLAPS_AXIS2 0
+#endif
+#ifndef PIN_DBG_OVERLAPS_AXIS3
+#define PIN_DBG_OVERLAPS_AXIS3 0
+#endif
+#ifndef PIN_DBG_OVERLAPS_EXT
+#define PIN_DBG_OVERLAPS_EXT 0
 #endif

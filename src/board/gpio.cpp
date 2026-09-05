@@ -55,18 +55,22 @@ static void init_axis_gpio(int axis) {
 }
 
 void board_gpio_init(void) {
-  /* Unsupported boards: clear stray axis2_use before pin setup. */
-  (void)config_axis2_enabled();
+  (void)config_axis_count();
 
-  init_axis_gpio(0);
-  if (config_axis2_enabled()) {
-    init_axis_gpio(1);
+  int n = axis_hw_count();
+  for (int axis = 0; axis < n; ++axis) {
+    init_axis_gpio(axis);
   }
 
   for (int i = 0; i < PIN_EXT_COUNT; ++i) {
     pinMode(k_ext_pins[i], OUTPUT);
     ext_write_level(i, false); /* inactive at boot */
   }
+
+#ifdef PIN_CAMERA_CTRL
+  pinMode(PIN_CAMERA_CTRL, OUTPUT);
+  digitalWrite(PIN_CAMERA_CTRL, LOW); /* inactive */
+#endif
 
   board_buzzer_reconfigure();
   dbg_hw_gpio_init();
@@ -151,7 +155,7 @@ void board_buzzer_tick(unsigned dt_ms) {
 static bool g_ext_on[PIN_EXT_COUNT];
 
 void board_gpio_init(void) {
-  (void)config_axis2_enabled();
+  (void)config_axis_count();
   for (int i = 0; i < PIN_EXT_COUNT; ++i) {
     g_ext_on[i] = false;
   }

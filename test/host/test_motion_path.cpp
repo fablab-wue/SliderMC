@@ -2,6 +2,9 @@
 #include "motion_api.h"
 #include "config_store.h"
 #include "config_defaults.h"
+#include "protocol.h"
+
+void protocol_cancel_waits_and_chain(void) {}
 
 #include <cmath>
 #include <cstdio>
@@ -71,6 +74,18 @@ int main(void) {
     expect_true("clear for dual", motion_path_clear());
     expect_true("add2", motion_path_add2(10, -20));
     expect_true("count after add2", motion_path_count() == 1);
+    expect_true("clear for triple", motion_path_clear());
+    expect_true("add3", motion_path_add3(1, 2, 3));
+    expect_true("count after add3", motion_path_count() == 1);
+    config_set_key("axis", "3");
+    expect_true("3-axis path cap is pool/3",
+                config_path_per_axis_max() == PATH_POOL_SAMPLES / 3);
+    config_set_key("axis", "2");
+    expect_true("2-axis path cap is pool/2",
+                config_path_per_axis_max() == PATH_POOL_SAMPLES / 2);
+    config_set_key("axis", "1");
+    expect_true("1-axis path cap is full pool",
+                config_path_per_axis_max() == PATH_POOL_SAMPLES);
     config_set_key("path_buffer_size", "32000");
   }
 
