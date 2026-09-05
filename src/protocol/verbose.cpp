@@ -11,10 +11,14 @@
  * display (e.g. OLED). Also acts as a heartbeat that the MC is alive.
  * Realtime `?` uses the same line format.
  *
- * 1-axis:  #I pos | #M pos speed accel [target] | #H pos speed accel
- * 2-axis:  #I pos1 pos2
- *          #H pos1 pos2 speed1 speed2 accel1 accel2
- *          #M pos1 pos2 speed1 speed2 accel1 accel2 target1 target2
+ * Each axis is a 1-axis group. 2-axis joins groups with " | ".
+ *
+ * 1-axis:  #I pos
+ *          #M pos speed accel [target]
+ *          #H pos speed accel
+ * 2-axis:  #I pos1 | pos2
+ *          #H pos1 speed1 accel1 | pos2 speed2 accel2
+ *          #M pos1 speed1 accel1 target1 | pos2 speed2 accel2 target2
  */
 
 static char g_last_verbose[192];
@@ -94,37 +98,41 @@ static void append_num(char *buf, size_t buflen, float v) {
   strncat(buf, num, buflen - used - 1);
 }
 
+/** Append one axis group: pos [speed accel [target]]. */
+static void append_axis_group(char *buf, size_t buflen, float pos, float vel, float acc,
+                              float dest, bool moving, bool homing, bool emit_dest) {
+  append_num(buf, buflen, pos);
+  if (moving || homing) {
+    append_num(buf, buflen, fabsf(vel));
+    append_num(buf, buflen, fabsf(acc));
+    if (moving && !homing && emit_dest) {
+      append_num(buf, buflen, dest);
+    }
+  }
+}
+
 /** Build status line into buf (including trailing '\\n'). */
 static void build_status_line(char *buf, size_t buflen) {
   McStatus st;
   motion_get_status(&st);
   char letter = protocol_state_letter();
-  char pos[32];
-  format_num(pos, sizeof(pos), st.pos_mm);
-  snprintf(buf, buflen, "#%c %s", letter, pos);
+  snprintf(buf, buflen, "#%c", letter);
 
   const bool ax2 = config_axis2_enabled();
-  if (ax2) {
-    append_num(buf, buflen, st.pos_mm_2);
-  }
+  const bool emit_dest1 = st.has_target;
+  const bool emit_dest2 = st.moving && !st.homing;
 
-  if (st.moving || st.homing) {
-    if (ax2) {
-      append_num(buf, buflen, fabsf(st.vel_mm_s));
-      append_num(buf, buflen, fabsf(st.vel_mm_s_2));
-      append_num(buf, buflen, fabsf(st.acc_mm_s2));
-      append_num(buf, buflen, fabsf(st.acc_mm_s2_2));
-      if (st.moving && !st.homing) {
-        append_num(buf, buflen, st.target_mm);
-        append_num(buf, buflen, st.target_mm_2);
-      }
-    } else {
-      append_num(buf, buflen, fabsf(st.vel_mm_s));
-      append_num(buf, buflen, fabsf(st.acc_mm_s2));
-      if (st.moving && !st.homing && st.has_target) {
-        append_num(buf, buflen, st.target_mm);
-      }
+  append_axis_group(buf, buflen, st.pos_mm, st.vel_mm_s, st.acc_mm_s2, st.target_mm,
+                    st.moving, st.homing, ax2 ? emit_dest2 : emit_dest1);
+  if (ax2) {
+    size_t used = strlen(buf);
+    if (used + 3 < buflen) {
+      buf[used++] = ' ';
+      buf[used++] = '|';
+      buf[used] = 0;
     }
+    append_axis_group(buf, buflen, st.pos_mm_2, st.vel_mm_s_2, st.acc_mm_s2_2,
+                      st.target_mm_2, st.moving, st.homing, emit_dest2);
   }
   size_t used = strlen(buf);
   if (used + 1 < buflen) {

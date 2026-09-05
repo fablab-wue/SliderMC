@@ -480,12 +480,12 @@ bool motion_home(int axis_1based) {
     return true;
   }
   bool cfg_ok = false;
-  if (hm == 1 || hm == 2) {
-    cfg_ok = ((axis == 1) ? c->sw_home_use_2 : c->sw_home_use) != 0;
-  } else if (hm == 3) {
+  if (hm == 1) {
     cfg_ok = ((axis == 1) ? c->sw_limit_l_use_2 : c->sw_limit_l_use) != 0;
-  } else if (hm == 4) {
+  } else if (hm == 2) {
     cfg_ok = ((axis == 1) ? c->sw_limit_r_use_2 : c->sw_limit_r_use) != 0;
+  } else if (hm == 3 || hm == 4) {
+    cfg_ok = true;
   }
   if (!cfg_ok) {
     return false;
@@ -528,6 +528,22 @@ bool motion_home(int axis_1based) {
     g_eta_ms_2 = ms;
     g_eta_total[1] = ms;
     g_move_start[1] = g_st.pos_mm_2;
+  }
+  refresh_state();
+  return true;
+}
+
+bool motion_set_position(float mm0_or_nan, float mm1_or_nan) {
+  if (g_st.moving || g_st.homing) {
+    return false;
+  }
+  if (!isnan(mm0_or_nan)) {
+    g_st.pos_mm = mm0_or_nan;
+    g_st.target_mm = mm0_or_nan;
+  }
+  if (!isnan(mm1_or_nan) && config_axis2_enabled()) {
+    g_st.pos_mm_2 = mm1_or_nan;
+    g_st.target_mm_2 = mm1_or_nan;
   }
   refresh_state();
   return true;

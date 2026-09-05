@@ -38,14 +38,11 @@ void planner_set_cruise_accel(int axis, float cruise_mm_s, float accel_mm_s2);
  */
 void planner_takeover_from_path(int axis, int64_t pos_steps, float vel_mm_s);
 
+/** Redefine the step counter so IP reports mm (no motion). */
+void planner_set_position(int axis, float mm);
+
 /** True if signed move (neg=left, pos=right) is blocked by hard limit. */
 bool planner_hard_limit_blocks_sign(int axis, int sign);
-
-/** Debounced home switch asserted (SW_HOME_use; for MH only, never a halt). */
-bool planner_home_switch_asserted(int axis);
-
-/** True when SW_HOME_use is enabled for this axis. */
-bool planner_home_switch_enabled(int axis);
 
 bool planner_is_busy(void);
 bool planner_is_moving(void);

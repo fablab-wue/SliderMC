@@ -62,6 +62,8 @@ bool motion_halt(void);   /* error-decel halt both */
 /** Homing cycle for axis 1 or 2 (1-based). Default callers use 1. */
 bool motion_home(int axis_1based);
 bool motion_soft_reset(void); /* clear alarm / reset hold */
+/** Redefine reported pose. NAN = leave that axis. Idle only. */
+bool motion_set_position(float mm0_or_nan, float mm1_or_nan);
 
 bool motion_set_speed(float mm_s);
 bool motion_set_accel(float mm_s2);

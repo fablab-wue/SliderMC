@@ -10,6 +10,24 @@
 static McConfig g_cfg;
 static McSession g_session;
 static bool g_cfg_ready;
+static bool g_legacy_sw_home_seen;
+
+static void remap_legacy_home_mode(int *mode) {
+  if (*mode == 3) {
+    *mode = 1;
+  } else if (*mode == 4) {
+    *mode = 2;
+  }
+}
+
+void config_migrate_legacy_home_modes(void) {
+  if (!g_legacy_sw_home_seen) {
+    return;
+  }
+  remap_legacy_home_mode(&g_cfg.home_mode);
+  remap_legacy_home_mode(&g_cfg.home_mode_2);
+  g_legacy_sw_home_seen = false;
+}
 
 static int icmp(const char *a, const char *b) {
   while (*a && *b) {
@@ -90,8 +108,6 @@ static void init_axis2_defaults(void) {
   g_cfg.drv_dir_active_2 = CFG_DEFAULT_DRV_DIR_ACTIVE;
   g_cfg.drv_en_active_2 = CFG_DEFAULT_DRV_EN_ACTIVE;
   g_cfg.drv_error_active_2 = CFG_DEFAULT_DRV_ERROR_ACTIVE;
-  g_cfg.sw_home_active_2 = CFG_DEFAULT_SW_HOME_ACTIVE;
-  g_cfg.sw_home_use_2 = CFG_DEFAULT_SW_HOME_USE;
   g_cfg.sw_limit_l_active_2 = CFG_DEFAULT_SW_LIMIT_L_ACTIVE;
   g_cfg.sw_limit_r_active_2 = CFG_DEFAULT_SW_LIMIT_R_ACTIVE;
   g_cfg.sw_limit_l_use_2 = CFG_DEFAULT_SW_LIMIT_L_USE;
@@ -124,8 +140,6 @@ static void config_apply_defaults(void) {
   g_cfg.drv_step_active = CFG_DEFAULT_DRV_STEP_ACTIVE;
   g_cfg.drv_dir_active = CFG_DEFAULT_DRV_DIR_ACTIVE;
   g_cfg.drv_en_active = CFG_DEFAULT_DRV_EN_ACTIVE;
-  g_cfg.sw_home_active = CFG_DEFAULT_SW_HOME_ACTIVE;
-  g_cfg.sw_home_use = CFG_DEFAULT_SW_HOME_USE;
   g_cfg.drv_error_active = CFG_DEFAULT_DRV_ERROR_ACTIVE;
   g_cfg.sw_limit_l_active = CFG_DEFAULT_SW_LIMIT_L_ACTIVE;
   g_cfg.sw_limit_r_active = CFG_DEFAULT_SW_LIMIT_R_ACTIVE;
@@ -542,11 +556,10 @@ bool config_set_key(const char *key, const char *value) {
   if (icmp(key, "DRV_EN_active") == 0) {
     return set_01(value, &g_cfg.drv_en_active);
   }
-  if (icmp(key, "SW_HOME_active") == 0) {
-    return set_01(value, &g_cfg.sw_home_active);
-  }
-  if (icmp(key, "SW_HOME_use") == 0) {
-    return set_01(value, &g_cfg.sw_home_use);
+  if (icmp(key, "SW_HOME_active") == 0 || icmp(key, "SW_HOME_use") == 0 ||
+      icmp(key, "SW_HOME_active_2") == 0 || icmp(key, "SW_HOME_use_2") == 0) {
+    g_legacy_sw_home_seen = true;
+    return true;
   }
   if (icmp(key, "DRV_ERROR_active") == 0) {
     return set_01(value, &g_cfg.drv_error_active);
@@ -577,12 +590,6 @@ bool config_set_key(const char *key, const char *value) {
   }
   if (icmp(key, "DRV_ERROR_active_2") == 0) {
     return set_01(value, &g_cfg.drv_error_active_2);
-  }
-  if (icmp(key, "SW_HOME_active_2") == 0) {
-    return set_01(value, &g_cfg.sw_home_active_2);
-  }
-  if (icmp(key, "SW_HOME_use_2") == 0) {
-    return set_01(value, &g_cfg.sw_home_use_2);
   }
   if (icmp(key, "SW_LIMIT_L_active_2") == 0) {
     return set_01(value, &g_cfg.sw_limit_l_active_2);
@@ -810,14 +817,6 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     snprintf(out, out_len, "%d", c->drv_en_active);
     return true;
   }
-  if (icmp(key, "SW_HOME_active") == 0) {
-    snprintf(out, out_len, "%d", c->sw_home_active);
-    return true;
-  }
-  if (icmp(key, "SW_HOME_use") == 0) {
-    snprintf(out, out_len, "%d", c->sw_home_use);
-    return true;
-  }
   if (icmp(key, "DRV_ERROR_active") == 0) {
     snprintf(out, out_len, "%d", c->drv_error_active);
     return true;
@@ -856,14 +855,6 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
   }
   if (icmp(key, "DRV_ERROR_active_2") == 0) {
     snprintf(out, out_len, "%d", c->drv_error_active_2);
-    return true;
-  }
-  if (icmp(key, "SW_HOME_active_2") == 0) {
-    snprintf(out, out_len, "%d", c->sw_home_active_2);
-    return true;
-  }
-  if (icmp(key, "SW_HOME_use_2") == 0) {
-    snprintf(out, out_len, "%d", c->sw_home_use_2);
     return true;
   }
   if (icmp(key, "SW_LIMIT_L_active_2") == 0) {
@@ -965,8 +956,6 @@ void config_foreach(config_foreach_fn fn, void *ctx) {
       "DRV_STEP_active",
       "DRV_DIR_active",
       "DRV_EN_active",
-      "SW_HOME_active",
-      "SW_HOME_use",
       "DRV_ERROR_active",
       "SW_LIMIT_L_active",
       "SW_LIMIT_R_active",
@@ -988,8 +977,6 @@ void config_foreach(config_foreach_fn fn, void *ctx) {
       "DRV_DIR_active_2",
       "DRV_EN_active_2",
       "DRV_ERROR_active_2",
-      "SW_HOME_active_2",
-      "SW_HOME_use_2",
       "SW_LIMIT_L_active_2",
       "SW_LIMIT_R_active_2",
       "SW_LIMIT_L_use_2",

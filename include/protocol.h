@@ -42,7 +42,7 @@ void protocol_feed_uart_byte(uint8_t b);
  */
 void protocol_poll(unsigned dt_ms);
 
-/** Format and send a `?` status line (same compact `#…` format as verbose). */
+/** Format and send a `?` status line (same compact `#…` / ` | ` format as verbose). */
 void protocol_send_status(void);
 
 /**

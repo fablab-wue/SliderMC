@@ -48,15 +48,6 @@ static inline int axis_hw_error_pin(int axis) {
 #endif
 }
 
-static inline int axis_hw_home_pin(int axis) {
-#if PIN_AXIS2_SUPPORTED
-  return (axis == 1) ? PIN_SW_HOME2 : PIN_SW_HOME;
-#else
-  (void)axis;
-  return PIN_SW_HOME;
-#endif
-}
-
 static inline int axis_hw_limit_l_pin(int axis) {
 #if PIN_AXIS2_SUPPORTED
   return (axis == 1) ? PIN_SW_LIMIT_L2 : PIN_SW_LIMIT_L;
@@ -93,16 +84,6 @@ static inline int axis_hw_en_active(int axis) {
 static inline int axis_hw_error_active(int axis) {
   const McConfig *c = config_get();
   return (axis == 1) ? c->drv_error_active_2 : c->drv_error_active;
-}
-
-static inline int axis_hw_home_active(int axis) {
-  const McConfig *c = config_get();
-  return (axis == 1) ? c->sw_home_active_2 : c->sw_home_active;
-}
-
-static inline int axis_hw_home_use(int axis) {
-  const McConfig *c = config_get();
-  return (axis == 1) ? c->sw_home_use_2 : c->sw_home_use;
 }
 
 static inline int axis_hw_limit_l_active(int axis) {

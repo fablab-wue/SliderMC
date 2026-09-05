@@ -141,6 +141,7 @@ int main(void) {
   reset_out();
   protocol_feed_byte('?');
   expect_contains("realtime ? compact", "#I ");
+  expect_not_contains("realtime ? 1-axis has no axis separator", " | ");
   expect_not_contains("realtime ? not old format", "<I|P:");
 
   reset_out();
@@ -485,6 +486,7 @@ int main(void) {
   expect_contains("Help SetSpeed", "SS    SetSpeed");
   expect_contains("Help SetDebug", "SD    SetDebug");
   expect_contains("Help SetLeft", "SL    SetLeft");
+  expect_contains("Help SetPosition", "SP    SetPosition");
   expect_contains("Help GetLeft", "GL    GetLeft");
   expect_contains("Help IsReady", "IR    IsReady");
   expect_contains("Help MoveJoy", "MJ    MoveJoy");
@@ -922,6 +924,9 @@ int main(void) {
   reset_out();
   feed("MT 100 50\n");
   expect_empty("MT dual absolute accepted");
+  reset_out();
+  protocol_feed_byte('?');
+  expect_contains("moving ? grouped axis2", " | ");
   {
     /* |d2|/|d1| = 50/100 = 0.5 */
     float v0 = motion_host_axis_cruise(0);
@@ -1136,7 +1141,7 @@ int main(void) {
   reset_out();
   protocol_feed_byte('?');
   expect_contains("realtime ? with pos2", "#I ");
-  /* idle: #I pos1 pos2 — at least two spaces separating three tokens after #I */
+  expect_contains("idle ? grouped axis2", " | ");
   {
     size_t hash = g_out.find("#I ");
     if (hash == std::string::npos) {
@@ -1148,15 +1153,9 @@ int main(void) {
       if (nl != std::string::npos) {
         line = line.substr(0, nl);
       }
-      /* "#I a b" → two spaces minimum in the numeric part */
-      int spaces = 0;
-      for (char ch : line) {
-        if (ch == ' ') {
-          ++spaces;
-        }
-      }
-      if (spaces < 2) {
-        std::fprintf(stderr, "FAIL idle ? needs pos1 pos2, got:\n%s\n", line.c_str());
+      /* "#I pos1 | pos2" */
+      if (line.find(" | ") == std::string::npos) {
+        std::fprintf(stderr, "FAIL idle ? needs pos1 | pos2, got:\n%s\n", line.c_str());
         ++g_fail;
       } else {
         std::printf("OK   idle ? dual positions\n");
@@ -1213,6 +1212,71 @@ int main(void) {
   feed("Help\n");
   expect_contains("Help lists RB", "RB");
   expect_contains("Help lists Reboot", "Reboot");
+
+  reset_out();
+  feed("SE 1\n");
+  feed("SP\n");
+  expect_empty("bare SP silent");
+  reset_out();
+  feed("IP\n");
+  expect_contains("bare SP zeros pose", "IP:0.00");
+  reset_out();
+  feed("SP 100\n");
+  expect_empty("SP 100 silent");
+  reset_out();
+  feed("IP\n");
+  expect_contains("SP 100 pose", "IP:100.00");
+  reset_out();
+  feed("SP 0\n");
+  expect_empty("SP 0 silent");
+  reset_out();
+  feed("IP\n");
+  expect_contains("SP 0 pose", "IP:0.00");
+  reset_out();
+  feed("CS home_mode 3\n");
+  expect_empty("CS home_mode 3 stall");
+  reset_out();
+  feed("CG home_mode\n");
+  expect_contains("CS home_mode 3 persists", "CG:home_mode=3");
+  reset_out();
+  feed("CS SW_HOME_use 1\n");
+  expect_empty("legacy SW_HOME_use ignored");
+  config_migrate_legacy_home_modes();
+  reset_out();
+  feed("CG home_mode\n");
+  expect_contains("legacy migrate 3 to 1", "CG:home_mode=1");
+  reset_out();
+  feed("CS home_mode 4\n");
+  feed("CS SW_HOME_use_2 0\n");
+  config_migrate_legacy_home_modes();
+  reset_out();
+  feed("CG home_mode\n");
+  expect_contains("legacy migrate 4 to 2", "CG:home_mode=2");
+  reset_out();
+  feed("CS home_mode 0\n");
+  expect_empty("CS home_mode 0 restore");
+  reset_out();
+  feed("CS axis2_use 1\n");
+  feed("SP 10 20\n");
+  expect_empty("SP dual silent");
+  reset_out();
+  feed("IP\n");
+  expect_contains("SP dual pose", "IP:10.00 20.00");
+  reset_out();
+  feed("SP _ 0\n");
+  expect_empty("SP skip axis1");
+  reset_out();
+  feed("IP\n");
+  expect_contains("SP skip keeps axis1", "IP:10.00 0.00");
+  reset_out();
+  feed("MT 50\n");
+  reset_out();
+  feed("SP 0\n");
+  expect_contains("SP rejected while moving", "!E:busy");
+  reset_out();
+  feed("MS\n");
+  feed("CS axis2_use 0\n");
+  expect_empty("restore 1-axis after SP tests");
 
   if (g_fail) {
     std::fprintf(stderr, "\n%d test(s) failed\n", g_fail);

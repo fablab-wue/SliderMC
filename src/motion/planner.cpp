@@ -22,12 +22,17 @@
 #include "axis_hw.h"
 
 #define HARD_LIMIT_DEBOUNCE_S 0.020f
+#define HOME_EN_PULSE_S 0.20f
+#define HOME_STALL_CLEAR_S 2.0f
+#define HOME_STALL_IGNORE_S 0.05f
 #define AXIS_MAX 2
 
 typedef enum {
   HOME_IDLE = 0,
   HOME_CLEAR,
   HOME_SEEK,
+  HOME_STALL_EN,
+  HOME_STALL_WAIT,
   HOME_BACKOFF_REL,
   HOME_BACKOFF_OUT
 } HomePhase;
@@ -77,6 +82,8 @@ typedef struct {
   float home_saved_cruise;
   float home_saved_accel;
   bool home_speeds_saved;
+  float home_stall_timer_s;
+  float home_stall_ignore_s;
 } PlannerAxis;
 
 static PlannerAxis g_ax[AXIS_MAX];
@@ -102,9 +109,13 @@ static void home_start_move_sign(int axis, int sign, float dist_mm);
 static bool home_ref_asserted(int axis);
 static int home_seek_sign(int axis);
 static bool home_cfg_ok(int axis);
-static void home_poll_fsm(int axis);
+static void home_poll_fsm(int axis, float dt_s);
+static void home_begin_stall_reset(int axis);
 static void planner_halt_axis(int axis);
 static void planner_halt_all(void);
+static void apply_en_axis(int axis, bool enabled);
+static bool stall_home_mode(int axis);
+static bool stall_home_ignore_emo(int axis);
 static void coord_clear(void);
 static void coord_clear_if_idle(void);
 static void apply_session_cruise_accel(void);
@@ -223,19 +234,6 @@ static bool read_limit_raw(int axis, bool left) {
 #endif
 }
 
-static bool read_home_raw(int axis) {
-#ifndef HOST_TEST
-  if (!axis_hw_home_use(axis)) {
-    return false;
-  }
-  int level = digitalRead(axis_hw_home_pin(axis)) ? 1 : 0;
-  return config_pin_asserted(level, axis_hw_home_active(axis));
-#else
-  (void)axis;
-  return false;
-#endif
-}
-
 static bool read_drv_error_raw(int axis) {
 #ifndef HOST_TEST
   int level = digitalRead(axis_hw_error_pin(axis)) ? 1 : 0;
@@ -246,20 +244,41 @@ static bool read_drv_error_raw(int axis) {
 #endif
 }
 
-static void apply_en_output(bool enabled) {
+static void apply_en_axis(int axis, bool enabled) {
 #ifndef HOST_TEST
-  for (int a = 0; a < axis_count(); ++a) {
-    int pin = axis_hw_en_pin(a);
-    int active = axis_hw_en_active(a);
-    if (enabled) {
-      digitalWrite(pin, active ? HIGH : LOW);
-    } else {
-      digitalWrite(pin, active ? LOW : HIGH);
-    }
+  int pin = axis_hw_en_pin(axis);
+  int active = axis_hw_en_active(axis);
+  if (enabled) {
+    digitalWrite(pin, active ? HIGH : LOW);
+  } else {
+    digitalWrite(pin, active ? LOW : HIGH);
   }
 #else
+  (void)axis;
   (void)enabled;
 #endif
+}
+
+static void apply_en_output(bool enabled) {
+  for (int a = 0; a < axis_count(); ++a) {
+    apply_en_axis(a, enabled);
+  }
+}
+
+static bool stall_home_mode(int axis) {
+  int hm = axis_hw_home_mode(axis);
+  return hm == 3 || hm == 4;
+}
+
+static bool stall_home_ignore_emo(int axis) {
+  if (!AX.st.homing || !stall_home_mode(axis)) {
+    return false;
+  }
+  if (AX.home_stall_ignore_s > 0.0f) {
+    return true;
+  }
+  return AX.home_phase == HOME_SEEK || AX.home_phase == HOME_STALL_EN ||
+         AX.home_phase == HOME_STALL_WAIT;
 }
 
 static void refresh_state(int axis) {
@@ -337,7 +356,7 @@ static void planner_halt_all(void) {
 static void planner_trip_hard_limit(int axis, bool left) {
   if (AX.st.homing) {
     int hm = axis_hw_home_mode(axis);
-    bool is_ref = (hm == 3 && left) || (hm == 4 && !left);
+    bool is_ref = (hm == 1 && left) || (hm == 2 && !left);
     if (is_ref && AX.home_phase == HOME_SEEK) {
       /* Reference limit hit — enter backoff, do not fault. */
       home_begin_backoff(axis);
@@ -346,7 +365,7 @@ static void planner_trip_hard_limit(int axis, bool left) {
     if (is_ref && (AX.home_phase == HOME_BACKOFF_REL || AX.home_phase == HOME_BACKOFF_OUT)) {
       return;
     }
-    if (hm == 1 || hm == 2) {
+    if (hm >= 1 && hm <= 4) {
       protocol_error("home", "hard");
       /* fall through to hard-stop fault */
     }
@@ -374,14 +393,6 @@ bool planner_hard_limit_blocks_sign(int axis, int sign) {
     return true;
   }
   return false;
-}
-
-bool planner_home_switch_asserted(int axis) {
-  return AX.home_stable;
-}
-
-bool planner_home_switch_enabled(int axis) {
-  return axis_hw_home_use(axis) != 0;
 }
 
 static void debounce_side(int axis, bool left, float dt_s) {
@@ -423,31 +434,6 @@ static void debounce_side(int axis, bool left, float dt_s) {
   }
 }
 
-static void debounce_home(int axis, float dt_s) {
-  if (!axis_hw_home_use(axis)) {
-    AX.home_stable = false;
-    AX.home_timer_s = 0.0f;
-    AX.home_raw_prev = false;
-    return;
-  }
-
-#ifndef HOST_TEST
-  pinMode(axis_hw_home_pin(axis), INPUT_PULLUP);
-#endif
-
-  bool raw = read_home_raw(axis);
-  if (raw != AX.home_raw_prev) {
-    AX.home_timer_s = 0.0f;
-    AX.home_raw_prev = raw;
-  } else {
-    AX.home_timer_s += dt_s;
-  }
-
-  if (AX.home_timer_s >= HARD_LIMIT_DEBOUNCE_S) {
-    AX.home_stable = raw;
-  }
-}
-
 static void debounce_drv_error(int axis, float dt_s) {
 #ifndef HOST_TEST
   pinMode(axis_hw_error_pin(axis), INPUT_PULLUP);
@@ -466,12 +452,25 @@ static void debounce_drv_error(int axis, float dt_s) {
     AX.drv_err_timer_s += dt_s;
   }
 
+  if (AX.home_stall_ignore_s > 0.0f) {
+    AX.home_stall_ignore_s -= dt_s;
+    if (AX.home_stall_ignore_s < 0.0f) {
+      AX.home_stall_ignore_s = 0.0f;
+    }
+  }
+
   if (AX.drv_err_timer_s >= HARD_LIMIT_DEBOUNCE_S) {
     if (raw && !AX.drv_err_stable) {
       AX.drv_err_stable = true;
-      g_drv_error = true;
-      AX.st.drv_error = true;
-      planner_halt_all();
+      if (stall_home_ignore_emo(axis)) {
+        if (AX.home_phase == HOME_SEEK) {
+          home_begin_stall_reset(axis);
+        }
+      } else {
+        g_drv_error = true;
+        AX.st.drv_error = true;
+        planner_halt_all();
+      }
     } else if (!raw && AX.drv_err_stable) {
       AX.drv_err_stable = false;
       /* clear only if no axis still asserts; rechecked below */
@@ -489,7 +488,6 @@ static void debounce_drv_error(int axis, float dt_s) {
 static void planner_poll_switches(int axis, float dt_s) {
   debounce_side(axis, true, dt_s);
   debounce_side(axis, false, dt_s);
-  debounce_home(axis, dt_s);
   debounce_drv_error(axis, dt_s);
 }
 
@@ -513,14 +511,14 @@ static int home_seek_sign(int axis) {
 
 static bool home_ref_asserted(int axis) {
   int hm = axis_hw_home_mode(axis);
-  if (hm == 1 || hm == 2) {
-    return AX.home_stable;
-  }
-  if (hm == 3) {
+  if (hm == 1) {
     return AX.hl_l_stable;
   }
-  if (hm == 4) {
+  if (hm == 2) {
     return AX.hl_r_stable;
+  }
+  if (hm == 3 || hm == 4) {
+    return AX.drv_err_stable;
   }
   return false;
 }
@@ -528,12 +526,12 @@ static bool home_ref_asserted(int axis) {
 static bool home_cfg_ok(int axis) {
   switch (axis_hw_home_mode(axis)) {
   case 1:
-  case 2:
-    return axis_hw_home_use(axis) != 0;
-  case 3:
     return axis_hw_limit_l_use(axis) != 0;
-  case 4:
+  case 2:
     return axis_hw_limit_r_use(axis) != 0;
+  case 3:
+  case 4:
+    return true; /* DRV_ERROR is always polled */
   default:
     return false;
   }
@@ -592,10 +590,13 @@ static void home_begin_backoff(int axis) {
   AX.home_phase = HOME_BACKOFF_REL;
   /* Leave reference switch; clear latches on reference limit so drive-out works. */
   int hm = axis_hw_home_mode(axis);
-  if (hm == 3) {
+  if (hm == 1) {
     AX.hl_l_latched = false;
-  } else if (hm == 4) {
+  } else if (hm == 2) {
     AX.hl_r_latched = false;
+  }
+  if (stall_home_mode(axis)) {
+    AX.home_stall_ignore_s = HOME_STALL_IGNORE_S;
   }
   float span = 50.0f;
   float smin = axis_hw_slider_min(axis);
@@ -651,7 +652,24 @@ static void home_finish(int axis) {
   AX.home_phase = HOME_IDLE;
   reset_ramp(axis);
   home_restore_speeds(axis);
+  if (g_enabled) {
+    apply_en_axis(axis, true);
+  }
   pio_step_stop_soft(axis);
+  refresh_state(axis);
+}
+
+static void home_begin_stall_reset(int axis) {
+  AX.vel_mm_s = 0.0f;
+  AX.st.moving = false;
+  AX.st.has_target = false;
+  AX.stopping = false;
+  AX.target_steps = AX.pos_steps;
+  reset_ramp(axis);
+  pio_step_stop_hard(axis);
+  AX.home_phase = HOME_STALL_EN;
+  AX.home_stall_timer_s = 0.0f;
+  apply_en_axis(axis, false);
   refresh_state(axis);
 }
 
@@ -666,14 +684,40 @@ static void home_abort(int axis, const char *msg) {
   AX.target_steps = AX.pos_steps;
   reset_ramp(axis);
   home_restore_speeds(axis);
+  if (g_enabled) {
+    apply_en_axis(axis, true);
+  }
   pio_step_stop_hard(axis);
   protocol_error("home", msg ? msg : "abort");
   protocol_cancel_waits_and_chain();
   refresh_state(axis);
 }
 
-static void home_poll_fsm(int axis) {
+static void home_poll_fsm(int axis, float dt_s) {
   if (!AX.st.homing || AX.home_phase == HOME_IDLE || AX.stopping) {
+    return;
+  }
+
+  if (AX.home_phase == HOME_STALL_EN) {
+    AX.home_stall_timer_s += dt_s;
+    if (AX.home_stall_timer_s >= HOME_EN_PULSE_S) {
+      apply_en_axis(axis, true);
+      AX.drv_err_seeded = false;
+      AX.home_phase = HOME_STALL_WAIT;
+      AX.home_stall_timer_s = 0.0f;
+    }
+    return;
+  }
+
+  if (AX.home_phase == HOME_STALL_WAIT) {
+    AX.home_stall_timer_s += dt_s;
+    if (!AX.drv_err_stable) {
+      home_begin_backoff(axis);
+      return;
+    }
+    if (AX.home_stall_timer_s >= HOME_STALL_CLEAR_S) {
+      home_abort(axis, "stall");
+    }
     return;
   }
 
@@ -845,6 +889,9 @@ static void settle_if_done(int axis) {
       AX.st.homing = false;
       AX.home_phase = HOME_IDLE;
       home_restore_speeds(axis);
+      if (g_enabled) {
+        apply_en_axis(axis, true);
+      }
       AX.stopping = false;
       AX.target_steps = AX.pos_steps;
       reset_ramp(axis);
@@ -1273,7 +1320,7 @@ int planner_fill_fifo(int axis) {
 
 void planner_tick_axis(int axis, float dt_s) {
   planner_poll_switches(axis, dt_s);
-  home_poll_fsm(axis);
+  home_poll_fsm(axis, dt_s);
   if (AX.dir_pause) {
     AX.dir_pause_s -= dt_s;
     if (AX.dir_pause_s <= 0.0f) {
@@ -1303,7 +1350,7 @@ void planner_tick_axis(int axis, float dt_s) {
     }
     settle_if_done(axis);
   }
-  home_poll_fsm(axis);
+  home_poll_fsm(axis, dt_s);
   refresh_state(axis);
 }
 
@@ -1463,6 +1510,21 @@ void planner_request_stop(void) {
 
 void planner_request_halt(void) { planner_halt_all(); }
 
+void planner_set_position(int axis, float mm) {
+  if (axis < 0 || axis >= axis_count()) {
+    return;
+  }
+  AX.spmm = axis_hw_steps_per_unit(axis);
+  if (AX.spmm < 1e-3f) {
+    AX.spmm = 1.0f;
+  }
+  AX.pos_steps = mm_to_steps(axis, mm);
+  AX.target_steps = AX.pos_steps;
+  AX.st.pos_mm = (float)AX.pos_steps / AX.spmm;
+  AX.st.target_mm = AX.st.pos_mm;
+  refresh_state(axis);
+}
+
 void planner_takeover_from_path(int axis, int64_t pos_steps, float vel_mm_s) {
   if (axis < 0 || axis >= AXIS_MAX) {
     return;
@@ -1510,7 +1572,13 @@ void planner_request_home(int axis) {
   AX.st.homing = true;
   AX.home_sign = home_seek_sign(axis);
 
-  if (home_ref_asserted(axis)) {
+  if (stall_home_mode(axis)) {
+    if (AX.drv_err_stable) {
+      home_begin_stall_reset(axis);
+    } else {
+      home_begin_seek(axis);
+    }
+  } else if (home_ref_asserted(axis)) {
     home_begin_backoff(axis);
   } else if (AX.hl_l_stable || AX.hl_l_latched) {
     home_begin_clear(axis, +1);
@@ -1913,6 +1981,19 @@ bool motion_home(int axis_1based) {
 
 bool motion_soft_reset(void) {
   planner_soft_reset();
+  return true;
+}
+
+bool motion_set_position(float mm0_or_nan, float mm1_or_nan) {
+  if (motion_path_is_active() || planner_is_busy()) {
+    return false;
+  }
+  if (!isnan(mm0_or_nan)) {
+    planner_set_position(0, mm0_or_nan);
+  }
+  if (!isnan(mm1_or_nan) && config_axis2_enabled()) {
+    planner_set_position(1, mm1_or_nan);
+  }
   return true;
 }
 

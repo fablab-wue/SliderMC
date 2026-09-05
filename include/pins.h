@@ -10,11 +10,11 @@
 #error "pins.h: define exactly one of BOARD_PICO, BOARD_PICO_W, BOARD_RP2040_ZERO"
 #endif
 
-/* Oscilloscope HW debug pins (compile-time). Comment out DEBUG_HW to disable.
- * On Pico, DEBUG_HW GPIOs overlap axis2 (GP10–13); when axis2_use=1, runtime
- * gates dbg_hw_* so those pins are used for the second STEP/DIR axis instead.
+/* Oscilloscope HW debug pins (compile-time). Define DEBUG_HW to enable.
+ * Off by default. On Pico, DEBUG_HW GPIOs overlap axis2 (GP10–13); when
+ * axis2_use=1, runtime gates dbg_hw_* so those pins stay on the 2nd axis.
  * On Zero, DBG and axis2 use disjoint GPIOs and may be active together. */
-#define DEBUG_HW 1
+/* #define DEBUG_HW 1 */
 
 #define PIN_EXT_COUNT 4 /* only PIN_EXT_0…3 */
 #define PIN_UART_SERIAL Serial1
@@ -23,7 +23,7 @@
 #if defined(BOARD_RP2040_ZERO)
 
 /* Waveshare RP2040-Zero — see SliderDoc mc/pins.md / assets/img/rp2040zero_pinout_mc.png
- * axis2_use is supported; DBG (GP18–23) does not overlap axis2. */
+ * axis2_use is supported; DBG (if DEBUG_HW) does not overlap axis2. */
 #define PIN_EXT_0 27
 #define PIN_EXT_1 26
 #define PIN_EXT_2 15
@@ -33,18 +33,16 @@
 #define PIN_DRV_DIR 1
 #define PIN_DRV_EN 2
 #define PIN_DRV_ERROR 3
-#define PIN_SW_HOME 4
-#define PIN_SW_LIMIT_L 10
-#define PIN_SW_LIMIT_R 9
+#define PIN_SW_LIMIT_L 4
+#define PIN_SW_LIMIT_R 5
 
 /* Optional 2nd STEP/DIR axis (axis2_use=1). Disjoint from DBG. */
-#define PIN_DRV_STEP2 5
-#define PIN_DRV_DIR2 6
-#define PIN_DRV_EN2 17
-#define PIN_DRV_ERROR2 7
-#define PIN_SW_HOME2 8
-#define PIN_SW_LIMIT_L2 25
-#define PIN_SW_LIMIT_R2 24
+#define PIN_DRV_STEP2 6
+#define PIN_DRV_DIR2 7
+#define PIN_DRV_EN2 11
+#define PIN_DRV_ERROR2 8
+#define PIN_SW_LIMIT_L2 9
+#define PIN_SW_LIMIT_R2 10
 
 #define PIN_AXIS2_SUPPORTED 1
 #define PIN_DBG_OVERLAPS_AXIS2 0
@@ -77,7 +75,6 @@
 #define PIN_DRV_DIR 19
 #define PIN_DRV_EN 20
 #define PIN_DRV_ERROR 21
-#define PIN_SW_HOME 22
 #define PIN_SW_LIMIT_L 26
 #define PIN_SW_LIMIT_R 27
 
@@ -86,7 +83,6 @@
 #define PIN_DRV_DIR2 12
 #define PIN_DRV_EN2 11
 #define PIN_DRV_ERROR2 10
-#define PIN_SW_HOME2 9
 #define PIN_SW_LIMIT_L2 7
 #define PIN_SW_LIMIT_R2 6
 #define PIN_AXIS2_SUPPORTED 1

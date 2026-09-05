@@ -46,9 +46,6 @@ static void init_axis_gpio(int axis) {
 
   pinMode(err, INPUT_PULLUP);
 
-  if (axis_hw_home_use(axis)) {
-    pinMode(axis_hw_home_pin(axis), INPUT_PULLUP);
-  }
   if (axis_hw_limit_l_use(axis)) {
     pinMode(axis_hw_limit_l_pin(axis), INPUT_PULLUP);
   }

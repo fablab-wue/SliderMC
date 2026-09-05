@@ -424,6 +424,7 @@ static const HelpRow k_help_rows[] = {
     {"SD", "SetDebug", "USB debug level 0..5"},
     {"SL", "SetLeft", "Session soft limit left"},
     {"SR", "SetRight", "Session soft limit right"},
+    {"SP", "SetPosition", "Set reported pose (bare/0 = here is 0)"},
     {"GS", "GetSpeed", "Session cruise mm/s"},
     {"GA", "GetAccel", "Session accel mm/s2"},
     {"GE", "GetEnable", "Driver enable state"},
@@ -521,7 +522,6 @@ static void cmd_pinout_index(void) {
   PIN_IX_ADD(PIN_DRV_DIR, "DRV_DIR", "DIR to driver");
   PIN_IX_ADD(PIN_DRV_EN, "DRV_EN", "Driver enable");
   PIN_IX_ADD(PIN_DRV_ERROR, "DRV_ERROR", "Driver fault / E-stop input");
-  PIN_IX_ADD(PIN_SW_HOME, "SW_HOME", "Home / reference switch");
   PIN_IX_ADD(PIN_SW_LIMIT_L, "SW_LIMIT_L", "Hard limit left");
   PIN_IX_ADD(PIN_SW_LIMIT_R, "SW_LIMIT_R", "Hard limit right");
   if (config_axis2_enabled()) {
@@ -529,7 +529,6 @@ static void cmd_pinout_index(void) {
     PIN_IX_ADD(PIN_DRV_DIR2, "DRV_DIR2", "DIR axis2");
     PIN_IX_ADD(PIN_DRV_EN2, "DRV_EN2", "Enable axis2");
     PIN_IX_ADD(PIN_DRV_ERROR2, "DRV_ERROR2", "Fault / E-stop axis2");
-    PIN_IX_ADD(PIN_SW_HOME2, "SW_HOME2", "Home switch axis2");
     PIN_IX_ADD(PIN_SW_LIMIT_L2, "SW_LIMIT_L2", "Hard limit left axis2");
     PIN_IX_ADD(PIN_SW_LIMIT_R2, "SW_LIMIT_R2", "Hard limit right axis2");
   }
@@ -1155,6 +1154,34 @@ bool protocol_exec_command(const char *cmd) {
     return false;
   }
 
+  if (match_any(cmd, &rest, "SP", "SetPosition", nullptr)) {
+    if (motion_is_busy() || motion_path_is_active()) {
+      protocol_error("busy", "SP");
+      return false;
+    }
+    float a = 0.0f, b = NAN;
+    if (!*rest) {
+      a = 0.0f;
+      b = config_axis2_enabled() ? 0.0f : NAN;
+    } else {
+      bool have2 = false;
+      if (!parse_move_args(rest, &a, &b, &have2)) {
+        protocol_error("parse", "SP args");
+        return false;
+      }
+      if (!have2) {
+        b = NAN;
+      }
+      if (!config_axis2_enabled()) {
+        b = NAN;
+      }
+    }
+    if (!motion_set_position(a, b)) {
+      protocol_error("busy", "SP");
+    }
+    return false;
+  }
+
   /* --- G session get --- */
   if (match_any(cmd, &rest, "GS", "GetSpeed", nullptr)) {
     reply_query_float("GS", sess->speed_mm_s);
@@ -1342,8 +1369,6 @@ bool protocol_exec_command(const char *cmd) {
     protocol_writeln(line);
     snprintf(line, sizeof(line), "VG:PIN_DRV_EN=%d", PIN_DRV_EN);
     protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_SW_HOME=%d", PIN_SW_HOME);
-    protocol_writeln(line);
     snprintf(line, sizeof(line), "VG:PIN_DRV_ERROR=%d", PIN_DRV_ERROR);
     protocol_writeln(line);
     snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_L=%d", PIN_SW_LIMIT_L);
@@ -1358,8 +1383,6 @@ bool protocol_exec_command(const char *cmd) {
       snprintf(line, sizeof(line), "VG:PIN_DRV_EN2=%d", PIN_DRV_EN2);
       protocol_writeln(line);
       snprintf(line, sizeof(line), "VG:PIN_DRV_ERROR2=%d", PIN_DRV_ERROR2);
-      protocol_writeln(line);
-      snprintf(line, sizeof(line), "VG:PIN_SW_HOME2=%d", PIN_SW_HOME2);
       protocol_writeln(line);
       snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_L2=%d", PIN_SW_LIMIT_L2);
       protocol_writeln(line);

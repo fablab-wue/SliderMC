@@ -30,8 +30,6 @@ typedef struct {
   int drv_step_active;
   int drv_dir_active; /* 1 = DIR high means +mm */
   int drv_en_active;
-  int sw_home_active;
-  int sw_home_use; /* 1 = poll PIN_SW_HOME for MH only (no hard-limit trip) */
   int drv_error_active;
   int sw_limit_l_active;
   int sw_limit_r_active;
@@ -40,7 +38,7 @@ typedef struct {
   int buzzer_use; /* 1 = drive PIN_BUZZER from Z (skipped if pin aliases PIN_LED) */
   int ext_active[4]; /* EXT_0..3_active: 0=low-active, 1=high-active */
 
-  /* Homing: 0=off, 1=SW_HOME left, 2=SW_HOME right, 3=LIMIT_L, 4=LIMIT_R */
+  /* Homing: 0=off, 1=LIMIT_L, 2=LIMIT_R, 3=stall/DRV_ERROR left, 4=stall right */
   int home_mode;
   float home_move_out_mm;
   float home_speed_mm_s;
@@ -54,8 +52,6 @@ typedef struct {
   int drv_dir_active_2;
   int drv_en_active_2;
   int drv_error_active_2;
-  int sw_home_active_2;
-  int sw_home_use_2;
   int sw_limit_l_active_2;
   int sw_limit_r_active_2;
   int sw_limit_l_use_2;
@@ -118,6 +114,9 @@ bool session_set_window_right(bool set0, float mm0, bool set1, float mm1);
 /** Effective working-window min/max (session, else envelope if set, else NAN). */
 float session_effective_left(int axis);
 float session_effective_right(int axis);
+
+/** After loading an old ini that still has SW_HOME_* keys: remap home_mode 3→1, 4→2. */
+void config_migrate_legacy_home_modes(void);
 
 /* Returns true on success. */
 bool config_set_key(const char *key, const char *value);
