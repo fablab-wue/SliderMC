@@ -1470,11 +1470,6 @@ void planner_request_move_by(int axis, float mm) {
   planner_request_move_to(axis, dest);
 }
 
-void planner_request_jog(int axis, int dir) {
-  float span = config_get()->max_speed_mm_s * 10.0f;
-  planner_request_move_by(axis, dir >= 0 ? span : -span);
-}
-
 static void planner_request_joy(int axis, float signed_v) {
   if (axis < 0 || axis >= axis_count() || !g_enabled || g_drv_error) {
     return;
@@ -1956,59 +1951,6 @@ bool motion_move_by(float mm) {
   g_ax[0].accel_mm_s2 = session_get()->accel_mm_s2;
   planner_request_move_by(0, mm);
   return true;
-}
-
-bool motion_jog(int dir, int axis_mask) {
-  if (!g_enabled) {
-    return false;
-  }
-  int sign = dir >= 0 ? 1 : -1;
-  if (!config_axis2_enabled() || axis_mask == 0) {
-    /* 1-axis mode or mask=both: jog all active axes */
-    for (int axis = 0; axis < axis_count(); ++axis) {
-      if (planner_hard_limit_blocks_sign(axis, sign)) {
-        return false;
-      }
-    }
-    joy_clear();
-    coord_clear();
-    apply_session_cruise_accel();
-    for (int axis = 0; axis < axis_count(); ++axis) {
-      planner_request_jog(axis, dir);
-    }
-    return true;
-  }
-  if (axis_mask == 1) {
-    if (planner_hard_limit_blocks_sign(0, sign)) {
-      return false;
-    }
-    joy_clear();
-    coord_clear();
-    apply_session_cruise_accel();
-    planner_request_jog(0, dir);
-    return true;
-  }
-  if (axis_mask == 2) {
-    if (planner_hard_limit_blocks_sign(1, sign)) {
-      return false;
-    }
-    joy_clear();
-    coord_clear();
-    apply_session_cruise_accel();
-    planner_request_jog(1, dir);
-    return true;
-  }
-  if (axis_mask == 3 && config_axis3_enabled()) {
-    if (planner_hard_limit_blocks_sign(2, sign)) {
-      return false;
-    }
-    joy_clear();
-    coord_clear();
-    apply_session_cruise_accel();
-    planner_request_jog(2, dir);
-    return true;
-  }
-  return false;
 }
 
 bool motion_joy(float pct0, float pct1_or_nan, float pct2_or_nan) {

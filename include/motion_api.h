@@ -15,8 +15,8 @@ typedef enum {
   MC_STATE_HOMING,
   MC_STATE_HARD_LIMIT,
   MC_STATE_ERROR,
-  MC_STATE_LOCKED,
   MC_STATE_PATH,
+  MC_STATE_LOCKED,   // must be last for heart beat logic
 } McState;
 
 typedef struct {
@@ -50,11 +50,6 @@ bool motion_move_to(float mm); /* axis 0 only */
 bool motion_move_to2(float mm1_or_nan, float mm2_or_nan);
 bool motion_move_to_n(float mm0_or_nan, float mm1_or_nan, float mm2_or_nan);
 bool motion_move_by(float mm); /* axis 0 only */
-/**
- * Continuous jog. axis_mask: 0=all, 1=axis0, 2=axis1, 3=axis2.
- * In 1-axis mode the mask is ignored.
- */
-bool motion_jog(int dir, int axis_mask);
 /**
  * Signed joy percent of session SS per axis. NAN = 0 on that axis.
  * Omitted extras are 0. Does not change session SS.

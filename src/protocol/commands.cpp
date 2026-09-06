@@ -42,6 +42,7 @@ static int icmp_prefix(const char *s, const char *verb) {
   return 0;
 }
 
+/** Config-key prefix: next char must not be a letter (`axis` vs `axis2`). */
 static bool starts_cmd(const char *s, const char *verb, const char **rest) {
   size_t n = strlen(verb);
   if (icmp_prefix(s, verb) != 0) {
@@ -59,18 +60,25 @@ static bool starts_cmd(const char *s, const char *verb, const char **rest) {
   return true;
 }
 
+/** Two-letter verb; remainder may start with X/Y/Z, a digit, `_`, or `none`. */
+static bool cmd_verb(const char *s, const char *verb, const char **rest) {
+  size_t n = strlen(verb);
+  if (n != 2 || icmp_prefix(s, verb) != 0) {
+    return false;
+  }
+  const char *p = s + n;
+  while (*p == ' ' || *p == '\t') {
+    ++p;
+  }
+  *rest = p;
+  return true;
+}
+
 static bool match_any(const char *s, const char **rest, const char *a, const char *b,
                       const char *c) {
-  if (starts_cmd(s, a, rest)) {
-    return true;
-  }
-  if (b && starts_cmd(s, b, rest)) {
-    return true;
-  }
-  if (c && starts_cmd(s, c, rest)) {
-    return true;
-  }
-  return false;
+  (void)b;
+  (void)c;
+  return cmd_verb(s, a, rest);
 }
 
 static bool parse_float_arg(const char *s, float *out) {
@@ -92,143 +100,212 @@ static bool parse_float_arg(const char *s, float *out) {
   return true;
 }
 
-/** True for axis skip token `_` only. NOT bare '-', none, N, or *. */
-static bool is_axis_skip_token(const char *s) {
-  return s && s[0] == '_' && s[1] == 0;
+static void skip_ws(const char **s) {
+  while (**s == ' ' || **s == '\t') {
+    ++*s;
+  }
 }
 
-/** True for SL/SR clear token `none` (case-insensitive). */
-static bool is_none_token(const char *s) {
-  if (!s || !*s) {
-    return false;
+static int axis_letter(char c) {
+  if (c == 'x' || c == 'X') {
+    return 0;
   }
-  return (s[0] == 'n' || s[0] == 'N') && (s[1] == 'o' || s[1] == 'O') &&
-         (s[2] == 'n' || s[2] == 'N') && (s[3] == 'e' || s[3] == 'E') && s[4] == 0;
+  if (c == 'y' || c == 'Y') {
+    return 1;
+  }
+  if (c == 'z' || c == 'Z') {
+    return 2;
+  }
+  return -1;
 }
 
-static bool parse_one_move_tok(const char *tok, float *out) {
-  if (is_axis_skip_token(tok)) {
-    *out = NAN;
-    return true;
-  }
-  return parse_float_arg(tok, out);
-}
-
-/**
- * Parse 1..3 float args for MT/M/MJ/SP. Skip `_` → NAN (idle that axis).
- */
-static bool parse_move_args(const char *s, float *a, float *b, float *c, bool *have_second,
-                            bool *have_third) {
-  *have_second = false;
-  *have_third = false;
-  *b = NAN;
-  *c = NAN;
-  while (*s == ' ' || *s == '\t') {
-    ++s;
-  }
-  if (!*s) {
+/** `none` token; next must be end, whitespace, or an axis letter (glued `SLZnoneY40`). */
+static bool take_none(const char **s) {
+  const char *p = *s;
+  if (!((p[0] == 'n' || p[0] == 'N') && (p[1] == 'o' || p[1] == 'O') &&
+        (p[2] == 'n' || p[2] == 'N') && (p[3] == 'e' || p[3] == 'E'))) {
     return false;
   }
-  char tok[3][CFG_VAL_MAX];
-  tok[0][0] = tok[1][0] = tok[2][0] = 0;
-  int nt = 0;
-  while (*s && nt < 3) {
-    size_t i = 0;
-    while (*s && *s != ' ' && *s != '\t' && i + 1 < sizeof(tok[0])) {
-      tok[nt][i++] = *s++;
-    }
-    tok[nt][i] = 0;
-    ++nt;
-    while (*s == ' ' || *s == '\t') {
-      ++s;
-    }
-  }
-  if (*s) {
-    return false; /* trailing junk */
-  }
-  if (nt >= 2) {
-    *have_second = true;
-  }
-  if (nt >= 3) {
-    *have_third = true;
-  }
-  if (!parse_one_move_tok(tok[0], a)) {
+  char n = p[4];
+  if (n != 0 && n != ' ' && n != '\t' && axis_letter(n) < 0) {
     return false;
   }
-  if (nt >= 2 && !parse_one_move_tok(tok[1], b)) {
-    return false;
-  }
-  if (nt >= 3 && !parse_one_move_tok(tok[2], c)) {
-    return false;
-  }
+  *s = p + 4;
   return true;
 }
 
-static bool parse_one_window_tok(const char *tok, bool *set, float *v) {
-  if (is_axis_skip_token(tok)) {
-    *set = false;
-    *v = NAN;
-    return true;
+static bool take_float(const char **s, float *out) {
+  char *end = nullptr;
+  float v = strtof(*s, &end);
+  if (end == *s) {
+    return false;
   }
-  if (is_none_token(tok)) {
-    *set = true;
-    *v = NAN;
-    return true;
-  }
-  if (parse_float_arg(tok, v)) {
-    *set = true;
-    return true;
-  }
-  return false;
+  *out = v;
+  *s = end;
+  return true;
 }
 
-/**
- * Parse SL/SR args: `_` = skip, `none` = store NAN, float = set value.
- */
-static bool parse_window_args(const char *s, bool *set0, float *a, bool *set1, float *b,
-                              bool *set2, float *c, bool *have_second, bool *have_third) {
-  *set0 = *set1 = *set2 = false;
-  *have_second = false;
-  *have_third = false;
-  *a = *b = *c = NAN;
-  while (*s == ' ' || *s == '\t') {
-    ++s;
+static bool take_int(const char **s, int *out) {
+  char *end = nullptr;
+  long v = strtol(*s, &end, 10);
+  if (end == *s) {
+    return false;
   }
+  *out = (int)v;
+  *s = end;
+  return true;
+}
+
+enum AxisArgKind { AXIS_MOVE = 0, AXIS_WINDOW, AXIS_PATH, AXIS_JOY };
+
+typedef struct {
+  float v[3];
+  bool set[3];
+  bool named;
+} AxisParsed;
+
+static bool axis_fitted(int ax) { return ax >= 0 && ax < config_axis_count(); }
+
+/**
+ * Dual syntax: positional (`100`, `_ _ 40`) or named (`Z100`, `X20Y50`). Not mixed.
+ * MOVE: `_` → NAN. WINDOW: `_` skip, `none` → set+NAN. PATH: `_`/omit → 0 (int).
+ * JOY: no `_`; named omitted axes stay unset (caller fills 0).
+ */
+static bool parse_axis_args(const char *s, int kind, AxisParsed *out) {
+  out->v[0] = out->v[1] = out->v[2] = NAN;
+  out->set[0] = out->set[1] = out->set[2] = false;
+  out->named = false;
+  skip_ws(&s);
   if (!*s) {
     return false;
   }
-  char tok[3][CFG_VAL_MAX];
-  tok[0][0] = tok[1][0] = tok[2][0] = 0;
-  int nt = 0;
-  while (*s && nt < 3) {
-    size_t i = 0;
-    while (*s && *s != ' ' && *s != '\t' && i + 1 < sizeof(tok[0])) {
-      tok[nt][i++] = *s++;
-    }
-    tok[nt][i] = 0;
-    ++nt;
-    while (*s == ' ' || *s == '\t') {
+  bool named = axis_letter(*s) >= 0;
+  out->named = named;
+  if (named) {
+    while (*s) {
+      skip_ws(&s);
+      if (!*s) {
+        break;
+      }
+      int ax = axis_letter(*s);
+      if (ax < 0) {
+        return false;
+      }
       ++s;
+      if (out->set[ax] || !axis_fitted(ax)) {
+        return false;
+      }
+      skip_ws(&s);
+      if (kind == AXIS_WINDOW && take_none(&s)) {
+        out->set[ax] = true;
+        out->v[ax] = NAN;
+        continue;
+      }
+      if (kind == AXIS_PATH) {
+        int iv = 0;
+        if (!take_int(&s, &iv) || iv < -32768 || iv > 32767) {
+          return false;
+        }
+        out->set[ax] = true;
+        out->v[ax] = (float)iv;
+        continue;
+      }
+      float fv;
+      if (!take_float(&s, &fv)) {
+        return false;
+      }
+      out->set[ax] = true;
+      out->v[ax] = fv;
     }
+    return out->set[0] || out->set[1] || out->set[2];
   }
-  if (*s) {
+
+  int slot = 0;
+  while (*s && slot < 3) {
+    skip_ws(&s);
+    if (!*s) {
+      break;
+    }
+    if (axis_letter(*s) >= 0) {
+      return false; /* mixed */
+    }
+    if (!axis_fitted(slot)) {
+      return false;
+    }
+    if (*s == '_') {
+      if (kind == AXIS_JOY) {
+        return false;
+      }
+      ++s;
+      if (kind == AXIS_PATH) {
+        out->set[slot] = true;
+        out->v[slot] = 0.0f;
+      } else if (kind == AXIS_MOVE) {
+        out->set[slot] = true;
+        out->v[slot] = NAN;
+      } else {
+        out->set[slot] = false;
+        out->v[slot] = NAN;
+      }
+      ++slot;
+      continue;
+    }
+    if (kind == AXIS_WINDOW && take_none(&s)) {
+      out->set[slot] = true;
+      out->v[slot] = NAN;
+      ++slot;
+      continue;
+    }
+    if (kind == AXIS_PATH) {
+      int iv = 0;
+      if (!take_int(&s, &iv) || iv < -32768 || iv > 32767) {
+        return false;
+      }
+      out->set[slot] = true;
+      out->v[slot] = (float)iv;
+      ++slot;
+      continue;
+    }
+    float fv;
+    if (!take_float(&s, &fv)) {
+      return false;
+    }
+    out->set[slot] = true;
+    out->v[slot] = fv;
+    ++slot;
+  }
+  skip_ws(&s);
+  return !*s && slot >= 1;
+}
+
+static bool parse_move_args(const char *s, float *a, float *b, float *c, bool *have_second,
+                            bool *have_third) {
+  AxisParsed p;
+  if (!parse_axis_args(s, AXIS_MOVE, &p)) {
     return false;
   }
-  if (nt >= 2) {
-    *have_second = true;
-  }
-  if (nt >= 3) {
-    *have_third = true;
-  }
-  if (!parse_one_window_tok(tok[0], set0, a)) {
+  *a = p.set[0] ? p.v[0] : NAN;
+  *b = p.set[1] ? p.v[1] : NAN;
+  *c = p.set[2] ? p.v[2] : NAN;
+  *have_second = p.set[1];
+  *have_third = p.set[2];
+  return true;
+}
+
+static bool parse_window_args(const char *s, bool *set0, float *a, bool *set1, float *b,
+                              bool *set2, float *c, bool *have_second, bool *have_third) {
+  AxisParsed p;
+  if (!parse_axis_args(s, AXIS_WINDOW, &p)) {
     return false;
   }
-  if (nt >= 2 && !parse_one_window_tok(tok[1], set1, b)) {
-    return false;
-  }
-  if (nt >= 3 && !parse_one_window_tok(tok[2], set2, c)) {
-    return false;
-  }
+  *set0 = p.set[0];
+  *set1 = p.set[1];
+  *set2 = p.set[2];
+  *a = p.v[0];
+  *b = p.v[1];
+  *c = p.v[2];
+  *have_second = p.set[1];
+  *have_third = p.set[2];
   return true;
 }
 
@@ -426,81 +503,79 @@ static bool begin_wait_pos_cmd(const char *rest) {
 
 typedef struct {
   const char *sh;
-  const char *lng;
   const char *desc;
 } HelpRow;
 
-/* Column layout: %-5s %-16s %s  → total ≤ 80 when desc ≤ 57.
- * Rows are authored in group order: S → G → I → M → C → W → V → special. */
+/* Two columns. Group order: S → G → I → M → P → E/B → C → W → V → special. */
 static const HelpRow k_help_rows[] = {
-    {"SS", "SetSpeed", "Cruise speed mm/s"},
-    {"SA", "SetAccel", "Accel mm/s2"},
-    {"SE", "SetEnable", "Enable 0|1; bare toggles"},
-    {"ST", "SetTerminal", "Terminal 0|1; bare toggles"},
-    {"SV", "SetVerbose", "Verbose 0|1; bare toggles"},
-    {"SD", "SetDebug", "USB debug level 0..5"},
-    {"SL", "SetLeft", "Session soft limit left"},
-    {"SR", "SetRight", "Session soft limit right"},
-    {"SP", "SetPosition", "Set reported pose (bare/0 = here is 0)"},
-    {"GS", "GetSpeed", "Session cruise mm/s"},
-    {"GA", "GetAccel", "Session accel mm/s2"},
-    {"GE", "GetEnable", "Driver enable state"},
-    {"GT", "GetTerminal", "Terminal Mode state"},
-    {"GV", "GetVerbose", "Verbose push state"},
-    {"GD", "GetDebug", "USB debug level"},
-    {"GL", "GetLeft", "Session soft limit left"},
-    {"GR", "GetRight", "Session soft limit right"},
-    {"IM", "IsMoving", "Moving? 0|1"},
-    {"IH", "IsHoming", "Homing? 0|1"},
-    {"IL", "IsLimit", "At soft-limit position?"},
-    {"IE", "IsError", "DRV_ERROR? 0|1"},
-    {"IP", "IsPosition", "Position mm (1, 2 or 3)"},
-    {"IA", "IsAxis", "Axis count 1|2|3"},
-    {"IT", "IsTarget", "Target mm or -"},
-    {"IR", "IsReady", "Ready for motion? 0|1"},
-    {"IW", "IsWaiting", "Wait active? 0|1"},
-    {"ID", "IsDiag", "Motion diag counters"},
-    {"IZ", "IsReset", "Last reset cause"},
-    {"IX", "Pinout", "GPIO / name / desc table"},
-    {"MT", "MoveTo", "Absolute move mm"},
-    {"M", "Move", "Relative move mm"},
-    {"ML", "MoveLeft", "Continuous jog -"},
-    {"MR", "MoveRight", "Continuous jog +"},
-    {"MJ", "MoveJoy", "Joy % of SS, signed"},
-    {"MH", "MoveHome", "Homing cycle"},
-    {"MS", "MoveStop", "Soft decelerate"},
-    {"PC", "PathClear", "Clear path buffer"},
-    {"PD", "PathData", "Append um value (-32768..32767)"},
-    {"PG", "PathGo", "Play path buffer"},
-    {"PN", "PathNumber", "Path sample count"},
-    {"PS", "PathSlice", "Slice length us (>=1000); bare resets"},
-    {"X0-3", "Ext0-3", "Ext out 0|1; bare toggles"},
-    {"Z", "Buzzer", "Pulse buzzer ~0.1s"},
-    {"CS", "ConfigSet", "Set persistent config key"},
-    {"CR", "ConfigReset", "Reset all config to defaults"},
-    {"CG", "ConfigGet", "Get config key(s)"},
-    {"RB", "Reboot", "Soft MCU reset (no power cycle)"},
-    {"W", "Wait", "Delay sec (default 1)"},
-    {"WM", "WaitMoving", "Wait until move done"},
-    {"WH", "WaitHoming", "Wait until home done"},
-    {"WP", "WaitPos", "Wait until axis1 pos (or overstep)"},
-    {"WC", "WaitCruise", "Wait until cruise M or idle"},
-    {"WnC", "WaitNotCruise", "Wait until not cruise M"},
-    {"VA", "VersionAbout", "About string"},
-    {"VF", "VersionFW", "Firmware version"},
-    {"VP", "VersionProtocol", "Protocol version"},
-    {"VG", "VersionGPIO", "List PIN_*=GPIO lines (machine-readable, read-only)"},
-    {"H/HT", "Halt", "Emergency halt; EN off; cancel waits"},
-    {"$ /HL", "Help", "List all commands"},
+    {"SS", "Set Speed, cruise mm/s"},
+    {"SA", "Set Accel, mm/s2"},
+    {"SE", "Set Enable, 0|1; bare toggles"},
+    {"ST", "Set Terminal, 0|1; bare toggles"},
+    {"SV", "Set Verbose, 0|1; bare toggles"},
+    {"SD", "Set Debug, USB level 0..5"},
+    {"SL", "Set Left, session window min"},
+    {"SR", "Set Right, session window max"},
+    {"SP", "Set Position, bare/0 = here is 0"},
+    {"GS", "Get Speed, session cruise mm/s"},
+    {"GA", "Get Accel, session mm/s2"},
+    {"GE", "Get Enable, driver state 0|1"},
+    {"GT", "Get Terminal, 0|1"},
+    {"GV", "Get Verbose, 0|1"},
+    {"GD", "Get Debug, USB level"},
+    {"GL", "Get Left, session window min"},
+    {"GR", "Get Right, session window max"},
+    {"IM", "Is Moving, 0|1"},
+    {"IH", "Is Homing, 0|1"},
+    {"IL", "Is Limit, at soft-limit pose?"},
+    {"IE", "Is Error, DRV_ERROR 0|1"},
+    {"IP", "Is Position, mm (1, 2 or 3)"},
+    {"IA", "Is Axis, count 1|2|3"},
+    {"IT", "Is Target, mm or -"},
+    {"IR", "Is Ready, motion 0|1"},
+    {"IW", "Is Waiting, 0|1"},
+    {"ID", "Is Diag, motion counters"},
+    {"IC", "Is Cause, last reset reason"},
+    {"IG", "Is GPIO, pin name / desc table"},
+    {"MT", "Move To, absolute mm"},
+    {"MB", "Move By, relative mm"},
+    {"MJ", "Move Joy, % of SS signed"},
+    {"MH", "Move Home, cycle 1|2|3"},
+    {"MS", "Move Stop, soft decelerate"},
+    {"PC", "Path Clear, empty buffer"},
+    {"PD", "Path Data, um -32768..32767"},
+    {"PG", "Path Go, play buffer"},
+    {"PN", "Path Number, sample count"},
+    {"PS", "Path Slice, us >=1000; bare resets"},
+    {"EO", "Ext Out, EO0..3 0|1; bare toggles"},
+    {"BE", "Beep, pulse buzzer ~0.1s"},
+    {"CS", "Config Set, persistent key"},
+    {"CR", "Config Reset, all defaults"},
+    {"CG", "Config Get, key(s)"},
+    {"RB", "Reboot, soft MCU reset"},
+    {"WT", "Wait Time, delay sec (default 1)"},
+    {"WM", "Wait Moving, until move done"},
+    {"WH", "Wait Homing, until home done"},
+    {"WP", "Wait Pos, until axis1 pos"},
+    {"WC", "Wait Cruise, until cruise or idle"},
+    {"WN", "Wait Not cruise, until not M"},
+    {"VA", "Version About, about string"},
+    {"VF", "Version FW, firmware version"},
+    {"VP", "Version Protocol, protocol version"},
+    {"VG", "Version GPIO, PIN_*= lines"},
+    {"HT", "Halt, EN off; cancel waits"},
+    {"HL/$", "Help, list commands"},
+    {"?/#", "Status now, compact line"},
+    {"!/ESC", "Soft stop now"},
 };
 
 static void cmd_help(void) {
   char line[88];
-  protocol_writeln("Short Long             Description");
-  protocol_writeln("----- ---------------- ------------------------------------------");
+  protocol_writeln("Cmd  Description");
+  protocol_writeln("---  -----------");
   for (size_t i = 0; i < sizeof(k_help_rows) / sizeof(k_help_rows[0]); ++i) {
     const HelpRow *r = &k_help_rows[i];
-    snprintf(line, sizeof(line), "%-5s %-16s %s", r->sh, r->lng, r->desc);
+    snprintf(line, sizeof(line), "%-5s %s", r->sh, r->desc);
     protocol_writeln(line);
   }
 }
@@ -531,10 +606,10 @@ static void cmd_pinout_index(void) {
     }                                                                          \
   } while (0)
 
-  PIN_IX_ADD(PIN_EXT_0, "EXT_0", "Extender output 0 (X0)");
-  PIN_IX_ADD(PIN_EXT_1, "EXT_1", "Extender output 1 (X1)");
-  PIN_IX_ADD(PIN_EXT_2, "EXT_2", "Extender output 2 (X2)");
-  PIN_IX_ADD(PIN_EXT_3, "EXT_3", "Extender output 3 (X3)");
+  PIN_IX_ADD(PIN_EXT_0, "EXT_0", "Extender output 0 (EO0)");
+  PIN_IX_ADD(PIN_EXT_1, "EXT_1", "Extender output 1 (EO1)");
+  PIN_IX_ADD(PIN_EXT_2, "EXT_2", "Extender output 2 (EO2)");
+  PIN_IX_ADD(PIN_EXT_3, "EXT_3", "Extender output 3 (EO3)");
   PIN_IX_ADD(PIN_DRV_STEP, "DRV_STEP", "STEP to driver");
   PIN_IX_ADD(PIN_DRV_DIR, "DRV_DIR", "DIR to driver");
   PIN_IX_ADD(PIN_DRV_EN, "DRV_EN", "Driver enable");
@@ -564,7 +639,7 @@ static void cmd_pinout_index(void) {
   PIN_IX_ADD(PIN_UART_RX, "UART_RX", "UART RX from UIC (115200 baud)");
   PIN_IX_ADD(PIN_LED, "LED", "Status / heartbeat LED");
   if (config_get()->buzzer_use && PIN_BUZZER != PIN_LED) {
-    PIN_IX_ADD(PIN_BUZZER, "BUZZER", "Piezo pulse (Z)");
+    PIN_IX_ADD(PIN_BUZZER, "BUZZER", "Piezo pulse (BE)");
   }
 #ifdef DEBUG_HW
   if (dbg_hw_allowed()) {
@@ -594,125 +669,46 @@ static void cmd_pinout_index(void) {
 /** Commands allowed while PIN_DRV_ERROR is asserted (diagnostics / config / halt). */
 static bool emo_command_allowed(const char *cmd) {
   const char *rest = cmd;
-  if (match_any(cmd, &rest, "IE", "IsError", nullptr)) {
-    return true;
+  static const char *k[] = {"IE", "IA", "ID", "IC", "VA", "VF", "VP", "VG", "IG",
+                            "HL", "CS", "CR", "CG", "HT", "RB", "BE", "EO"};
+  for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); ++i) {
+    if (cmd_verb(cmd, k[i], &rest)) {
+      return true;
+    }
   }
-  if (match_any(cmd, &rest, "IA", "Axis", "IsAxis")) {
-    return true;
-  }
-  if (match_any(cmd, &rest, "ID", "IsDiag", nullptr) ||
-      match_any(cmd, &rest, "IZ", "IsReset", nullptr)) {
-    return true;
-  }
-  if (match_any(cmd, &rest, "VA", "VersionAbout", nullptr) ||
-      match_any(cmd, &rest, "VF", "VersionFW", nullptr) ||
-      match_any(cmd, &rest, "VP", "VersionProtocol", nullptr)) {
-    return true;
-  }
-  if (match_any(cmd, &rest, "VG", "VersionGPIO", nullptr) ||
-      match_any(cmd, &rest, "IX", "Pinout", nullptr)) {
-    return true;
-  }
-  if (match_any(cmd, &rest, "Help", "HL", nullptr) || starts_cmd(cmd, "$", &rest)) {
-    return true;
-  }
-  if (match_any(cmd, &rest, "CS", "ConfigSet", nullptr) ||
-      match_any(cmd, &rest, "CR", "ConfigReset", nullptr) ||
-      match_any(cmd, &rest, "CG", "ConfigGet", nullptr)) {
-    return true;
-  }
-  if (match_any(cmd, &rest, "HT", "Halt", "H")) {
-    return true;
-  }
-  if (match_any(cmd, &rest, "RB", "Reboot", nullptr)) {
-    return true;
-  }
-  if (match_any(cmd, &rest, "Z", "Buzzer", nullptr)) {
-    return true;
-  }
-  /* X0..X3 / Ext0..Ext3 */
-  if ((cmd[0] == 'X' || cmd[0] == 'x') && cmd[1] >= '0' && cmd[1] <= '3') {
-    return true;
-  }
-  if ((cmd[0] == 'E' || cmd[0] == 'e') && (cmd[1] == 'X' || cmd[1] == 'x') &&
-      (cmd[2] == 'T' || cmd[2] == 't') && cmd[3] >= '0' && cmd[3] <= '3') {
-    return true;
-  }
-  return false;
+  return cmd[0] == '$';
 }
 
 /** Commands allowed while path-mode (PG) is active: safety/queries/stop/PD (live-move) only. */
 static bool path_command_allowed(const char *cmd) {
   const char *rest = cmd;
-  if (match_any(cmd, &rest, "MS", "MoveStop", "Stop")) {
-    return true;
-  }
-  if (match_any(cmd, &rest, "HT", "Halt", "H")) {
-    return true;
-  }
-  if (match_any(cmd, &rest, "RB", "Reboot", nullptr)) {
-    return true;
-  }
-  if (match_any(cmd, &rest, "PD", "PathData", nullptr)) {
-    return true;
-  }
-  if (match_any(cmd, &rest, "PN", "PathNumber", nullptr)) {
-    return true;
-  }
-  if (match_any(cmd, &rest, "IM", "IsMoving", nullptr) ||
-      match_any(cmd, &rest, "IH", "IsHoming", nullptr) ||
-      match_any(cmd, &rest, "IL", "IsLimit", nullptr) ||
-      match_any(cmd, &rest, "IE", "IsError", nullptr) ||
-      match_any(cmd, &rest, "IP", "IsPosition", nullptr) ||
-      match_any(cmd, &rest, "IA", "Axis", "IsAxis") ||
-      match_any(cmd, &rest, "IT", "IsTarget", nullptr) ||
-      match_any(cmd, &rest, "IR", "IsReady", nullptr) ||
-      match_any(cmd, &rest, "IW", "IsWaiting", nullptr) ||
-      match_any(cmd, &rest, "ID", "IsDiag", nullptr) ||
-      match_any(cmd, &rest, "IZ", "IsReset", nullptr) ||
-      match_any(cmd, &rest, "IX", "Pinout", nullptr)) {
-    return true;
-  }
-  if (match_any(cmd, &rest, "GS", "GetSpeed", nullptr) ||
-      match_any(cmd, &rest, "GA", "GetAccel", nullptr) ||
-      match_any(cmd, &rest, "GE", "GetEnable", nullptr) ||
-      match_any(cmd, &rest, "GT", "GetTerminal", nullptr) ||
-      match_any(cmd, &rest, "GV", "GetVerbose", nullptr) ||
-      match_any(cmd, &rest, "GD", "GetDebug", nullptr) ||
-      match_any(cmd, &rest, "GL", "GetLeft", nullptr) ||
-      match_any(cmd, &rest, "GR", "GetRight", nullptr)) {
-    return true;
-  }
-  if (match_any(cmd, &rest, "VA", "VersionAbout", nullptr) ||
-      match_any(cmd, &rest, "VF", "VersionFW", nullptr) ||
-      match_any(cmd, &rest, "VP", "VersionProtocol", nullptr) ||
-      match_any(cmd, &rest, "VG", "VersionGPIO", nullptr)) {
-    return true;
-  }
-  if (match_any(cmd, &rest, "Help", "HL", nullptr) || starts_cmd(cmd, "$", &rest)) {
-    return true;
-  }
-  if (match_any(cmd, &rest, "CG", "ConfigGet", nullptr)) {
-    return true;
-  }
-  if (match_any(cmd, &rest, "Z", "Buzzer", nullptr)) {
-    return true;
-  }
-  return false;
-}
-
-/** Match Xn / Extn; return channel 0..3 or -1. */
-static int match_ext_cmd(const char *cmd, const char **rest_out) {
-  const char *rest = cmd;
-  static const char *k_x[] = {"X0", "X1", "X2", "X3"};
-  static const char *k_ext[] = {"Ext0", "Ext1", "Ext2", "Ext3"};
-  for (int i = 0; i < PIN_EXT_COUNT; ++i) {
-    if (starts_cmd(cmd, k_x[i], &rest) || starts_cmd(cmd, k_ext[i], &rest)) {
-      *rest_out = rest;
-      return i;
+  static const char *k[] = {
+      "MS", "HT", "RB", "PD", "PN", "IM", "IH", "IL", "IE", "IP", "IA", "IT",
+      "IR", "IW", "ID", "IC", "IG", "GS", "GA", "GE", "GT", "GV", "GD", "GL",
+      "GR", "VA", "VF", "VP", "VG", "HL", "CG", "BE"};
+  for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); ++i) {
+    if (cmd_verb(cmd, k[i], &rest)) {
+      return true;
     }
   }
-  return -1;
+  return cmd[0] == '$';
+}
+
+/** Match EO + channel; return 0..3 or -1. Rest is the optional 0|1. */
+static int match_ext_cmd(const char *cmd, const char **rest_out) {
+  const char *rest = cmd;
+  if (!cmd_verb(cmd, "EO", &rest)) {
+    return -1;
+  }
+  skip_ws(&rest);
+  if (*rest < '0' || *rest > '3') {
+    return -2; /* EO without 0..3 */
+  }
+  int ch = *rest - '0';
+  ++rest;
+  skip_ws(&rest);
+  *rest_out = rest;
+  return ch;
 }
 
 bool protocol_exec_command(const char *cmd) {
@@ -738,36 +734,30 @@ bool protocol_exec_command(const char *cmd) {
     return false;
   }
 
-  /* --- X / Ext extender outputs (before bare single-letter matches) --- */
+  /* --- EO extender outputs --- */
   {
     int xi = match_ext_cmd(cmd, &rest);
+    if (xi == -2) {
+      protocol_error("parse", "EO 0..3");
+      return false;
+    }
     if (xi >= 0) {
       bool on = false;
       if (!parse_bool_arg_or_toggle(rest, board_ext_get(xi), &on)) {
-        protocol_error("parse", "Xn 0|1");
+        protocol_error("parse", "EO 0|1");
         return false;
       }
       if (!board_ext_set(xi, on)) {
-        protocol_error("parse", "Xn");
+        protocol_error("parse", "EO");
         return false;
       }
-      return false;
-    }
-    /* EXT 4+ removed (PIN_EXT_COUNT=4). */
-    if (starts_cmd(cmd, "X4", &rest) || starts_cmd(cmd, "X5", &rest) ||
-        starts_cmd(cmd, "X6", &rest) || starts_cmd(cmd, "X7", &rest) ||
-        starts_cmd(cmd, "X8", &rest) || starts_cmd(cmd, "X9", &rest) ||
-        starts_cmd(cmd, "Ext4", &rest) || starts_cmd(cmd, "Ext5", &rest) ||
-        starts_cmd(cmd, "Ext6", &rest) || starts_cmd(cmd, "Ext7", &rest) ||
-        starts_cmd(cmd, "Ext8", &rest) || starts_cmd(cmd, "Ext9", &rest)) {
-      protocol_error("parse", "Xn 0..3 only");
       return false;
     }
   }
 
-  if (match_any(cmd, &rest, "Z", "Buzzer", nullptr)) {
+  if (match_any(cmd, &rest, "BE", nullptr, nullptr)) {
     if (*rest) {
-      protocol_error("parse", "Z args");
+      protocol_error("parse", "BE args");
       return false;
     }
     board_buzzer_pulse();
@@ -822,78 +812,26 @@ bool protocol_exec_command(const char *cmd) {
     return false;
   }
 
-  if (match_any(cmd, &rest, "ML", "MoveLeft", "MoveL")) {
-    if (!st.enabled) {
-      protocol_error("disabled", "enable first");
+  if (match_any(cmd, &rest, "MJ", nullptr, nullptr)) {
+    AxisParsed jp;
+    if (!parse_axis_args(rest, AXIS_JOY, &jp) || (!jp.named && !jp.set[0])) {
+      protocol_error("parse", "MJ args");
       return false;
     }
-    int mask = 0;
-    if (*rest) {
-      int v = 0;
-      int vmax = config_axis_count() >= 2 ? config_axis_count() : 2;
-      if (!parse_int_arg(rest, &v) || v < 0 || v > vmax) {
-        protocol_error("parse", "ML 0|1|2|3");
-        return false;
+    float a = jp.set[0] ? jp.v[0] : 0.0f;
+    float b = NAN, c = NAN;
+    if (config_axis2_enabled()) {
+      b = jp.set[1] ? jp.v[1] : 0.0f;
+      if (config_axis3_enabled()) {
+        c = jp.set[2] ? jp.v[2] : 0.0f;
       }
-      if (config_axis_count() >= 2) {
-        mask = v;
-      }
-    }
-    if (!motion_jog(-1, mask)) {
-      motion_get_status(&st);
-      protocol_error(st.hard_limit ? "hard" : "soft", "jog rejected");
-    }
-    return false;
-  }
-
-  if (match_any(cmd, &rest, "MR", "MoveRight", "MoveR")) {
-    if (!st.enabled) {
-      protocol_error("disabled", "enable first");
-      return false;
-    }
-    int mask = 0;
-    if (*rest) {
-      int v = 0;
-      int vmax = config_axis_count() >= 2 ? config_axis_count() : 2;
-      if (!parse_int_arg(rest, &v) || v < 0 || v > vmax) {
-        protocol_error("parse", "MR 0|1|2|3");
-        return false;
-      }
-      if (config_axis_count() >= 2) {
-        mask = v;
-      }
-    }
-    if (!motion_jog(+1, mask)) {
-      motion_get_status(&st);
-      protocol_error(st.hard_limit ? "hard" : "soft", "jog rejected");
-    }
-    return false;
-  }
-
-  if (match_any(cmd, &rest, "MJ", "MoveJoy", nullptr)) {
-    float a = 0.0f, b = NAN, c = NAN;
-    bool have2 = false, have3 = false;
-    if (!parse_move_args(rest, &a, &b, &c, &have2, &have3) || isnan(a) ||
-        (have2 && isnan(b)) || (have3 && isnan(c))) {
+    } else if (jp.set[1] || jp.set[2]) {
       protocol_error("parse", "MJ args");
       return false;
     }
     if (!st.enabled) {
       protocol_error("disabled", "enable first");
       return false;
-    }
-    if (!config_axis2_enabled()) {
-      b = NAN;
-      c = NAN;
-    } else {
-      if (!have2) {
-        b = 0.0f;
-      }
-      if (!config_axis3_enabled()) {
-        c = NAN;
-      } else if (!have3) {
-        c = 0.0f;
-      }
     }
     if (!motion_joy(a, b, c)) {
       protocol_error("disabled", "enable first");
@@ -928,11 +866,11 @@ bool protocol_exec_command(const char *cmd) {
     return false;
   }
 
-  if (match_any(cmd, &rest, "M", "Move", "MoveBy")) {
+  if (match_any(cmd, &rest, "MB", nullptr, nullptr)) {
     float a = 0.0f, b = NAN, c = NAN;
     bool have2 = false, have3 = false;
     if (!parse_move_args(rest, &a, &b, &c, &have2, &have3)) {
-      protocol_error("parse", "M args");
+      protocol_error("parse", "MB args");
       return false;
     }
     if (!st.enabled) {
@@ -982,47 +920,15 @@ bool protocol_exec_command(const char *cmd) {
     return false;
   }
 
-  if (match_any(cmd, &rest, "PD", "PathData", nullptr)) {
-    int16_t ia = 0, ib = 0, ic = 0;
-    /* PD a [b [c]]: skip → 0; omitted extras → 0 */
-    while (*rest == ' ' || *rest == '\t') {
-      ++rest;
-    }
-    if (!*rest) {
+  if (match_any(cmd, &rest, "PD", nullptr, nullptr)) {
+    AxisParsed pp;
+    if (!parse_axis_args(rest, AXIS_PATH, &pp)) {
       protocol_error("parse", "PD -32768..32767");
       return false;
     }
-    char tok[3][CFG_VAL_MAX];
-    tok[0][0] = tok[1][0] = tok[2][0] = 0;
-    int nt = 0;
-    while (*rest && nt < 3) {
-      size_t ti = 0;
-      while (*rest && *rest != ' ' && *rest != '\t' && ti + 1 < sizeof(tok[0])) {
-        tok[nt][ti++] = *rest++;
-      }
-      tok[nt][ti] = 0;
-      ++nt;
-      while (*rest == ' ' || *rest == '\t') {
-        ++rest;
-      }
-    }
-    if (*rest) {
-      protocol_error("parse", "PD -32768..32767");
-      return false;
-    }
-    int16_t *outs[3] = {&ia, &ib, &ic};
-    for (int i = 0; i < nt; ++i) {
-      if (is_axis_skip_token(tok[i])) {
-        *outs[i] = 0;
-        continue;
-      }
-      int v;
-      if (!parse_int_arg(tok[i], &v) || v < -32768 || v > 32767) {
-        protocol_error("parse", "PD -32768..32767");
-        return false;
-      }
-      *outs[i] = (int16_t)v;
-    }
+    int16_t ia = pp.set[0] ? (int16_t)pp.v[0] : 0;
+    int16_t ib = pp.set[1] ? (int16_t)pp.v[1] : 0;
+    int16_t ic = pp.set[2] ? (int16_t)pp.v[2] : 0;
     if (!motion_path_add3(ia, ib, ic)) {
       protocol_error("full", "path buffer full");
     }
@@ -1356,7 +1262,7 @@ bool protocol_exec_command(const char *cmd) {
     reply_query("ID", buf);
     return false;
   }
-  if (match_any(cmd, &rest, "IZ", "IsReset", nullptr)) {
+  if (match_any(cmd, &rest, "IC", nullptr, nullptr)) {
     const char *reason = "unknown";
 #ifndef HOST_TEST
     switch (rp2040.getResetReason()) {
@@ -1386,12 +1292,12 @@ bool protocol_exec_command(const char *cmd) {
       break;
     }
 #endif
-    reply_query("IZ", reason);
+    reply_query("IC", reason);
     return false;
   }
 
-  /* --- W wait (longer W* before bare W) --- */
-  if (match_any(cmd, &rest, "WnC", "WaitNotCruise", nullptr)) {
+  /* --- W wait (WN/WC/WP/WM/WH before WT) --- */
+  if (match_any(cmd, &rest, "WN", nullptr, nullptr)) {
     return begin_wait_if_needed(PROTOCOL_WAIT_NOT_CRUISE, rest, wait_not_cruise_done());
   }
   if (match_any(cmd, &rest, "WC", "WaitCruise", nullptr)) {
@@ -1406,11 +1312,11 @@ bool protocol_exec_command(const char *cmd) {
   if (match_any(cmd, &rest, "WH", "WaitHoming", nullptr)) {
     return begin_wait_cmd(PROTOCOL_WAIT_HOMING, rest);
   }
-  if (match_any(cmd, &rest, "W", "Wait", nullptr)) {
+  if (match_any(cmd, &rest, "WT", nullptr, nullptr)) {
     float sec = 1.0f;
     if (*rest) {
       if (!parse_float_arg(rest, &sec) || sec < 0.0f) {
-        protocol_error("parse", "W args");
+        protocol_error("parse", "WT args");
         return false;
       }
     }
@@ -1591,8 +1497,8 @@ bool protocol_exec_command(const char *cmd) {
   }
 
   /* --- Special --- */
-  /* HT / Halt / H — emergency halt (Help is Help/HL/$ only). */
-  if (match_any(cmd, &rest, "HT", "Halt", "H")) {
+  /* HT — emergency halt. */
+  if (match_any(cmd, &rest, "HT", nullptr, nullptr)) {
     if (motion_path_is_active()) {
       motion_path_abort_to_planner();
     }
@@ -1612,12 +1518,13 @@ bool protocol_exec_command(const char *cmd) {
     return false;
   }
 
-  if (match_any(cmd, &rest, "IX", "Pinout", nullptr)) {
+  if (match_any(cmd, &rest, "IG", nullptr, nullptr)) {
     cmd_pinout_index();
     return false;
   }
 
-  if (match_any(cmd, &rest, "Help", "HL", nullptr) || starts_cmd(cmd, "$", &rest)) {
+  if (match_any(cmd, &rest, "HL", nullptr, nullptr) ||
+      (cmd[0] == '$' && (cmd[1] == 0 || cmd[1] == ' ' || cmd[1] == '\t'))) {
     cmd_help();
     return false;
   }
@@ -1630,14 +1537,6 @@ void protocol_handle_line(const char *line) {
   char buf[CFG_LINE_MAX];
   strncpy(buf, line, sizeof(buf) - 1);
   buf[sizeof(buf) - 1] = 0;
-
-  /* Python-style comment: '#' … end of line */
-  for (char *c = buf; *c; ++c) {
-    if (*c == '#') {
-      *c = 0;
-      break;
-    }
-  }
 
   char *p = buf;
   while (*p) {

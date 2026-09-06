@@ -103,7 +103,7 @@ powershell -File scripts/run_host_tests.ps1
 
 | Area | State |
 |------|--------|
-| Protocol (S/G/I/M/C/W/V groups, `?`/`!`, verbose) | Implemented |
+| Protocol (2-letter cmds, X/Y/Z args, `?`/`#`, `!`/ESC) | Implemented |
 | FreeRTOS tasks (feed / plan / proto) + heartbeat/WDT | Implemented |
 | PIO STEP + sine planner (live retarget, soft/hard stop) | Implemented |
 | Soft/hard limits, homing, EMO/`DRV_ERROR` | Implemented |

@@ -26,6 +26,7 @@ static char led_phases[][65] = {
   "XXXXX  XXXX   XXX    XX    X    XXXXX  XXXX   XXX    XX    X    ",   // HOMING
   "XXXX       XXXX       XXXX                                      ",   // HARD_LIMIT
   "XXXX       XXXX       XXXXXXXXXXXXXXXX                          ",   // ERROR
+  "X   X   X   X   X   X   X   X   X   X   X   X   X   X   X   X   ",   // PATH
   "X            XXXXXXXX           X            XXXXXXXX           ",   // LOCKED
 };
 

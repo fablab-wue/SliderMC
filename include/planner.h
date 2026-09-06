@@ -23,7 +23,6 @@ void planner_tick(float dt_s);
 
 void planner_request_move_to(int axis, float mm);
 void planner_request_move_by(int axis, float mm);
-void planner_request_jog(int axis, int dir);
 void planner_request_stop(void);  /* soft-stop all axes */
 void planner_request_halt(void);  /* hard halt all axes */
 void planner_request_home(int axis);

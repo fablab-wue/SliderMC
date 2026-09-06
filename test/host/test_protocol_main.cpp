@@ -171,7 +171,7 @@ int main(void) {
   expect_contains("GS after CR default", "GS:50.00");
   reset_out();
   feed("ConfigReset\n");
-  expect_empty("ConfigReset alias silent");
+  expect_contains("ConfigReset long gone", "!E:parse");
 
   reset_out();
   feed("CS max_accel_1 300\n");
@@ -282,7 +282,7 @@ int main(void) {
   expect_contains("VF", "VF:1.0");
   reset_out();
   feed("VP\n");
-  expect_contains("VP", "VP:1");
+  expect_contains("VP", "VP:2");
 
   /* Timeout cancels remainder of chain */
   reset_out();
@@ -319,19 +319,19 @@ int main(void) {
 
   /* Bare W defaults to 1 s then continues chain */
   reset_out();
-  feed("W;SS 33\n");
-  expect_empty("W silent start");
+  feed("WT;SS 33\n");
+  expect_empty("WT silent start");
   reset_out();
   feed("IW\n");
-  expect_contains("IW during W", "IW:1");
+  expect_contains("IW during WT", "IW:1");
   for (int i = 0; i < 20; ++i) {
     protocol_poll(50); /* 1.0 s */
   }
   reset_out();
   feed("GS\n");
-  expect_contains("W then SS ran", "GS:33.00");
+  expect_contains("WT then SS ran", "GS:33.00");
 
-  /* WP / WC / WnC / Z */
+  /* WP / WC / WN / BE */
   reset_out();
   feed("WP\n");
   expect_contains("WP bare parse", "!E:parse");
@@ -427,16 +427,16 @@ int main(void) {
 
   reset_out();
   feed("MS\n");
-  expect_empty("MS idle before WnC");
+  expect_empty("MS idle before WN");
   reset_out();
-  feed("WnC; SS 44\n");
-  expect_empty("idle WnC silent");
+  feed("WN; SS 44\n");
+  expect_empty("idle WN silent");
   reset_out();
   feed("IW\n");
-  expect_contains("IW idle after WnC", "IW:0");
+  expect_contains("IW idle after WN", "IW:0");
   reset_out();
   feed("GS\n");
-  expect_contains("idle WnC then SS immediately", "GS:44.00");
+  expect_contains("idle WN then SS immediately", "GS:44.00");
 
   reset_out();
   feed("SS 50\nSA 200\nMT 0; WM\n");
@@ -444,7 +444,7 @@ int main(void) {
     protocol_poll(20);
   }
   reset_out();
-  feed("MT 100; WC; WnC; SS 6\n");
+  feed("MT 100; WC; WN; SS 6\n");
   {
     bool ran = false;
     for (int i = 0; i < 400; ++i) {
@@ -456,7 +456,7 @@ int main(void) {
         break;
       }
     }
-    expect_true("WnC after cruise then SS", ran);
+    expect_true("WN after cruise then SS", ran);
   }
 
   reset_out();
@@ -479,17 +479,17 @@ int main(void) {
   expect_contains("IW after HT WP", "IW:0");
 
   reset_out();
-  feed("SE 1\nZ; SS 13\n");
-  expect_empty("Z silent not a wait");
+  feed("SE 1\nBE; SS 13\n");
+  expect_empty("BE silent not a wait");
   reset_out();
   feed("IW\n");
-  expect_contains("IW after Z", "IW:0");
+  expect_contains("IW after BE", "IW:0");
   reset_out();
   feed("GS\n");
-  expect_contains("Z then SS immediately", "GS:13.00");
+  expect_contains("BE then SS immediately", "GS:13.00");
   reset_out();
-  feed("Z 1\n");
-  expect_contains("Z extra arg parse", "!E:parse");
+  feed("BE 1\n");
+  expect_contains("BE extra arg parse", "!E:parse");
   reset_out();
   feed("CG BUZZER_use\n");
   expect_contains("CG BUZZER_use default", "CG:BUZZER_use=0");
@@ -520,64 +520,76 @@ int main(void) {
   expect_contains("verbose push", "#");
 
   reset_out();
-  feed("Help\n");
-  expect_contains("Help header", "Short Long");
-  expect_contains("Help SetSpeed", "SS    SetSpeed");
-  expect_contains("Help SetDebug", "SD    SetDebug");
-  expect_contains("Help SetLeft", "SL    SetLeft");
-  expect_contains("Help SetPosition", "SP    SetPosition");
-  expect_contains("Help GetLeft", "GL    GetLeft");
-  expect_contains("Help IsReady", "IR    IsReady");
-  expect_contains("Help MoveJoy", "MJ    MoveJoy");
-  expect_contains("Help WaitPos", "WP    WaitPos");
-  expect_contains("Help WaitCruise", "WC    WaitCruise");
-  expect_contains("Help WaitNotCruise", "WnC   WaitNotCruise");
-  expect_contains("Help Buzzer", "Z     Buzzer");
-  expect_contains("Help Halt", "H/HT  Halt");
-  expect_contains("Help self", "$ /HL Help");
+  feed("HL\n");
+  expect_contains("HL header", "Cmd  Description");
+  expect_contains("HL Set Speed", "SS    Set Speed");
+  expect_contains("HL Set Debug", "SD    Set Debug");
+  expect_contains("HL Set Left", "SL    Set Left");
+  expect_contains("HL Set Position", "SP    Set Position");
+  expect_contains("HL Get Left", "GL    Get Left");
+  expect_contains("HL Is Ready", "IR    Is Ready");
+  expect_contains("HL Move Joy", "MJ    Move Joy");
+  expect_contains("HL Wait Pos", "WP    Wait Pos");
+  expect_contains("HL Wait Cruise", "WC    Wait Cruise");
+  expect_contains("HL Wait Not", "WN    Wait Not");
+  expect_contains("HL Beep", "BE    Beep");
+  expect_contains("HL Halt", "HT    Halt");
+  expect_contains("HL self", "HL/$");
   reset_out();
   feed("$\n");
-  expect_contains("$ help alias", "VersionProtocol");
-  reset_out();
-  feed("HL\n");
-  expect_contains("HL alias", "IsError");
+  expect_contains("$ help alias", "Version Protocol");
   reset_out();
   feed("Help\n");
-  expect_contains("Help long", "MoveHome");
+  expect_contains("Help long gone", "!E:parse");
   reset_out();
   feed("H\n");
-  expect_empty("H is Halt (silent)");
+  expect_contains("H gone", "!E:parse");
+  reset_out();
+  feed("HT\n");
+  expect_empty("HT Halt silent");
 
   reset_out();
-  feed("X00\n");
-  expect_empty("X00 glued = X0 0");
+  feed("EO00\n");
+  expect_empty("EO00 glued = EO0 0");
   reset_out();
-  feed("X0\n");
-  expect_empty("X0 bare toggles on");
+  feed("EO0\n");
+  expect_empty("EO0 bare toggles on");
   reset_out();
-  feed("Ext1 1\n");
-  expect_empty("Ext1 on");
+  feed("EO1 1\n");
+  expect_empty("EO1 on");
   reset_out();
-  feed("X2\n");
-  expect_empty("X2 bare toggles");
+  feed("EO2\n");
+  expect_empty("EO2 bare toggles");
 
   reset_out();
   feed("ZZZ\n");
   expect_contains("parse error", "!E:parse");
+  reset_out();
+  feed("X0\n");
+  expect_contains("X0 gone", "!E:parse");
+  reset_out();
+  feed("Z\n");
+  expect_contains("Z gone", "!E:parse");
+  reset_out();
+  feed("ML\n");
+  expect_contains("ML gone", "!E:parse");
+  reset_out();
+  feed("MR\n");
+  expect_contains("MR gone", "!E:parse");
+  reset_out();
+  feed("M 10\n");
+  expect_contains("M gone", "!E:parse");
+  reset_out();
+  feed("W\n");
+  expect_contains("W gone", "!E:parse");
 
-  /* Python-style '#' comments */
   reset_out();
-  feed("# this is a comment\n");
-  expect_empty("comment-only line silent");
+  protocol_feed_byte('#');
+  expect_contains("realtime # compact", "#I ");
   reset_out();
-  feed("#M 12.5 20 0 100\n");
-  expect_empty("pasted status line ignored");
-  reset_out();
-  feed("SS 77 # cruise\n");
-  expect_empty("SS with inline comment silent");
-  reset_out();
-  feed("GS\n");
-  expect_contains("GS after SS with comment", "GS:77.00");
+  protocol_feed_byte(0x1B);
+  feed("IM\n");
+  expect_contains("ESC stop", "IM:0");
 
   /* Terminal Mode: UART lines sniffed to write_debug before execute */
   reset_out();
@@ -747,20 +759,22 @@ int main(void) {
 
   reset_out();
   feed("MJ 50 -20\n");
-  expect_empty("1-axis ignores spd2");
+  expect_contains("1-axis MJ extra axis parse", "!E:parse");
+  reset_out();
+  feed("MJ 50\n");
+  expect_empty("1-axis MJ 50");
   expect_true("1-axis MJ 50 cruise 30", std::fabs(motion_host_axis_cruise(0) - 30.0f) < 0.01f);
 
   reset_out();
-  feed("ML\n");
-  expect_empty("ML exits joy");
+  feed("MS\n");
+  expect_empty("MS exits joy");
   reset_out();
   feed("GS\n");
-  expect_contains("SS unchanged after ML", "GS:60.00");
-  expect_true("ML uses session SS", std::fabs(motion_host_axis_cruise(0) - 60.0f) < 0.01f);
+  expect_contains("SS unchanged after MS", "GS:60.00");
 
   reset_out();
   feed("MS\n");
-  expect_empty("MS after ML");
+  expect_empty("MS after joy");
   reset_out();
   feed("IP\n");
   /* sit at current pos: set slider_max to that position and command into the rail */
@@ -884,6 +898,8 @@ int main(void) {
 
   reset_out();
   feed("MS\n");
+  feed("SP 110\n");
+  expect_empty("park 110 before inward MJ");
   feed("SL 100\n");
   expect_empty("SL 100 for inward MJ");
   reset_out();
@@ -915,7 +931,7 @@ int main(void) {
   expect_contains("IA after axis2", "IA:2");
   reset_out();
   feed("Axis\n");
-  expect_contains("Axis alias", "IA:2");
+  expect_contains("Axis long gone", "!E:parse");
 
   reset_out();
   protocol_send_banner();
@@ -1059,13 +1075,52 @@ int main(void) {
 
   reset_out();
   feed("ML 1\n");
-  expect_empty("ML axis mask 1");
+  expect_contains("ML gone on dual", "!E:parse");
   reset_out();
   feed("MR 2\n");
-  expect_empty("MR axis mask 2");
+  expect_contains("MR gone on dual", "!E:parse");
   reset_out();
   feed("MH 1\n");
   expect_empty("MH axis 1");
+  reset_out();
+  feed("MT Y40\n");
+  expect_empty("MT Y40 named");
+  reset_out();
+  feed("MTX20Z100\n");
+  expect_contains("MT X+Z without Y on 2-axis", "!E:parse");
+  reset_out();
+  feed("CS axis 3\n");
+  expect_empty("temp axis 3 for named XYZ");
+  reset_out();
+  feed("SE 1\n");
+  feed("MTX20Y50Z100\n");
+  expect_empty("MTX20Y50Z100 glued");
+  reset_out();
+  feed("MS\n");
+  expect_empty("MS before SP glued");
+  reset_out();
+  feed("SPX20Y50Z100\n");
+  expect_empty("SP glued named");
+  reset_out();
+  feed("IP\n");
+  expect_contains("IP after glued XYZ", "IP:20.00 50.00 100.00");
+  reset_out();
+  feed("MJ Y50\n");
+  expect_empty("MJ Y50 named");
+  reset_out();
+  feed("MT 20 Z100\n");
+  expect_contains("mixed positional+named", "!E:parse");
+  reset_out();
+  feed("MT X20 X100\n");
+  expect_contains("duplicate X", "!E:parse");
+  reset_out();
+  feed("MBX-5\n");
+  expect_empty("MBX-5 relative");
+  reset_out();
+  feed("CS axis 2\n");
+  expect_empty("restore axis 2 after named XYZ");
+  reset_out();
+  feed("SE 1\n");
 
   reset_out();
   feed("MS\n");
@@ -1166,15 +1221,15 @@ int main(void) {
   expect_contains("GL dual after bare SL", "GL:0.00 0.00");
 
   reset_out();
-  feed("X4 1\n");
-  expect_contains("X4 invalid", "!E:parse");
+  feed("EO4 1\n");
+  expect_contains("EO4 invalid", "!E:parse");
   reset_out();
-  feed("X6 1\n");
-  expect_contains("X6 invalid", "!E:parse");
+  feed("EO6 1\n");
+  expect_contains("EO6 invalid", "!E:parse");
 
   reset_out();
-  feed("IX\n");
-  expect_contains("IX has STEP2 when axis2", "DRV_STEP2");
+  feed("IG\n");
+  expect_contains("IG has STEP2 when axis2", "DRV_STEP2");
   reset_out();
   feed("VG\n");
   expect_contains("VG has STEP2 when axis2", "PIN_DRV_STEP2=");
@@ -1211,8 +1266,8 @@ int main(void) {
   feed("IA\n");
   expect_contains("IA restored 1-axis", "IA:1");
   reset_out();
-  feed("IX\n");
-  expect_not_contains("IX no STEP2 when 1-axis", "DRV_STEP2");
+  feed("IG\n");
+  expect_not_contains("IG no STEP2 when 1-axis", "DRV_STEP2");
   reset_out();
   feed("VG\n");
   expect_not_contains("VG no STEP2 when 1-axis", "PIN_DRV_STEP2=");
@@ -1250,9 +1305,9 @@ int main(void) {
   feed("RB\n");
   expect_empty("RB silent on host");
   reset_out();
-  feed("Help\n");
-  expect_contains("Help lists RB", "RB");
-  expect_contains("Help lists Reboot", "Reboot");
+  feed("HL\n");
+  expect_contains("HL lists RB", "RB");
+  expect_contains("HL lists Reboot", "Reboot");
 
   reset_out();
   feed("SE 1\n");
@@ -1369,18 +1424,24 @@ int main(void) {
   feed("PD _ _ 5\n");
   expect_empty("PD skip become 0");
   reset_out();
+  feed("PDZ5\n");
+  expect_empty("PDZ5 named");
+  reset_out();
   feed("PN\n");
-  expect_contains("PN after two triple samples", "PN:2");
+  expect_contains("PN after three triple samples", "PN:3");
 
   reset_out();
   feed("MH 3\n");
   expect_empty("MH axis 3");
   reset_out();
   feed("ML 3\n");
-  expect_empty("ML mask 3");
+  expect_contains("ML gone on triple", "!E:parse");
+  reset_out();
+  feed("MT Z40\n");
+  expect_empty("MT Z40 named");
   reset_out();
   feed("MS\n");
-  expect_empty("MS after axis3 jog");
+  expect_empty("MS after axis3 MT");
 
   reset_out();
   feed("CS axis 4\n");

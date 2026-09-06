@@ -9,7 +9,7 @@
 
 /*
  * Lightweight motion stub for protocol bring-up and host tests.
- * Interpolates position over virtual travel time (A → M → B → I) so WP/WC/WnC
+ * Interpolates position over virtual travel time (A → M → B → I) so WP/WC/WN
  * and WM/WH can complete.
  */
 
@@ -381,57 +381,6 @@ bool motion_move_to2(float mm1_or_nan, float mm2_or_nan) {
 }
 
 bool motion_move_by(float mm) { return motion_move_to(g_st.pos_mm + mm); }
-
-bool motion_jog(int dir, int axis_mask) {
-  if (!g_st.enabled || g_st.drv_error) {
-    return false;
-  }
-  const McConfig *c = config_get();
-  float delta = (dir >= 0 ? 1.0f : -1.0f) * c->max_speed_mm_s * 10.0f;
-  bool ax2 = config_axis2_enabled();
-  if (!ax2 || axis_mask == 0 || axis_mask == 1) {
-    float dest = g_st.pos_mm + delta;
-    if (!isnan(axis_hw_window_max(0)) && dest > axis_hw_window_max(0)) {
-      dest = axis_hw_window_max(0);
-    }
-    if (!isnan(axis_hw_window_min(0)) && dest < axis_hw_window_min(0)) {
-      dest = axis_hw_window_min(0);
-    }
-    if (!soft_ok(dest, 0)) {
-      return false;
-    }
-    joy_clear();
-    coord_clear();
-    apply_session_cruise_accel();
-    start_move_axis(0, dest);
-  }
-  if (config_axis3_enabled() && (axis_mask == 0 || axis_mask == 3)) {
-    float dest = g_st.pos_mm_3 + delta;
-    if (!isnan(axis_hw_window_max(2)) && dest > axis_hw_window_max(2)) {
-      dest = axis_hw_window_max(2);
-    }
-    if (!isnan(axis_hw_window_min(2)) && dest < axis_hw_window_min(2)) {
-      dest = axis_hw_window_min(2);
-    }
-    start_move_axis(2, dest);
-  }
-  if (ax2 && (axis_mask == 0 || axis_mask == 2)) {
-    float dest = g_st.pos_mm_2 + delta;
-    if (!isnan(axis_hw_window_max(1)) && dest > axis_hw_window_max(1)) {
-      dest = axis_hw_window_max(1);
-    }
-    if (!isnan(axis_hw_window_min(1)) && dest < axis_hw_window_min(1)) {
-      dest = axis_hw_window_min(1);
-    }
-    if (!ax2 || axis_mask == 2) {
-      joy_clear();
-      coord_clear();
-      apply_session_cruise_accel();
-    }
-    start_move_axis(1, dest);
-  }
-  return true;
-}
 
 static float joy_dest_mm(int axis, int sign) {
   float mn = axis_hw_window_min(axis);

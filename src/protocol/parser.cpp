@@ -276,11 +276,11 @@ void protocol_poll(unsigned dt_ms) {
 }
 
 static void handle_realtime(uint8_t b) {
-  if (b == '?') {
+  if (b == '?' || b == '#') {
     protocol_send_status();
     return;
   }
-  if (b == '!') {
+  if (b == '!' || b == 0x1B) {
     motion_stop();
     return;
   }
@@ -299,7 +299,7 @@ static void echo_byte(uint8_t b) {
 }
 
 static void feed_byte(ProtocolSrc src, uint8_t b) {
-  if (b == '?' || b == '!' || b == 0x18) {
+  if (b == '?' || b == '#' || b == '!' || b == 0x1B || b == 0x18) {
     handle_realtime(b);
     return;
   }
