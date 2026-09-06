@@ -21,6 +21,8 @@ static void expect_near(const char *name, float a, float b, float eps) {
 }
 
 int main(void) {
+  expect_true("start threshold leaves refill headroom", PIO_STEP_START_MIN_LEVEL < 8u);
+
   /* stop distance invert: d = pi v^2 / (4a) => v = sqrt(4 a d / pi) */
   float a = 200.0f;
   float v = 50.0f;

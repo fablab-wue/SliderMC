@@ -43,7 +43,13 @@ bool pio_step_reconfigure(void);
 /** False if an enabled axis failed to claim an SM / program. */
 bool pio_step_ok(void);
 
+/* 3-axis starts are the tightest edge: start from a partial FIFO, not a full one.
+ * Waiting for all 8 words before enabling the SM makes the very first handoff
+ * stall while the feed task is still trying to refill. */
 #define PIO_STEP_START_MIN_LEVEL 4u /* prefill this many words before enabling SM */
+#if PIO_STEP_START_MIN_LEVEL >= 8u
+#error "PIO_STEP_START_MIN_LEVEL must stay below the 8-word TX FIFO depth"
+#endif
 
 void pio_step_start(int axis);
 /** Enable SM only after TX has PIO_STEP_START_MIN_LEVEL words (avoids launch stall). */
@@ -58,6 +64,12 @@ bool pio_step_put_word(int axis, uint32_t delay_cycles, uint8_t n_pulses);
 unsigned pio_step_tx_level(int axis);
 unsigned pio_step_tx_room(int axis);
 bool pio_step_tx_empty(int axis);
+/**
+ * True only when TXSTALL is set *and* issued work is still on the books
+ * (shadow/pending) while the HW FIFO is already empty — a mid-burst dry-out.
+ * TXSTALL + empty + pending==0 is the normal gap between fill bursts; that
+ * must not count (and must not print). See pio_step_is_stalled() in pio_step.cpp.
+ */
 bool pio_step_is_stalled(int axis);
 
 /** Drop a pending TXSTALL flag (e.g. after an intentional idle gap). */

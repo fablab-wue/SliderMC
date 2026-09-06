@@ -570,7 +570,7 @@ static void home_start_move_sign(int axis, int sign, float dist_mm) {
   AX.st.moving = true;
   AX.st.has_target = true;
   begin_ramp(axis, AX.vel_mm_s);
-  AX.fill_wants_more = false;
+  AX.fill_wants_more = true;
   AX.acc_meas = 0.0f;
   AX.braking = false;
   AX.brake_d = 0;
@@ -975,9 +975,13 @@ int planner_fill_fifo(int axis) {
   }
 
   int nax = axis_count();
+  /* 3-axis moves are the tightest case: keep a slightly larger per-call burst so
+   * we do not spend a full interrupt/service cycle on every 1-2 word refill.
+   * The extra headroom is small, but it reduces the chance of a low-water stall
+   * between the time the FIFO due to drain and the next feed wake. */
   unsigned room_budget = pio_step_tx_empty(axis)
                              ? 8u
-                             : ((nax >= 3) ? 2u : (nax >= 2) ? 3u : 6u);
+                             : ((nax >= 3) ? 3u : (nax >= 2) ? 4u : 6u);
   while (room_budget-- && pio_step_tx_room(axis) > 0) {
     int64_t err = AX.target_steps - AX.pos_steps;
     int sign;
@@ -1356,13 +1360,33 @@ void planner_tick_axis(int axis, float dt_s) {
     }
   }
 
-  if (AX.st.moving && !AX.dir_pause && AX.fill_wants_more && pio_step_is_stalled(axis) &&
-      pio_step_tx_empty(axis)) {
+  if (AX.st.moving && !AX.dir_pause &&
+      (AX.fill_wants_more || pio_step_pending_steps(axis) > 0) &&
+      (pio_step_tx_empty(axis) || pio_step_tx_level(axis) <= PIO_STEP_START_MIN_LEVEL + 2u)) {
+    pio_step_kick_feed();
+  }
+
+  /*
+   * Underrun = mid-burst dry-out, not "SM waited for a word."
+   * After sync_shadow_to_fifo, an empty FIFO yields pending==0 — that is the
+   * normal gap between fill bursts (see pio_step_is_stalled). Counting that
+   * (TXSTALL && empty && fill_wants_more only) prints D:underrun on every
+   * planner tick and the USB load causes the stall it claims to report.
+   * Require pending>0 *and* empty: issued work gone from the FIFO while still
+   * on the books. Do not loosen this gate.
+   */
+  int pending = pio_step_pending_steps(axis);
+  if (AX.st.moving && !AX.dir_pause && pio_step_is_running(axis) && pending > 0 &&
+      AX.fill_wants_more && pio_step_tx_empty(axis) && pio_step_is_stalled(axis)) {
     motion_diag_note_underrun(axis);
     static uint32_t ur_burst[AXIS_MAX];
     ++ur_burst[axis];
     if (ur_burst[axis] == 1u || (ur_burst[axis] & 15u) == 0u) {
-      protocol_debug(2, "D:underrun a=%d n=%lu\n", axis, (unsigned long)ur_burst[axis]);
+      protocol_debug(2,
+                    "D:underrun a=%d n=%lu tx=%u pend=%d fill=%d run=%d\n",
+                    axis, (unsigned long)ur_burst[axis],
+                    (unsigned)pio_step_tx_level(axis), pending,
+                    AX.fill_wants_more ? 1 : 0, pio_step_is_running(axis) ? 1 : 0);
     }
 #ifndef HOST_TEST
 #ifdef DEBUG_HW
@@ -1429,7 +1453,10 @@ void planner_request_move_to(int axis, float mm) {
   AX.st.homing = false;
   AX.st.has_target = true;
   begin_ramp(axis, AX.vel_mm_s);
-  AX.fill_wants_more = false;
+  /* Warm-start the feed loop at motion launch so the first refill burst does
+   * not wait for a later low-water wake-up. This is the critical edge for the
+   * 3-axis startup FIFO handoff. */
+  AX.fill_wants_more = true;
   AX.acc_meas = 0.0f;
   AX.braking = false;
   AX.brake_d = 0;
@@ -1494,7 +1521,7 @@ static void planner_request_joy(int axis, float signed_v) {
   AX.st.moving = true;
   AX.st.homing = false;
   AX.st.has_target = true;
-  AX.fill_wants_more = false;
+  AX.fill_wants_more = true;
   AX.acc_meas = 0.0f;
   AX.braking = false;
   AX.brake_d = 0;
@@ -1659,7 +1686,13 @@ bool planner_feed_active_axis(int axis) {
   if (axis < 0 || axis >= axis_count()) {
     return false;
   }
-  return AX.st.moving && !AX.dir_pause && !g_drv_error && g_enabled;
+  /* The tail of a move still has queued step work even after the planner has
+   * stopped raising fill_wants_more. Keep the feed task alive until the last
+   * pending step has actually drained out of the FIFO/shadow bookkeeping; this
+   * avoids the last-word stall during the return-to-zero decel edge. */
+  bool pending_steps = pio_step_pending_steps(axis) > 0;
+  return (AX.st.moving || AX.stopping || AX.braking || AX.fill_wants_more || pending_steps) &&
+         !AX.dir_pause && !g_drv_error && g_enabled;
 }
 
 bool planner_feed_active(void) {

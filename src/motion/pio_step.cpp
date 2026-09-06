@@ -282,6 +282,7 @@ void pio_step_start(int axis) {
   if (!axis_ok(axis)) {
     return;
   }
+  pio_step_clear_stall(axis);
   g_ax[axis].running = true;
   pio_sm_set_enabled(g_pio, (uint)g_ax[axis].sm, true);
 }
@@ -381,6 +382,10 @@ bool pio_step_put_word(int axis, uint32_t delay_cycles, uint8_t n_pulses) {
   uint32_t repeat = (uint32_t)(n_pulses - 1) & 0x3Fu;
   uint32_t word = delay | (repeat << PIO_STEP_REPEAT_SHIFT);
   pio_sm_put(g_pio, (uint)a->sm, word);
+  /* A TXSTALL latch is sticky; once the queue is successfully refilled, clear the
+   * stale flag immediately so a later poll does not treat the recovery itself as
+   * an underrun. */
+  g_pio->fdebug = 1u << (PIO_FDEBUG_TXSTALL_LSB + (uint)a->sm);
   if (axis == 0) {
     dbg_hw_set(PIN_DBG_FIFO, 1);
     static int32_t last_delay = -1;
@@ -428,11 +433,29 @@ bool pio_step_is_stalled(int axis) {
     return false;
   }
   uint32_t mask = 1u << (PIO_FDEBUG_TXSTALL_LSB + (uint)g_ax[axis].sm);
-  if (g_pio->fdebug & mask) {
-    g_pio->fdebug = mask;
-    return true;
+  if ((g_pio->fdebug & mask) == 0u) {
+    return false;
   }
-  return false;
+  /*
+   * TXSTALL means "SM wanted a TX word and the FIFO was empty." That latch is
+   * sticky (W1C) and fires on every healthy fill-burst gap:
+   *   put words → SM drains them → pending/shadow sync to 0 → last word ends
+   *   → TXSTALL → feed IRQ/kick puts the next burst.
+   * Treating that as an underrun reprints D:underrun at ~200 Hz; the USB
+   * storm then starves the feed task and *creates* real stalls.
+   *
+   * A real dry-out is narrower: the books still show issued steps
+   * (shadow_n or pending) while the HW FIFO is already empty — the queue
+   * disappeared under a burst that should still have been there.
+   * fill_wants_more alone is not enough; that stays true for the whole move.
+   */
+  if (pio_sm_is_tx_fifo_empty(g_pio, (uint)g_ax[axis].sm) &&
+      g_ax[axis].shadow_n == 0 && pio_step_pending_steps(axis) <= 0) {
+    g_pio->fdebug = mask;
+    return false;
+  }
+  g_pio->fdebug = mask;
+  return true;
 }
 
 void pio_step_clear_stall(int axis) {

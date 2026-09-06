@@ -112,7 +112,7 @@ static const float k_sin_lut[PLANNER_SIN_LUT_N + 1] = {
 
 /* x in [0, π/2]. */
 static float planner_sin_quarter(float x) {
-  const float scale = (float)PLANNER_SIN_LUT_N * (2.0f / (float)M_PI);
+  static const float scale = (float)PLANNER_SIN_LUT_N * (2.0f / (float)M_PI);
   float t = x * scale;
   if (t <= 0.0f) {
     return 0.0f;
