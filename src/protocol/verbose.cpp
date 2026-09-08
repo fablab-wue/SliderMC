@@ -1,6 +1,7 @@
 #include "protocol_internal.h"
 #include "motion_api.h"
 #include "config_store.h"
+#include "board.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -11,18 +12,11 @@
  * display (e.g. OLED). Also acts as a heartbeat that the MC is alive.
  * Realtime `?` uses the same line format.
  *
- * Each axis is a 1-axis group. 2-axis joins groups with " | ".
- *
- * 1-axis:  #I pos
- *          #M pos speed accel [target]
- *          #H pos speed accel
- * 2-axis:  #I pos1 | pos2
- *          #H pos1 speed1 accel1 | pos2 speed2 accel2
- *          #M pos1 speed1 accel1 target1 | pos2 speed2 accel2 target2
- * 3-axis:  same groups joined by a third " | pos3 …"
+ * Packed channels joined by `|`. A lone idle `0` group is omitted so
+ * `| 0 |` becomes `||`.
  */
 
-static char g_last_verbose[256];
+static char g_last_verbose[512];
 
 void protocol_verbose_reset_dedupe(void) { g_last_verbose[0] = 0; }
 
@@ -57,12 +51,10 @@ static void format_num(char *dst, size_t n, float v) {
   if (n == 0) {
     return;
   }
-  /* Reject NaN. */
   if (v != v) {
     snprintf(dst, n, "0");
     return;
   }
-  /* Truncate toward zero to 2 decimals: 100.999… → 100.99 */
   float scaled = v * 100.0f;
   float trunc_scaled = (scaled >= 0.0f) ? floorf(scaled) : ceilf(scaled);
   float t = trunc_scaled / 100.0f;
@@ -87,29 +79,36 @@ static void format_num(char *dst, size_t n, float v) {
   snprintf(dst, n, "%s", tmp);
 }
 
-static void append_num(char *buf, size_t buflen, float v) {
-  char num[32];
-  format_num(num, sizeof(num), v);
+static void append_str(char *buf, size_t buflen, const char *s) {
   size_t used = strlen(buf);
-  if (used + 1 + strlen(num) + 1 >= buflen) {
+  size_t sl = strlen(s);
+  if (used + sl + 1 >= buflen) {
     return;
   }
-  buf[used++] = ' ';
-  buf[used] = 0;
-  strncat(buf, num, buflen - used - 1);
+  memcpy(buf + used, s, sl + 1);
 }
 
-/** Append one axis group: pos [speed accel [target]]. */
-static void append_axis_group(char *buf, size_t buflen, float pos, float vel, float acc,
-                              float dest, bool moving, bool homing, bool emit_dest) {
-  append_num(buf, buflen, pos);
+/** Build one axis group into tmp (no leading space). Returns true if non-empty payload. */
+static bool format_axis_group(char *tmp, size_t n, float pos, float vel, float acc, float dest,
+                              bool moving, bool homing, bool emit_dest) {
+  char num[32];
+  tmp[0] = 0;
+  format_num(num, sizeof(num), pos);
+  snprintf(tmp, n, "%s", num);
   if (moving || homing) {
-    append_num(buf, buflen, fabsf(vel));
-    append_num(buf, buflen, fabsf(acc));
+    format_num(num, sizeof(num), fabsf(vel));
+    size_t used = strlen(tmp);
+    snprintf(tmp + used, n - used, " %s", num);
+    format_num(num, sizeof(num), fabsf(acc));
+    used = strlen(tmp);
+    snprintf(tmp + used, n - used, " %s", num);
     if (moving && !homing && emit_dest) {
-      append_num(buf, buflen, dest);
+      format_num(num, sizeof(num), dest);
+      used = strlen(tmp);
+      snprintf(tmp + used, n - used, " %s", num);
     }
   }
+  return !(tmp[0] == '0' && tmp[1] == 0);
 }
 
 /** Build status line into buf (including trailing '\\n'). */
@@ -117,33 +116,33 @@ static void build_status_line(char *buf, size_t buflen) {
   McStatus st;
   motion_get_status(&st);
   char letter = protocol_state_letter();
+  if (board_camera_ctrl_take_trigger()) {
+    letter = 'T';
+  }
   snprintf(buf, buflen, "#%c", letter);
 
   const int nax = config_axis_count();
   const bool emit_dest1 = st.has_target;
-  const bool emit_dest_n = st.moving && !st.homing;
 
-  append_axis_group(buf, buflen, st.pos_mm, st.vel_mm_s, st.acc_mm_s2, st.target_mm,
-                    st.moving, st.homing, nax >= 2 ? emit_dest_n : emit_dest1);
-  if (nax >= 2) {
-    size_t used = strlen(buf);
-    if (used + 3 < buflen) {
-      buf[used++] = ' ';
-      buf[used++] = '|';
-      buf[used] = 0;
+  bool prev_keep = false;
+  for (int i = 0; i < nax; ++i) {
+    bool ch_moving = fabsf(st.vel[i]) >= 0.005f;
+    bool ch_homing = st.homing && ch_moving;
+    bool emit_dest = (nax >= 2) ? (ch_moving && !st.homing) : (emit_dest1 && ch_moving);
+    char grp[64];
+    bool keep = format_axis_group(grp, sizeof(grp), st.pos[i], st.vel[i], st.acc[i],
+                                  st.target[i], ch_moving, ch_homing, emit_dest);
+    if (!keep && nax == 1) {
+      keep = true;
     }
-    append_axis_group(buf, buflen, st.pos_mm_2, st.vel_mm_s_2, st.acc_mm_s2_2,
-                      st.target_mm_2, st.moving, st.homing, emit_dest_n);
-  }
-  if (nax >= 3) {
-    size_t used = strlen(buf);
-    if (used + 3 < buflen) {
-      buf[used++] = ' ';
-      buf[used++] = '|';
-      buf[used] = 0;
+    if (i > 0) {
+      append_str(buf, buflen, prev_keep ? " |" : "|");
     }
-    append_axis_group(buf, buflen, st.pos_mm_3, st.vel_mm_s_3, st.acc_mm_s2_3,
-                      st.target_mm_3, st.moving, st.homing, emit_dest_n);
+    if (keep) {
+      append_str(buf, buflen, " ");
+      append_str(buf, buflen, grp);
+    }
+    prev_keep = keep;
   }
   size_t used = strlen(buf);
   if (used + 1 < buflen) {
@@ -153,7 +152,7 @@ static void build_status_line(char *buf, size_t buflen) {
 }
 
 void protocol_send_verbose(void) {
-  char buf[256];
+  char buf[512];
   build_status_line(buf, sizeof(buf));
 
   if (session_get()->terminal) {
@@ -168,7 +167,7 @@ void protocol_send_verbose(void) {
 }
 
 void protocol_send_status(void) {
-  char buf[256];
+  char buf[512];
   build_status_line(buf, sizeof(buf));
   protocol_write(buf);
 }

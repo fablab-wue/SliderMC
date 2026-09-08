@@ -3,6 +3,7 @@
 #include "pins.h"
 #include "config_store.h"
 
+#include <math.h>
 #include <stdbool.h>
 
 #ifdef __cplusplus
@@ -10,96 +11,86 @@ extern "C" {
 #endif
 
 /** Number of active STEP/DIR axes (1..3). */
-static inline int axis_hw_count(void) { return config_axis_count(); }
+static inline int axis_hw_count(void) { return config_motor_count(); }
 
 static inline int axis_hw_step_pin(int axis) {
 #if PIN_AXIS3_SUPPORTED
   if (axis == 2) {
-    return PIN_DRV_STEP3;
+    return PIN_DRV_STEP_3;
   }
 #endif
 #if PIN_AXIS2_SUPPORTED
   if (axis == 1) {
-    return PIN_DRV_STEP2;
+    return PIN_DRV_STEP_2;
   }
 #endif
   (void)axis;
-  return PIN_DRV_STEP;
+  return PIN_DRV_STEP_1;
 }
 
 static inline int axis_hw_dir_pin(int axis) {
 #if PIN_AXIS3_SUPPORTED
   if (axis == 2) {
-    return PIN_DRV_DIR3;
+    return PIN_DRV_DIR_3;
   }
 #endif
 #if PIN_AXIS2_SUPPORTED
   if (axis == 1) {
-    return PIN_DRV_DIR2;
+    return PIN_DRV_DIR_2;
   }
 #endif
   (void)axis;
-  return PIN_DRV_DIR;
+  return PIN_DRV_DIR_1;
 }
 
 static inline int axis_hw_en_pin(int axis) {
-#if PIN_AXIS3_SUPPORTED
-  if (axis == 2) {
-    return PIN_DRV_EN3;
-  }
-#endif
-#if PIN_AXIS2_SUPPORTED
-  if (axis == 1) {
-    return PIN_DRV_EN2;
-  }
-#endif
   (void)axis;
-  return PIN_DRV_EN;
+  return PIN_DRV_ENABLE;
 }
 
 static inline int axis_hw_error_pin(int axis) {
 #if PIN_AXIS3_SUPPORTED
   if (axis == 2) {
-    return PIN_DRV_ERROR3;
+    return PIN_DRV_ERROR_3;
   }
 #endif
 #if PIN_AXIS2_SUPPORTED
   if (axis == 1) {
-    return PIN_DRV_ERROR2;
+    return PIN_DRV_ERROR_2;
   }
 #endif
   (void)axis;
-  return PIN_DRV_ERROR;
+  return PIN_DRV_ERROR_1;
 }
 
 static inline int axis_hw_limit_l_pin(int axis) {
 #if PIN_AXIS3_SUPPORTED
   if (axis == 2) {
-    return PIN_SW_LIMIT_L3;
+    return PIN_SW_LIMIT_L_3;
   }
 #endif
 #if PIN_AXIS2_SUPPORTED
   if (axis == 1) {
-    return PIN_SW_LIMIT_L2;
+    return PIN_SW_LIMIT_L_2;
   }
 #endif
   (void)axis;
-  return PIN_SW_LIMIT_L;
+  return PIN_SW_LIMIT_L_1;
 }
 
 static inline int axis_hw_limit_r_pin(int axis) {
 #if PIN_AXIS3_SUPPORTED
   if (axis == 2) {
-    return PIN_SW_LIMIT_R3;
+    return PIN_SW_LIMIT_R_3;
   }
 #endif
 #if PIN_AXIS2_SUPPORTED
   if (axis == 1) {
-    return PIN_SW_LIMIT_R2;
+    return PIN_SW_LIMIT_R_2;
   }
 #endif
   (void)axis;
-  return PIN_SW_LIMIT_R;
+  return PIN_SW_LIMIT_R_1;
 }
 
 static inline int axis_hw_step_active(int axis) {
@@ -117,11 +108,8 @@ static inline int axis_hw_dir_active(int axis) {
 }
 
 static inline int axis_hw_en_active(int axis) {
-  const McConfig *c = config_get();
-  if (axis == 2) {
-    return c->drv_en_active_3;
-  }
-  return (axis == 1) ? c->drv_en_active_2 : c->drv_en_active;
+  (void)axis;
+  return config_get()->drv_enable_active;
 }
 
 static inline int axis_hw_error_active(int axis) {
@@ -174,18 +162,18 @@ static inline float axis_hw_steps_per_unit(int axis) {
 
 static inline float axis_hw_slider_min(int axis) {
   const McConfig *c = config_get();
-  if (axis == 2) {
-    return c->slider_min_mm_3;
+  if (axis < 0 || axis >= MOTOR_MAX) {
+    return NAN;
   }
-  return (axis == 1) ? c->slider_min_mm_2 : c->slider_min_mm;
+  return c->motor_min[axis];
 }
 
 static inline float axis_hw_slider_max(int axis) {
   const McConfig *c = config_get();
-  if (axis == 2) {
-    return c->slider_max_mm_3;
+  if (axis < 0 || axis >= MOTOR_MAX) {
+    return NAN;
   }
-  return (axis == 1) ? c->slider_max_mm_2 : c->slider_max_mm;
+  return c->motor_max[axis];
 }
 
 /** Effective working-window min (session, else envelope). Homing uses axis_hw_slider_min. */

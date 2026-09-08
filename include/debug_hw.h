@@ -5,11 +5,12 @@
 #if defined(DEBUG_HW) && !defined(HOST_TEST)
 #include <Arduino.h>
 
-/* Pico: DBG overlaps axis2 (GP10–13) and EXT (GP14–15).
- * Zero: DBG overlaps EXT (GP21–23) and LIMIT3 (GP18).
- * EXT is always claimed, so overlapping boards never drive DBG. */
+/* Pico: DBG overlaps LIMIT3 (GP10–11), ERROR 1–3 (GP12–14), ENABLE (GP15).
+ * Zero: DBG overlaps EXT_2..4 (GP18–20).
+ * ENABLE/ERROR (Pico) and EXT (Zero) are always claimed, so overlapping
+ * boards never drive DBG. */
 static inline bool dbg_hw_allowed(void) {
-#if PIN_DBG_OVERLAPS_EXT
+#if PIN_DBG_OVERLAPS_DRV || PIN_DBG_OVERLAPS_EXT
   return false;
 #else
 #if PIN_DBG_OVERLAPS_AXIS2

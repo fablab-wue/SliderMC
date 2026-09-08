@@ -65,7 +65,7 @@ bool board_config_load_from_fs(void) {
     return false;
   }
 
-  char line[CFG_LINE_MAX];
+  static char line[CFG_LINE_MAX];
   size_t len = 0;
   while (f.available()) {
     int c = f.read();

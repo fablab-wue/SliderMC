@@ -17,7 +17,7 @@
 static TaskHandle_t g_feed_handle;
 
 static bool any_tx_full(void) {
-  int n = config_axis_count();
+  int n = config_motor_count();
   for (int a = 0; a < n; ++a) {
     if (pio_step_tx_room(a) == 0) {
       return true;
@@ -27,7 +27,7 @@ static bool any_tx_full(void) {
 }
 
 static bool any_fifo_low(void) {
-  int n = config_axis_count();
+  int n = config_motor_count();
   for (int a = 0; a < n; ++a) {
     if (!planner_feed_active_axis(a)) {
       continue;
@@ -97,7 +97,7 @@ static void task_motion_feed(void *arg) {
       }
     } else if (planner_feed_active()) {
       static int rr = 0;
-      int n = config_axis_count();
+      int n = config_motor_count();
 #if PLANNER_FEED_LOWEST_FIFO
       /* Re-pick the driest FIFO after every fill. 32*n matches the old
        * 32-pass × n-axis word budget. */

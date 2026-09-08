@@ -9,9 +9,9 @@
 #include <string.h>
 
 static ProtocolIo g_io;
-static char g_line[CFG_LINE_MAX];
+static char g_line[CFG_LINE_MAX + 1];
 static size_t g_len;
-static char g_resume[CFG_LINE_MAX];
+static char g_resume[CFG_LINE_MAX + 1];
 static bool g_have_resume;
 static unsigned g_verbose_accum_ms;
 static bool g_wait_active;
@@ -21,6 +21,7 @@ static unsigned g_wait_timeout_ms;
 static unsigned g_wait_elapsed_ms;
 static float g_wait_pos_mm;
 static int g_wait_pos_sign;
+static int g_wait_pos_ch;
 
 void protocol_set_resume_chain(const char *chain) {
   if (!chain) {
@@ -47,6 +48,7 @@ void protocol_cancel_waits_and_chain(void) {
   g_wait_elapsed_ms = 0;
   g_wait_pos_mm = 0.0f;
   g_wait_pos_sign = 1;
+  g_wait_pos_ch = 0;
   protocol_cancel_resume_chain();
 }
 
@@ -84,6 +86,10 @@ void protocol_begin_wait(ProtocolWaitKind kind, float timeout_s) {
 void protocol_begin_wait_pos(float pos_mm, int sign, float timeout_s) {
   g_wait_pos_mm = pos_mm;
   g_wait_pos_sign = (sign >= 0) ? 1 : -1;
+  g_wait_pos_ch = motion_master_channel();
+  if (g_wait_pos_ch < 0) {
+    g_wait_pos_ch = 0;
+  }
   protocol_begin_wait(PROTOCOL_WAIT_POS, timeout_s);
 }
 
@@ -152,6 +158,7 @@ void protocol_init(ProtocolIo io) {
   g_wait_elapsed_ms = 0;
   g_wait_pos_mm = 0.0f;
   g_wait_pos_sign = 1;
+  g_wait_pos_ch = 0;
   protocol_verbose_reset_dedupe();
   config_init_defaults();
   motion_init();
@@ -161,21 +168,17 @@ void protocol_send_banner(void) {
   /* GRBL-style ready banner: `# ` (hash + space) — distinct from `#I …` status. */
   char banner[160];
   const McConfig *c = config_get();
-  const int nax = config_axis_count();
+  const int nm = config_motor_count();
+  const int ns = config_servo_count();
   const bool named = c->name[0] != 0;
-  if (named && nax >= 2) {
+  if (named) {
     snprintf(banner, sizeof(banner),
-             "# %s - Slider Motion Controller V%s - %d Axis ['$' for help]\n", c->name,
-             MC_VERSION_FW, nax);
-  } else if (named) {
-    snprintf(banner, sizeof(banner),
-             "# %s - Slider Motion Controller V%s ['$' for help]\n", c->name, MC_VERSION_FW);
-  } else if (nax >= 2) {
-    snprintf(banner, sizeof(banner),
-             "# Slider Motion Controller V%s - %d Axis ['$' for help]\n", MC_VERSION_FW, nax);
+             "# %s - Slider Motion Controller V%s - %d+%d axis ['$' for help]\n", c->name,
+             MC_VERSION_FW, nm, ns);
   } else {
-    snprintf(banner, sizeof(banner), "# Slider Motion Controller V%s ['$' for help]\n",
-             MC_VERSION_FW);
+    snprintf(banner, sizeof(banner),
+             "# Slider Motion Controller V%s - %d+%d axis ['$' for help]\n", MC_VERSION_FW, nm,
+             ns);
   }
   protocol_write(banner);
 }
@@ -193,10 +196,14 @@ static bool wait_condition_met(void) {
     return false; /* completed only by elapsed time */
   }
   if (g_wait_kind == PROTOCOL_WAIT_POS) {
-    if (g_wait_pos_sign >= 0) {
-      return st.pos_mm >= g_wait_pos_mm;
+    int ch = g_wait_pos_ch;
+    if (ch < 0 || ch >= MC_CH_MAX) {
+      ch = 0;
     }
-    return st.pos_mm <= g_wait_pos_mm;
+    if (g_wait_pos_sign >= 0) {
+      return st.pos[ch] >= g_wait_pos_mm;
+    }
+    return st.pos[ch] <= g_wait_pos_mm;
   }
   if (g_wait_kind == PROTOCOL_WAIT_CRUISE) {
     if (!st.moving) {
@@ -337,7 +344,7 @@ static void feed_byte(ProtocolSrc src, uint8_t b) {
     return;
   }
 
-  if (g_len + 1 >= sizeof(g_line)) {
+  if (g_len >= CFG_LINE_MAX) {
     g_len = 0;
     g_line[0] = 0;
     protocol_error("parse", "line too long");

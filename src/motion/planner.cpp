@@ -9,6 +9,7 @@
 #include "protocol_internal.h"
 #include "config_defaults.h"
 #include "motion_path.h"
+#include "servo_pwm.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -92,9 +93,24 @@ static bool g_drv_error;
 /* Coordinated MT: follower ratios vs the time master, for mid-move SS/SA. */
 static bool g_coord_active;
 static int g_coord_master;
-static float g_coord_ratio[AXIS_MAX];
+static int g_move_master;
+static float g_coord_ratio[MC_CH_MAX];
 static bool g_joy_active;
-static float g_joy_pct[AXIS_MAX];
+static float g_joy_pct[MC_CH_MAX];
+static unsigned g_servo_rr;
+
+typedef struct {
+  float pos;
+  float vel;
+  float target;
+  float cruise;
+  float accel;
+  bool moving;
+  bool has_target;
+  bool stopping;
+} PlannerServo;
+
+static PlannerServo g_sv[SERVO_MAX];
 
 #define AX (g_ax[axis])
 
@@ -125,19 +141,225 @@ static float cruise_cap(int axis);
 static void apply_joy_cruise_accel(void);
 static void planner_request_stop_axis(int axis);
 static void planner_request_joy(int axis, float signed_v);
-static int axis_count(void) { return config_axis_count(); }
+static int axis_count(void) { return config_motor_count(); }
+static int ch_count(void) { return config_axis_count(); }
+
+static bool ch_is_motor(int ch) { return ch >= 0 && ch < axis_count(); }
+
+static float ch_max_speed(int ch) {
+  if (ch_is_motor(ch)) {
+    return axis_hw_max_speed(ch);
+  }
+  int s = ch - axis_count();
+  if (s < 0 || s >= SERVO_MAX) {
+    return 1.0f;
+  }
+  return config_get()->servo_max_speed[s];
+}
+
+static float ch_max_accel(int ch) {
+  if (ch_is_motor(ch)) {
+    return axis_hw_max_accel(ch);
+  }
+  int s = ch - axis_count();
+  if (s < 0 || s >= SERVO_MAX) {
+    return 1.0f;
+  }
+  return config_get()->servo_max_accel[s];
+}
+
+static float ch_pos(int ch) {
+  if (ch_is_motor(ch)) {
+    float sp = g_ax[ch].spmm > 1e-3f ? g_ax[ch].spmm : 1.0f;
+    return (float)g_ax[ch].pos_steps / sp;
+  }
+  int s = ch - axis_count();
+  return g_sv[s].pos;
+}
+
+static void ch_set_cruise_accel(int ch, float v, float a) {
+  if (ch_is_motor(ch)) {
+    g_ax[ch].cruise_mm_s = v;
+    g_ax[ch].accel_mm_s2 = a;
+    return;
+  }
+  int s = ch - axis_count();
+  g_sv[s].cruise = v;
+  g_sv[s].accel = a;
+}
+
+static float servo_boot_deg(int s) {
+  const McConfig *c = config_get();
+  float p = 0.0f;
+  if (!isnan(c->servo_min[s]) && p < c->servo_min[s]) {
+    p = c->servo_min[s];
+  }
+  if (!isnan(c->servo_max[s]) && p > c->servo_max[s]) {
+    p = c->servo_max[s];
+  }
+  return p;
+}
+
+static void servo_boot_all(void) {
+  const McConfig *c = config_get();
+  for (int s = 0; s < SERVO_MAX; ++s) {
+    float p = servo_boot_deg(s);
+    g_sv[s].pos = p;
+    g_sv[s].target = p;
+    g_sv[s].vel = 0.0f;
+    g_sv[s].cruise = c->servo_max_speed[s];
+    g_sv[s].accel = c->servo_max_accel[s];
+    g_sv[s].moving = false;
+    g_sv[s].has_target = false;
+    g_sv[s].stopping = false;
+  }
+  g_servo_rr = 0;
+}
+
+static void servo_request_move(int s, float dest) {
+  PlannerServo *sv = &g_sv[s];
+  sv->target = dest;
+  sv->stopping = false;
+  sv->has_target = true;
+  if (fabsf(dest - sv->pos) < 1e-6f) {
+    sv->moving = false;
+    sv->vel = 0.0f;
+    sv->has_target = false;
+    return;
+  }
+  sv->moving = true;
+}
+
+static void servo_request_stop(int s) {
+  PlannerServo *sv = &g_sv[s];
+  sv->has_target = false;
+  sv->stopping = true;
+  if (!sv->moving || fabsf(sv->vel) < 0.05f) {
+    sv->vel = 0.0f;
+    sv->moving = false;
+    sv->stopping = false;
+    sv->target = sv->pos;
+  }
+}
+
+static void servo_halt(int s) {
+  g_sv[s].vel = 0.0f;
+  g_sv[s].moving = false;
+  g_sv[s].has_target = false;
+  g_sv[s].stopping = false;
+  g_sv[s].target = g_sv[s].pos;
+}
+
+static void servo_integrate(int s, float dt) {
+  PlannerServo *sv = &g_sv[s];
+  if (dt < 0.0f) {
+    dt = 0.0f;
+  }
+  float a = sv->accel;
+  if (a < 0.001f) {
+    a = 0.001f;
+  }
+  float vmax = sv->cruise;
+  if (vmax < 0.001f) {
+    vmax = 0.001f;
+  }
+  if (sv->stopping) {
+    float v = sv->vel;
+    if (fabsf(v) < 0.05f) {
+      sv->vel = 0.0f;
+      sv->moving = false;
+      sv->stopping = false;
+      sv->target = sv->pos;
+      return;
+    }
+    float sign = (v >= 0.0f) ? 1.0f : -1.0f;
+    v -= sign * a * dt;
+    if (v * sign <= 0.0f) {
+      v = 0.0f;
+      sv->moving = false;
+      sv->stopping = false;
+      sv->target = sv->pos;
+    }
+    sv->pos += sv->vel * dt;
+    sv->vel = v;
+    return;
+  }
+  if (!sv->moving) {
+    sv->vel = 0.0f;
+    return;
+  }
+  float dest = sv->target;
+  float pos = sv->pos;
+  float err = dest - pos;
+  float v = sv->vel;
+  int sign = (err > 0.0f) ? 1 : (err < 0.0f) ? -1 : 0;
+  if (sign == 0 || (fabsf(err) <= 1e-4f && fabsf(v) < 0.05f)) {
+    sv->pos = dest;
+    sv->vel = 0.0f;
+    sv->moving = false;
+    sv->has_target = false;
+    return;
+  }
+  float stop_d = (v * v) / (2.0f * a);
+  bool toward = (fabsf(v) < 1e-4f) || ((v >= 0.0f) == (sign > 0));
+  if (toward && fabsf(err) <= stop_d + 1e-6f) {
+    v -= (float)sign * a * dt;
+    if (v * (float)sign <= 0.0f) {
+      v = 0.0f;
+    }
+  } else {
+    v += (float)sign * a * dt;
+    if (fabsf(v) > vmax) {
+      v = (float)sign * vmax;
+    }
+  }
+  pos += v * dt;
+  if ((sign > 0 && pos >= dest) || (sign < 0 && pos <= dest)) {
+    pos = dest;
+    v = 0.0f;
+    sv->moving = false;
+    sv->has_target = false;
+  }
+  sv->pos = pos;
+  sv->vel = v;
+}
+
+static void servo_request_joy(int s, float signed_v) {
+  if (s < 0 || s >= config_servo_count() || !g_enabled) {
+    return;
+  }
+  PlannerServo *sv = &g_sv[s];
+  sv->accel = ch_max_accel(axis_count() + s);
+  float a0 = session_get()->accel_mm_s2;
+  if (a0 < sv->accel) {
+    sv->accel = a0 < 0.001f ? 0.001f : a0;
+  }
+  if (fabsf(signed_v) < 1e-4f) {
+    servo_request_stop(s);
+    return;
+  }
+  int ch = axis_count() + s;
+  int sign = signed_v > 0.0f ? 1 : -1;
+  float dest = (sign > 0) ? session_effective_right(ch) : session_effective_left(ch);
+  if (isnan(dest)) {
+    dest = sv->pos + (float)sign * 1e6f;
+  }
+  sv->cruise = fabsf(signed_v);
+  servo_request_move(s, dest);
+}
 
 static void coord_clear(void) {
   g_coord_active = false;
   g_coord_master = 0;
-  for (int i = 0; i < AXIS_MAX; ++i) {
+  g_move_master = -1;
+  for (int i = 0; i < MC_CH_MAX; ++i) {
     g_coord_ratio[i] = 1.0f;
   }
 }
 
 static void joy_clear(void) {
   g_joy_active = false;
-  for (int i = 0; i < AXIS_MAX; ++i) {
+  for (int i = 0; i < MC_CH_MAX; ++i) {
     g_joy_pct[i] = 0.0f;
   }
 }
@@ -151,15 +373,21 @@ static void coord_clear_if_idle(void) {
       return;
     }
   }
+  int ns = config_servo_count();
+  for (int s = 0; s < ns; ++s) {
+    if (g_sv[s].moving) {
+      return;
+    }
+  }
   coord_clear();
 }
 
-static void scale_cruise_accel(int axis, float v0, float a0, float ratio, float *v_out,
+static void scale_cruise_accel(int ch, float v0, float a0, float ratio, float *v_out,
                                float *a_out) {
   float v1 = v0 * ratio;
   float a1 = a0 * ratio;
-  float vmax = axis_hw_max_speed(axis);
-  float amax = axis_hw_max_accel(axis);
+  float vmax = ch_max_speed(ch);
+  float amax = ch_max_accel(ch);
   if (v1 > vmax) {
     v1 = vmax;
   }
@@ -198,30 +426,49 @@ static float clamp_accel_axis(int axis, float a) {
   return a;
 }
 
+static float clamp_speed_ch(int ch, float v) {
+  float mx = ch_max_speed(ch);
+  if (v > mx) {
+    v = mx;
+  }
+  if (v < 0.0f) {
+    v = 0.0f;
+  }
+  return v;
+}
+
+static float clamp_accel_ch(int ch, float a) {
+  float mx = ch_max_accel(ch);
+  if (a > mx) {
+    a = mx;
+  }
+  if (a < 0.001f) {
+    a = 0.001f;
+  }
+  return a;
+}
+
 /** Apply session cruise/accel; coordinated followers scale vs the master. */
 static void apply_cruise_accel(float v0, float a0) {
-  int n = axis_count();
+  int n = ch_count();
   int master = g_coord_active ? g_coord_master : 0;
   if (master < 0 || master >= n) {
     master = 0;
   }
   if (g_coord_active) {
-    g_ax[master].cruise_mm_s = clamp_speed_axis(master, v0);
-    g_ax[master].accel_mm_s2 = clamp_accel_axis(master, a0);
-    for (int axis = 0; axis < n; ++axis) {
-      if (axis == master) {
+    ch_set_cruise_accel(master, clamp_speed_ch(master, v0), clamp_accel_ch(master, a0));
+    for (int ch = 0; ch < n; ++ch) {
+      if (ch == master) {
         continue;
       }
       float v, a;
-      scale_cruise_accel(axis, v0, a0, g_coord_ratio[axis], &v, &a);
-      AX.cruise_mm_s = v;
-      AX.accel_mm_s2 = a;
+      scale_cruise_accel(ch, v0, a0, g_coord_ratio[ch], &v, &a);
+      ch_set_cruise_accel(ch, v, a);
     }
     return;
   }
-  for (int axis = 0; axis < n; ++axis) {
-    AX.cruise_mm_s = clamp_speed_axis(axis, v0);
-    AX.accel_mm_s2 = clamp_accel_axis(axis, a0);
+  for (int ch = 0; ch < n; ++ch) {
+    ch_set_cruise_accel(ch, clamp_speed_ch(ch, v0), clamp_accel_ch(ch, a0));
   }
 }
 
@@ -276,9 +523,7 @@ static void apply_en_axis(int axis, bool enabled) {
 }
 
 static void apply_en_output(bool enabled) {
-  for (int a = 0; a < axis_count(); ++a) {
-    apply_en_axis(a, enabled);
-  }
+  apply_en_axis(0, enabled);
 }
 
 static bool stall_home_mode(int axis) {
@@ -327,11 +572,11 @@ static void refresh_state(int axis) {
   } else {
     AX.st.state = MC_STATE_IDLE;
   }
-  AX.st.pos_mm = (float)AX.pos_steps / AX.spmm;
-  AX.st.target_mm = (float)AX.target_steps / AX.spmm;
-  AX.st.vel_mm_s = AX.vel_mm_s;
+  AX.st.pos[0] = (float)AX.pos_steps / AX.spmm;
+  AX.st.target[0] = (float)AX.target_steps / AX.spmm;
+  AX.st.vel[0] = AX.vel_mm_s;
   /* Measured |a| of the issued words; 0 in cruise/idle. */
-  AX.st.acc_mm_s2 = AX.st.moving ? fabsf(AX.acc_meas) : 0.0f;
+  AX.st.acc[0] = AX.st.moving ? fabsf(AX.acc_meas) : 0.0f;
   AX.st.has_target = AX.st.moving && !AX.stopping;
   if (axis == 0) {
     dbg_hw_set(PIN_DBG_MOV, AX.st.moving || AX.st.homing);
@@ -340,7 +585,7 @@ static void refresh_state(int axis) {
 
 /**
  * Emergency halt: immediate STEP abort, EN off, cancel waits/chain.
- * Used by HT/H, hard-limit trips, and PIN_DRV_ERROR.
+ * Used by HT/H, hard-limit trips, and PIN_DRV_ERROR_*.
  */
 static void planner_halt_axis(int axis) {
   AX.vel_mm_s = 0.0f;
@@ -363,6 +608,10 @@ static void planner_halt_all(void) {
   coord_clear();
   for (int a = 0; a < axis_count(); ++a) {
     planner_halt_axis(a);
+  }
+  int ns = config_servo_count();
+  for (int s = 0; s < ns; ++s) {
+    servo_halt(s);
   }
   g_enabled = false;
   apply_en_output(false);
@@ -588,7 +837,7 @@ static void home_begin_seek(int axis) {
   if (!isnan(smin) && !isnan(smax) && smax > smin) {
     span_mm = smax - smin;
   } else {
-    span_mm = CFG_DEFAULT_SLIDER_MAX_MM - CFG_DEFAULT_SLIDER_MIN_MM;
+    span_mm = CFG_DEFAULT_MOTOR_MAX - CFG_DEFAULT_MOTOR_MIN;
   }
   float max_mm = span_mm * 1.1f;
   if (max_mm < 1.0f) {
@@ -870,27 +1119,36 @@ static float cruise_cap(int axis) {
   return v;
 }
 
-static float signed_cruise_from_pct(int axis, float pct) {
+static float signed_cruise_from_pct(int ch, float pct) {
   if (fabsf(pct) < 1e-3f) {
     return 0.0f;
   }
   float v = fabsf(pct) * 0.01f * session_get()->speed_mm_s;
-  v = clamp_speed_axis(axis, v);
+  v = clamp_speed_ch(ch, v);
   return (pct < 0.0f) ? -v : v;
 }
 
 static void apply_joy_cruise_accel(void) {
-  for (int axis = 0; axis < axis_count(); ++axis) {
-    AX.accel_mm_s2 = clamp_accel_axis(axis, session_get()->accel_mm_s2);
-    float pct = g_joy_pct[axis];
+  int nm = axis_count();
+  int n = ch_count();
+  for (int ch = 0; ch < n; ++ch) {
+    float pct = g_joy_pct[ch];
     if (fabsf(pct) < 1e-3f) {
       continue;
     }
-    float signed_v = signed_cruise_from_pct(axis, pct);
-    AX.cruise_mm_s = fabsf(signed_v);
-    if (AX.st.moving && !AX.stopping) {
-      int sign = (signed_v >= 0.0f) ? 1 : -1;
-      begin_ramp(axis, (float)sign * cruise_cap(axis));
+    float signed_v = signed_cruise_from_pct(ch, pct);
+    if (ch < nm) {
+      int axis = ch;
+      AX.accel_mm_s2 = clamp_accel_axis(axis, session_get()->accel_mm_s2);
+      AX.cruise_mm_s = fabsf(signed_v);
+      if (AX.st.moving && !AX.stopping) {
+        int sign = (signed_v >= 0.0f) ? 1 : -1;
+        begin_ramp(axis, (float)sign * cruise_cap(axis));
+      }
+    } else {
+      int s = ch - nm;
+      g_sv[s].accel = clamp_accel_ch(ch, session_get()->accel_mm_s2);
+      g_sv[s].cruise = fabsf(signed_v);
     }
   }
 }
@@ -953,6 +1211,8 @@ void planner_init(void) {
   }
   motion_diag_init_from_noinit();
   pio_step_init();
+  servo_boot_all();
+  servo_pwm_init();
 }
 
 void planner_set_cruise_accel(int axis, float cruise_mm_s, float accel_mm_s2) {
@@ -1411,6 +1671,18 @@ void planner_tick(float dt_s) {
   for (int axis = 0; axis < axis_count(); ++axis) {
     planner_tick_axis(axis, dt_s);
   }
+  int ns = config_servo_count();
+  if (g_enabled && ns > 0 && !motion_path_is_active()) {
+    for (int s = 0; s < ns; ++s) {
+      servo_integrate(s, dt_s);
+    }
+  }
+  if (ns > 0) {
+    int due = (int)(g_servo_rr % (unsigned)ns);
+    servo_pwm_write_deg(due, g_sv[due].pos);
+    ++g_servo_rr;
+  }
+  coord_clear_if_idle();
 }
 
 static bool clamp_target_mm(int axis, float *mm) {
@@ -1552,6 +1824,10 @@ void planner_request_stop(void) {
   for (int axis = 0; axis < axis_count(); ++axis) {
     planner_request_stop_axis(axis);
   }
+  int ns = config_servo_count();
+  for (int s = 0; s < ns; ++s) {
+    servo_request_stop(s);
+  }
 }
 
 void planner_request_halt(void) { planner_halt_all(); }
@@ -1566,8 +1842,8 @@ void planner_set_position(int axis, float mm) {
   }
   AX.pos_steps = mm_to_steps(axis, mm);
   AX.target_steps = AX.pos_steps;
-  AX.st.pos_mm = (float)AX.pos_steps / AX.spmm;
-  AX.st.target_mm = AX.st.pos_mm;
+  AX.st.pos[0] = (float)AX.pos_steps / AX.spmm;
+  AX.st.target[0] = AX.st.pos[0];
   refresh_state(axis);
 }
 
@@ -1585,6 +1861,18 @@ void planner_takeover_from_path(int axis, int64_t pos_steps, float vel_mm_s) {
   AX.st.has_target = false;
   reset_ramp(axis);
   refresh_state(axis);
+}
+
+void planner_path_set_servo(int s, float deg, float vel_deg_s) {
+  if (s < 0 || s >= SERVO_MAX) {
+    return;
+  }
+  g_sv[s].pos = deg;
+  g_sv[s].vel = vel_deg_s;
+  g_sv[s].target = deg;
+  g_sv[s].stopping = false;
+  g_sv[s].moving = fabsf(vel_deg_s) > 0.01f;
+  g_sv[s].has_target = g_sv[s].moving;
 }
 
 void planner_request_home(int axis) {
@@ -1657,11 +1945,21 @@ void planner_soft_reset(void) {
     pio_step_stop_hard(axis);
     refresh_state(axis);
   }
+  int ns = config_servo_count();
+  for (int s = 0; s < ns; ++s) {
+    servo_halt(s);
+  }
 }
 
 bool planner_is_busy(void) {
   for (int axis = 0; axis < axis_count(); ++axis) {
     if (AX.st.moving || AX.st.homing) {
+      return true;
+    }
+  }
+  int ns = config_servo_count();
+  for (int s = 0; s < ns; ++s) {
+    if (g_sv[s].moving) {
       return true;
     }
   }
@@ -1671,6 +1969,12 @@ bool planner_is_busy(void) {
 bool planner_is_moving(void) {
   for (int axis = 0; axis < axis_count(); ++axis) {
     if (AX.st.moving) {
+      return true;
+    }
+  }
+  int ns = config_servo_count();
+  for (int s = 0; s < ns; ++s) {
+    if (g_sv[s].moving) {
       return true;
     }
   }
@@ -1741,6 +2045,15 @@ static McState merge_state(void) {
   if (any_moving) {
     return MC_STATE_MOVING;
   }
+  int ns = config_servo_count();
+  for (int s = 0; s < ns; ++s) {
+    if (g_sv[s].moving) {
+      if (g_sv[s].stopping) {
+        return MC_STATE_DECELERATING;
+      }
+      return MC_STATE_MOVING;
+    }
+  }
   return MC_STATE_IDLE;
 }
 
@@ -1752,43 +2065,30 @@ void planner_get_status(McStatus *out) {
   out->enabled = g_enabled;
   out->drv_error = g_drv_error;
   out->state = merge_state();
-  out->pos_mm = (float)g_ax[0].pos_steps / (g_ax[0].spmm > 1e-3f ? g_ax[0].spmm : 1.0f);
-  out->pos_mm_2 = 0.0f;
-  out->pos_mm_3 = 0.0f;
-  int n = axis_count();
-  if (n >= 2) {
-    out->pos_mm_2 = (float)g_ax[1].pos_steps / (g_ax[1].spmm > 1e-3f ? g_ax[1].spmm : 1.0f);
-  }
-  if (n >= 3) {
-    out->pos_mm_3 = (float)g_ax[2].pos_steps / (g_ax[2].spmm > 1e-3f ? g_ax[2].spmm : 1.0f);
-  }
-  out->moving = planner_is_moving();
-  out->homing = false;
-  out->hard_limit = false;
-  for (int axis = 0; axis < n; ++axis) {
+  int nm = axis_count();
+  int ns = config_servo_count();
+  for (int axis = 0; axis < nm; ++axis) {
+    refresh_state(axis);
+    float sp = AX.spmm > 1e-3f ? AX.spmm : 1.0f;
+    out->pos[axis] = (float)AX.pos_steps / sp;
+    out->target[axis] = AX.st.target[0];
+    out->vel[axis] = AX.st.vel[0];
+    out->acc[axis] = AX.st.acc[0];
     out->homing = out->homing || AX.st.homing;
     out->hard_limit = out->hard_limit || AX.st.hard_limit;
+    out->has_target = out->has_target || AX.st.has_target;
   }
-  out->at_soft_limit = g_ax[0].st.at_soft_limit;
-  out->has_target = g_ax[0].st.has_target;
-  out->target_mm = g_ax[0].st.target_mm;
-  out->vel_mm_s = g_ax[0].st.vel_mm_s;
-  out->acc_mm_s2 = g_ax[0].st.acc_mm_s2;
-  out->target_mm_2 = 0.0f;
-  out->vel_mm_s_2 = 0.0f;
-  out->acc_mm_s2_2 = 0.0f;
-  out->target_mm_3 = 0.0f;
-  out->vel_mm_s_3 = 0.0f;
-  out->acc_mm_s2_3 = 0.0f;
-  if (n >= 2) {
-    out->target_mm_2 = g_ax[1].st.target_mm;
-    out->vel_mm_s_2 = g_ax[1].st.vel_mm_s;
-    out->acc_mm_s2_2 = g_ax[1].st.acc_mm_s2;
+  for (int s = 0; s < ns; ++s) {
+    int ch = nm + s;
+    out->pos[ch] = g_sv[s].pos;
+    out->target[ch] = g_sv[s].target;
+    out->vel[ch] = g_sv[s].vel;
+    out->acc[ch] = g_sv[s].moving ? fabsf(g_sv[s].accel) : 0.0f;
+    out->has_target = out->has_target || g_sv[s].has_target;
   }
-  if (n >= 3) {
-    out->target_mm_3 = g_ax[2].st.target_mm;
-    out->vel_mm_s_3 = g_ax[2].st.vel_mm_s;
-    out->acc_mm_s2_3 = g_ax[2].st.acc_mm_s2;
+  out->moving = planner_is_moving();
+  if (nm > 0) {
+    out->at_soft_limit = g_ax[0].st.at_soft_limit;
   }
 }
 
@@ -1816,6 +2116,7 @@ bool motion_enable(bool on) {
   for (int axis = 0; axis < axis_count(); ++axis) {
     AX.st.enabled = on;
   }
+  servo_pwm_set_enabled(on);
   if (!on) {
     joy_clear();
     planner_request_stop();
@@ -1825,6 +2126,10 @@ bool motion_enable(bool on) {
       AX.st.moving = false;
       AX.vel_mm_s = 0.0f;
       refresh_state(axis);
+    }
+    int ns = config_servo_count();
+    for (int s = 0; s < ns; ++s) {
+      servo_halt(s);
     }
     apply_en_output(false);
   } else {
@@ -1836,65 +2141,56 @@ bool motion_enable(bool on) {
   return true;
 }
 
-bool motion_move_to(float mm) {
-  if (!g_enabled) {
-    return false;
-  }
-  {
-    float mn = axis_hw_window_min(0);
-    float mx = axis_hw_window_max(0);
-    if ((!isnan(mn) && mm < mn) || (!isnan(mx) && mm > mx)) {
-      g_ax[0].st.at_soft_limit = true;
-      return false;
-    }
-  }
-  float pos_mm = (float)g_ax[0].pos_steps / g_ax[0].spmm;
-  int sign = (mm > pos_mm + 1e-6f) ? 1 : (mm < pos_mm - 1e-6f) ? -1 : 0;
-  if (planner_hard_limit_blocks_sign(0, sign)) {
-    return false;
-  }
-  joy_clear();
-  coord_clear();
-  g_ax[0].cruise_mm_s = session_get()->speed_mm_s;
-  g_ax[0].accel_mm_s2 = session_get()->accel_mm_s2;
-  planner_request_move_to(0, mm);
-  return true;
+void motion_on_counts_changed(void) {
+  servo_boot_all();
 }
 
-bool motion_move_to_n(float mm0_or_nan, float mm1_or_nan, float mm2_or_nan) {
+bool motion_move_to_n(const float dest_in[MC_CH_MAX]) {
   if (!g_enabled) {
     return false;
   }
-  float dest[AXIS_MAX] = {mm0_or_nan, mm1_or_nan, mm2_or_nan};
-  bool want[AXIS_MAX] = {false, false, false};
-  float dist[AXIS_MAX] = {0.0f, 0.0f, 0.0f};
-  int n = axis_count();
+  float dest[MC_CH_MAX];
+  bool want[MC_CH_MAX];
+  float dist[MC_CH_MAX];
+  int n = ch_count();
+  int nm = axis_count();
   int movers = 0;
   int master = -1;
 
-  for (int axis = 0; axis < n; ++axis) {
-    if (isnan(dest[axis])) {
+  for (int ch = 0; ch < MC_CH_MAX; ++ch) {
+    dest[ch] = dest_in[ch];
+    want[ch] = false;
+    dist[ch] = 0.0f;
+  }
+
+  for (int ch = 0; ch < n; ++ch) {
+    if (isnan(dest[ch])) {
       continue;
     }
-    float mn = axis_hw_window_min(axis);
-    float mx = axis_hw_window_max(axis);
-    if ((!isnan(mn) && dest[axis] < mn) || (!isnan(mx) && dest[axis] > mx)) {
-      AX.st.at_soft_limit = true;
+    float mn = session_effective_left(ch);
+    float mx = session_effective_right(ch);
+    if ((!isnan(mn) && dest[ch] < mn) || (!isnan(mx) && dest[ch] > mx)) {
+      if (ch < nm) {
+        g_ax[ch].st.at_soft_limit = true;
+      }
       return false;
     }
-    float pos = (float)AX.pos_steps / (AX.spmm > 1e-3f ? AX.spmm : 1.0f);
-    dist[axis] = dest[axis] - pos;
-    if (fabsf(dist[axis]) < 1e-6f) {
+    dist[ch] = dest[ch] - ch_pos(ch);
+    if (fabsf(dist[ch]) < 1e-6f) {
       continue;
     }
-    if (planner_hard_limit_blocks_sign(axis, dist[axis] > 0 ? 1 : -1)) {
+    if (ch < nm && planner_hard_limit_blocks_sign(ch, dist[ch] > 0 ? 1 : -1)) {
       return false;
     }
-    want[axis] = true;
-    if (master < 0) {
-      master = axis;
-    }
+    want[ch] = true;
     ++movers;
+  }
+  /* First motor with a distance, else first servo with a distance. */
+  for (int ch = 0; ch < n; ++ch) {
+    if (want[ch]) {
+      master = ch;
+      break;
+    }
   }
   if (movers == 0) {
     joy_clear();
@@ -1903,6 +2199,7 @@ bool motion_move_to_n(float mm0_or_nan, float mm1_or_nan, float mm2_or_nan) {
   }
 
   joy_clear();
+  g_move_master = master;
   if (movers >= 2) {
     g_coord_active = true;
     g_coord_master = master;
@@ -1910,65 +2207,79 @@ bool motion_move_to_n(float mm0_or_nan, float mm1_or_nan, float mm2_or_nan) {
     if (dmaster < 1e-6f) {
       dmaster = 1e-6f;
     }
-    for (int axis = 0; axis < n; ++axis) {
-      g_coord_ratio[axis] = want[axis] ? (fabsf(dist[axis]) / dmaster) : 0.0f;
+    for (int ch = 0; ch < n; ++ch) {
+      g_coord_ratio[ch] = want[ch] ? (fabsf(dist[ch]) / dmaster) : 0.0f;
     }
     apply_session_cruise_accel();
   } else {
-    coord_clear();
-    float v0 = session_get()->speed_mm_s;
-    float a0 = session_get()->accel_mm_s2;
-    for (int axis = 0; axis < n; ++axis) {
-      if (want[axis]) {
-        AX.cruise_mm_s = v0;
-        AX.accel_mm_s2 = a0;
-      }
-    }
+    g_coord_active = false;
+    g_coord_master = master;
+    ch_set_cruise_accel(master, clamp_speed_ch(master, session_get()->speed_mm_s),
+                        clamp_accel_ch(master, session_get()->accel_mm_s2));
   }
 
-  for (int axis = 0; axis < n; ++axis) {
-    if (want[axis]) {
-      planner_request_move_to(axis, dest[axis]);
+  for (int ch = 0; ch < n; ++ch) {
+    if (!want[ch]) {
+      continue;
+    }
+    if (ch < nm) {
+      planner_request_move_to(ch, dest[ch]);
+    } else {
+      servo_request_move(ch - nm, dest[ch]);
     }
   }
   return true;
+}
+
+bool motion_move_to(float mm) {
+  float dest[MC_CH_MAX];
+  for (int i = 0; i < MC_CH_MAX; ++i) {
+    dest[i] = NAN;
+  }
+  dest[0] = mm;
+  return motion_move_to_n(dest);
 }
 
 bool motion_move_to2(float mm1_or_nan, float mm2_or_nan) {
-  return motion_move_to_n(mm1_or_nan, mm2_or_nan, NAN);
+  float dest[MC_CH_MAX];
+  for (int i = 0; i < MC_CH_MAX; ++i) {
+    dest[i] = NAN;
+  }
+  dest[0] = mm1_or_nan;
+  dest[1] = mm2_or_nan;
+  return motion_move_to_n(dest);
 }
 
 bool motion_move_by(float mm) {
-  if (!g_enabled) {
-    return false;
+  float dest[MC_CH_MAX];
+  for (int i = 0; i < MC_CH_MAX; ++i) {
+    dest[i] = NAN;
   }
-  if (planner_hard_limit_blocks_sign(0, mm < 0.0f ? -1 : (mm > 0.0f ? 1 : 0))) {
-    return false;
-  }
-  joy_clear();
-  coord_clear();
-  g_ax[0].cruise_mm_s = session_get()->speed_mm_s;
-  g_ax[0].accel_mm_s2 = session_get()->accel_mm_s2;
-  planner_request_move_by(0, mm);
-  return true;
+  dest[0] = ch_pos(0) + mm;
+  return motion_move_to_n(dest);
 }
 
-bool motion_joy(float pct0, float pct1_or_nan, float pct2_or_nan) {
+bool motion_joy(const float pct_in[MC_CH_MAX]) {
   if (!g_enabled) {
     return false;
   }
   coord_clear();
   g_joy_active = true;
-  float pct[3] = {pct0, pct1_or_nan, pct2_or_nan};
-  int n = axis_count();
-  for (int axis = 0; axis < AXIS_MAX; ++axis) {
-    float p = pct[axis];
-    if (axis >= n || isnan(p) || fabsf(p) < 1e-3f) {
+  int n = ch_count();
+  int nm = axis_count();
+  for (int ch = 0; ch < MC_CH_MAX; ++ch) {
+    float p = pct_in[ch];
+    if (ch >= n || isnan(p) || fabsf(p) < 1e-3f) {
       p = 0.0f;
     }
-    g_joy_pct[axis] = p;
-    if (axis < n) {
-      planner_request_joy(axis, signed_cruise_from_pct(axis, p));
+    g_joy_pct[ch] = p;
+    if (ch < n) {
+      float signed_v = signed_cruise_from_pct(ch, p);
+      if (ch < nm) {
+        planner_request_joy(ch, signed_v);
+      } else {
+        servo_request_joy(ch - nm, signed_v);
+      }
     }
   }
   return true;
@@ -2003,6 +2314,7 @@ bool motion_home(int axis_1based) {
     return false;
   }
   joy_clear();
+  g_move_master = axis;
   planner_request_home(axis);
   return true;
 }
@@ -2012,15 +2324,26 @@ bool motion_soft_reset(void) {
   return true;
 }
 
-bool motion_set_position(float mm0_or_nan, float mm1_or_nan, float mm2_or_nan) {
+bool motion_set_position(const float mm[MC_CH_MAX]) {
   if (motion_path_is_active() || planner_is_busy()) {
     return false;
   }
-  float mm[3] = {mm0_or_nan, mm1_or_nan, mm2_or_nan};
-  int n = axis_count();
-  for (int axis = 0; axis < n; ++axis) {
-    if (!isnan(mm[axis])) {
-      planner_set_position(axis, mm[axis]);
+  int n = ch_count();
+  int nm = axis_count();
+  for (int ch = 0; ch < n; ++ch) {
+    if (isnan(mm[ch])) {
+      continue;
+    }
+    if (ch < nm) {
+      planner_set_position(ch, mm[ch]);
+    } else {
+      int s = ch - nm;
+      g_sv[s].pos = mm[ch];
+      g_sv[s].target = mm[ch];
+      g_sv[s].vel = 0.0f;
+      g_sv[s].moving = false;
+      g_sv[s].has_target = false;
+      g_sv[s].stopping = false;
     }
   }
   return true;
@@ -2051,17 +2374,27 @@ bool motion_set_max_speed(float mm_s) {
   return true;
 }
 
-bool motion_set_window_left(bool set0, float mm0, bool set1, float mm1, bool set2, float mm2) {
-  return session_set_window_left(set0, mm0, set1, mm1, set2, mm2);
+bool motion_set_window_left(const bool set[MC_CH_MAX], const float mm[MC_CH_MAX]) {
+  return session_set_window_left(set, mm);
 }
 
-bool motion_set_window_right(bool set0, float mm0, bool set1, float mm1, bool set2, float mm2) {
-  return session_set_window_right(set0, mm0, set1, mm1, set2, mm2);
+bool motion_set_window_right(const bool set[MC_CH_MAX], const float mm[MC_CH_MAX]) {
+  return session_set_window_right(set, mm);
 }
 
 void motion_reset_window_left(void) { session_reset_left(); }
 
 void motion_reset_window_right(void) { session_reset_right(); }
+
+int motion_master_channel(void) {
+  if (!planner_is_busy()) {
+    return -1;
+  }
+  if (g_move_master >= 0) {
+    return g_move_master;
+  }
+  return g_coord_active ? g_coord_master : 0;
+}
 
 void motion_get_status(McStatus *out) {
   if (motion_path_is_active()) {

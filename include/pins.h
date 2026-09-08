@@ -22,54 +22,60 @@
 #endif
 
 /* Oscilloscope HW debug pins (compile-time). Define DEBUG_HW to enable.
- * Off by default. On Pico, DEBUG_HW GPIOs overlap axis2 (GP10–13) and EXT
- * (GP14–15); runtime gates dbg_hw_* when those functions are claimed.
- * On Zero, DBG overlaps EXT / LIMIT3 (GP18, 21–23). */
+ * Off by default. On Pico, DEBUG_HW GPIOs overlap LIMIT3 (GP10–11),
+ * DRV_ERROR_1..3 (GP12–14), and DRV_ENABLE (GP15); runtime gates dbg_hw_*
+ * because those pins are always claimed.
+ * On Zero, DBG overlaps EXT_2..4 (GP18–20). */
 /* #define DEBUG_HW 1 */
 
-#define PIN_EXT_COUNT 4 /* only PIN_EXT_0…3 */
+#define PIN_EXT_COUNT 4 /* PIN_EXT_1…4 */
 #define PIN_UART_SERIAL Serial1
 #define UART_BAUD 115200
 
 #if defined(BOARD_RP2040_ZERO)
 
 /* Waveshare RP2040-Zero — see SliderDoc mc/pins.md / assets/img/rp2040zero_pinout_mc.png
- * axis 2 and 3 are supported; DBG (if DEBUG_HW) overlaps new EXT / LIMIT3. */
-#define PIN_EXT_0 24
-#define PIN_EXT_1 23
-#define PIN_EXT_2 22
-#define PIN_EXT_3 21
+ * axis 2 and 3 are supported; DBG (if DEBUG_HW) overlaps EXT_2..4. */
+#define PIN_EXT_1 17
+#define PIN_EXT_2 18
+#define PIN_EXT_3 19
+#define PIN_EXT_4 20
 
-#define PIN_DRV_STEP 0
-#define PIN_DRV_DIR 1
-#define PIN_DRV_EN 2
-#define PIN_DRV_ERROR 3
-#define PIN_SW_LIMIT_L 4
-#define PIN_SW_LIMIT_R 5
+#define PIN_DRV_STEP_1 1
+#define PIN_DRV_DIR_1 2
+#define PIN_SW_LIMIT_L_1 3
+#define PIN_SW_LIMIT_R_1 4
 
 /* Optional 2nd STEP/DIR axis (axis>=2). */
-#define PIN_DRV_STEP2 6
-#define PIN_DRV_DIR2 7
-#define PIN_DRV_EN2 11
-#define PIN_DRV_ERROR2 8
-#define PIN_SW_LIMIT_L2 9
-#define PIN_SW_LIMIT_R2 10
+#define PIN_DRV_STEP_2 5
+#define PIN_DRV_DIR_2 6
+#define PIN_SW_LIMIT_L_2 7
+#define PIN_SW_LIMIT_R_2 8
 
 /* Optional 3rd STEP/DIR axis (axis>=3). STEP polarity follows axis 2. */
-#define PIN_DRV_STEP3 27
-#define PIN_DRV_DIR3 26
-#define PIN_DRV_EN3 15
-#define PIN_DRV_ERROR3 14
-#define PIN_SW_LIMIT_L3 18
-#define PIN_SW_LIMIT_R3 17
+#define PIN_DRV_STEP_3 27
+#define PIN_DRV_DIR_3 26
+#define PIN_SW_LIMIT_L_3 15
+#define PIN_SW_LIMIT_R_3 14
+
+#define PIN_DRV_ERROR_1 9
+#define PIN_DRV_ERROR_2 10
+#define PIN_DRV_ERROR_3 11
+#define PIN_DRV_ENABLE 0
 
 #define PIN_CAMERA_CTRL 25
+
+#define PIN_SERVO_1 21
+#define PIN_SERVO_2 22
+#define PIN_SERVO_3 23
+#define PIN_SERVO3_STEALS_EXT4 0
 
 #define PIN_AXIS2_SUPPORTED 1
 #define PIN_AXIS3_SUPPORTED 1
 #define PIN_DBG_OVERLAPS_AXIS2 0
 #define PIN_DBG_OVERLAPS_EXT 1
-#define PIN_DBG_OVERLAPS_AXIS3 1
+#define PIN_DBG_OVERLAPS_AXIS3 0
+#define PIN_DBG_OVERLAPS_DRV 0
 
 /* UART0 TX/RX on GP12/13 → Serial1 */
 #define PIN_UART_TX 12
@@ -89,42 +95,47 @@
 
 #else /* BOARD_PICO / BOARD_PICO_W — classic Pico header map */
 
-/* General-purpose extender outputs (logical on/off via Xn / Extn). */
-#define PIN_EXT_0 8
-#define PIN_EXT_1 9
-#define PIN_EXT_2 14
-#define PIN_EXT_3 15
+/* General-purpose extender outputs (logical on/off via EOn). */
+#define PIN_EXT_1 21
+#define PIN_EXT_2 20
+#define PIN_EXT_3 19
+#define PIN_EXT_4 18
 
-#define PIN_DRV_STEP 18
-#define PIN_DRV_DIR 19
-#define PIN_DRV_EN 20
-#define PIN_DRV_ERROR 21
-#define PIN_SW_LIMIT_L 26
-#define PIN_SW_LIMIT_R 27
+#define PIN_DRV_STEP_1 0
+#define PIN_DRV_DIR_1 1
+#define PIN_SW_LIMIT_L_1 2
+#define PIN_SW_LIMIT_R_1 3
 
-/* Optional 2nd STEP/DIR axis (axis>=2). Overlaps DBG GP10–13. */
-#define PIN_DRV_STEP2 13
-#define PIN_DRV_DIR2 12
-#define PIN_DRV_EN2 11
-#define PIN_DRV_ERROR2 10
-#define PIN_SW_LIMIT_L2 7
-#define PIN_SW_LIMIT_R2 6
+/* Optional 2nd STEP/DIR axis (axis>=2). */
+#define PIN_DRV_STEP_2 4
+#define PIN_DRV_DIR_2 5
+#define PIN_SW_LIMIT_L_2 6
+#define PIN_SW_LIMIT_R_2 7
 
 /* Optional 3rd STEP/DIR axis (axis>=3). STEP polarity follows axis 2. */
-#define PIN_DRV_STEP3 5
-#define PIN_DRV_DIR3 4
-#define PIN_DRV_EN3 3
-#define PIN_DRV_ERROR3 2
-#define PIN_SW_LIMIT_L3 1
-#define PIN_SW_LIMIT_R3 0
+#define PIN_DRV_STEP_3 8
+#define PIN_DRV_DIR_3 9
+#define PIN_SW_LIMIT_L_3 10
+#define PIN_SW_LIMIT_R_3 11
+
+#define PIN_DRV_ERROR_1 12
+#define PIN_DRV_ERROR_2 13
+#define PIN_DRV_ERROR_3 14
+#define PIN_DRV_ENABLE 15
 
 #define PIN_CAMERA_CTRL 22
 
+#define PIN_SERVO_1 26
+#define PIN_SERVO_2 27
+#define PIN_SERVO_3 18 /* steals EXT_4 when servos>=3 */
+#define PIN_SERVO3_STEALS_EXT4 1
+
 #define PIN_AXIS2_SUPPORTED 1
 #define PIN_AXIS3_SUPPORTED 1
-#define PIN_DBG_OVERLAPS_AXIS2 1
-#define PIN_DBG_OVERLAPS_EXT 1
-#define PIN_DBG_OVERLAPS_AXIS3 0
+#define PIN_DBG_OVERLAPS_AXIS2 0
+#define PIN_DBG_OVERLAPS_EXT 0
+#define PIN_DBG_OVERLAPS_AXIS3 1
+#define PIN_DBG_OVERLAPS_DRV 1
 
 // UART to UI controller (115200 baud).
 // Available HW UART pins (RP2040 / earlephilhower Arduino core):
@@ -175,4 +186,7 @@
 #endif
 #ifndef PIN_DBG_OVERLAPS_EXT
 #define PIN_DBG_OVERLAPS_EXT 0
+#endif
+#ifndef PIN_DBG_OVERLAPS_DRV
+#define PIN_DBG_OVERLAPS_DRV 0
 #endif

@@ -51,6 +51,7 @@ Invoke-HostTest "protocol" "test/host/test_protocol.exe" @(
   "src/motion/motion_stub.cpp",
   "src/motion/motion_path.cpp",
   "src/motion/motion_diag.cpp",
+  "src/motion/servo_pwm.cpp",
   "test/host/test_protocol_main.cpp"
 )
 
@@ -62,6 +63,7 @@ Invoke-HostTest "planner_math" "test/host/test_planner_math.exe" @(
 Invoke-HostTest "motion_path" "test/host/test_motion_path.exe" @(
   "src/motion/motion_path.cpp",
   "src/motion/motion_stub.cpp",
+  "src/motion/servo_pwm.cpp",
   "src/config/config_store.cpp",
   "test/host/test_motion_path.cpp"
 )

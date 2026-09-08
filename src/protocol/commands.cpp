@@ -12,6 +12,7 @@
 #ifndef HOST_TEST
 #include "pio_step.h"
 #endif
+#include "servo_pwm.h"
 
 #include <ctype.h>
 #include <math.h>
@@ -107,14 +108,25 @@ static void skip_ws(const char **s) {
 }
 
 static int axis_letter(char c) {
+  int nm = config_motor_count();
+  int ns = config_servo_count();
   if (c == 'x' || c == 'X') {
-    return 0;
+    return (nm >= 1) ? 0 : -1;
   }
   if (c == 'y' || c == 'Y') {
-    return 1;
+    return (nm >= 2) ? 1 : -1;
   }
   if (c == 'z' || c == 'Z') {
-    return 2;
+    return (nm >= 3) ? 2 : -1;
+  }
+  if (c == 'a' || c == 'A') {
+    return (ns >= 1) ? nm : -1;
+  }
+  if (c == 'b' || c == 'B') {
+    return (ns >= 2) ? (nm + 1) : -1;
+  }
+  if (c == 'c' || c == 'C') {
+    return (ns >= 3) ? (nm + 2) : -1;
   }
   return -1;
 }
@@ -159,22 +171,37 @@ static bool take_int(const char **s, int *out) {
 enum AxisArgKind { AXIS_MOVE = 0, AXIS_WINDOW, AXIS_PATH, AXIS_JOY };
 
 typedef struct {
-  float v[3];
-  bool set[3];
+  float v[MC_CH_MAX];
+  bool set[MC_CH_MAX];
   bool named;
 } AxisParsed;
 
 static bool axis_fitted(int ax) { return ax >= 0 && ax < config_axis_count(); }
 
+static void axis_parsed_clear(AxisParsed *out) {
+  for (int i = 0; i < MC_CH_MAX; ++i) {
+    out->v[i] = NAN;
+    out->set[i] = false;
+  }
+  out->named = false;
+}
+
+static bool any_set(const AxisParsed *p) {
+  for (int i = 0; i < MC_CH_MAX; ++i) {
+    if (p->set[i]) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
- * Dual syntax: positional (`100`, `_ _ 40`) or named (`Z100`, `X20Y50`). Not mixed.
+ * Dual syntax: positional (`100`, `_ _ 40`) or named (`Z100`, `X20A-45`). Not mixed.
  * MOVE: `_` → NAN. WINDOW: `_` skip, `none` → set+NAN. PATH: `_`/omit → 0 (int).
  * JOY: no `_`; named omitted axes stay unset (caller fills 0).
  */
 static bool parse_axis_args(const char *s, int kind, AxisParsed *out) {
-  out->v[0] = out->v[1] = out->v[2] = NAN;
-  out->set[0] = out->set[1] = out->set[2] = false;
-  out->named = false;
+  axis_parsed_clear(out);
   skip_ws(&s);
   if (!*s) {
     return false;
@@ -217,11 +244,11 @@ static bool parse_axis_args(const char *s, int kind, AxisParsed *out) {
       out->set[ax] = true;
       out->v[ax] = fv;
     }
-    return out->set[0] || out->set[1] || out->set[2];
+    return any_set(out);
   }
 
   int slot = 0;
-  while (*s && slot < 3) {
+  while (*s && slot < MC_CH_MAX) {
     skip_ws(&s);
     if (!*s) {
       break;
@@ -278,35 +305,10 @@ static bool parse_axis_args(const char *s, int kind, AxisParsed *out) {
   return !*s && slot >= 1;
 }
 
-static bool parse_move_args(const char *s, float *a, float *b, float *c, bool *have_second,
-                            bool *have_third) {
-  AxisParsed p;
-  if (!parse_axis_args(s, AXIS_MOVE, &p)) {
-    return false;
+static void parsed_to_dest(const AxisParsed *p, float dest[MC_CH_MAX]) {
+  for (int i = 0; i < MC_CH_MAX; ++i) {
+    dest[i] = p->set[i] ? p->v[i] : NAN;
   }
-  *a = p.set[0] ? p.v[0] : NAN;
-  *b = p.set[1] ? p.v[1] : NAN;
-  *c = p.set[2] ? p.v[2] : NAN;
-  *have_second = p.set[1];
-  *have_third = p.set[2];
-  return true;
-}
-
-static bool parse_window_args(const char *s, bool *set0, float *a, bool *set1, float *b,
-                              bool *set2, float *c, bool *have_second, bool *have_third) {
-  AxisParsed p;
-  if (!parse_axis_args(s, AXIS_WINDOW, &p)) {
-    return false;
-  }
-  *set0 = p.set[0];
-  *set1 = p.set[1];
-  *set2 = p.set[2];
-  *a = p.v[0];
-  *b = p.v[1];
-  *c = p.v[2];
-  *have_second = p.set[1];
-  *have_third = p.set[2];
-  return true;
 }
 
 static bool parse_int_arg(const char *s, int *out) {
@@ -368,23 +370,49 @@ static void fmt_window_field(char *out, size_t n, float v) {
   }
 }
 
-static void reply_window(const char *tag, float a, float b, float c) {
-  char fa[16], fb[16], fc[16], buf[64];
-  fmt_window_field(fa, sizeof(fa), a);
-  int n = config_axis_count();
-  if (n >= 3) {
-    fmt_window_field(fb, sizeof(fb), b);
-    fmt_window_field(fc, sizeof(fc), c);
-    snprintf(buf, sizeof(buf), "%s:%s %s %s\n", tag, fa, fb, fc);
-    protocol_write(buf);
-  } else if (n >= 2) {
-    fmt_window_field(fb, sizeof(fb), b);
-    snprintf(buf, sizeof(buf), "%s:%s %s\n", tag, fa, fb);
-    protocol_write(buf);
-  } else {
-    snprintf(buf, sizeof(buf), "%s:%s\n", tag, fa);
-    protocol_write(buf);
+static void reply_pipe_floats(const char *tag, const float *v, int n, bool window) {
+  char buf[192];
+  size_t used = 0;
+  int wr = snprintf(buf, sizeof(buf), "%s:", tag);
+  if (wr < 0) {
+    return;
   }
+  used = (size_t)wr;
+  for (int i = 0; i < n && used + 24 < sizeof(buf); ++i) {
+    if (i > 0) {
+      buf[used++] = ' ';
+      buf[used++] = '|';
+      buf[used++] = ' ';
+      buf[used] = 0;
+    }
+    char f[16];
+    if (window) {
+      fmt_window_field(f, sizeof(f), v[i]);
+    } else {
+      snprintf(f, sizeof(f), "%.2f", (double)v[i]);
+    }
+    size_t fl = strlen(f);
+    if (used + fl + 1 >= sizeof(buf)) {
+      break;
+    }
+    memcpy(buf + used, f, fl + 1);
+    used += fl;
+  }
+  if (used + 1 < sizeof(buf)) {
+    buf[used++] = '\n';
+    buf[used] = 0;
+  }
+  protocol_write(buf);
+}
+
+static void reply_window(const char *tag) {
+  float v[MC_CH_MAX];
+  int n = config_axis_count();
+  bool left = (tag[1] == 'L' || tag[1] == 'l');
+  for (int i = 0; i < n; ++i) {
+    v[i] = left ? session_effective_left(i) : session_effective_right(i);
+  }
+  reply_pipe_floats(tag, v, n, true);
 }
 
 static void cg_dump_one(const char *key, const char *value, void *ctx) {
@@ -454,7 +482,7 @@ static bool begin_wait_if_needed(ProtocolWaitKind kind, const char *rest, bool a
 /** Parse required pos and optional timeout_s (default -1 = none). */
 static bool parse_pos_timeout(const char *s, float *pos, float *timeout_s) {
   *timeout_s = -1.0f;
-  char buf[CFG_LINE_MAX];
+  static char buf[CFG_LINE_MAX];
   strncpy(buf, s ? s : "", sizeof(buf) - 1);
   buf[sizeof(buf) - 1] = 0;
   char *second = nullptr;
@@ -485,7 +513,11 @@ static bool begin_wait_pos_cmd(const char *rest) {
   if (!st.moving && !st.homing) {
     return false;
   }
-  float vel = st.vel_mm_s;
+  int ch = motion_master_channel();
+  if (ch < 0 || ch >= MC_CH_MAX) {
+    return false;
+  }
+  float vel = st.vel[ch];
   int sign;
   if (st.moving && vel > 0.01f) {
     sign = 1;
@@ -494,7 +526,7 @@ static bool begin_wait_pos_cmd(const char *rest) {
   } else {
     return false; /* dir-pause / ~0 vel: treat as idle */
   }
-  if ((sign > 0 && st.pos_mm >= pos) || (sign < 0 && st.pos_mm <= pos)) {
+  if ((sign > 0 && st.pos[ch] >= pos) || (sign < 0 && st.pos[ch] <= pos)) {
     return false;
   }
   protocol_begin_wait_pos(pos, sign, timeout_s);
@@ -529,8 +561,8 @@ static const HelpRow k_help_rows[] = {
     {"IH", "Is Homing, 0|1"},
     {"IL", "Is Limit, at soft-limit pose?"},
     {"IE", "Is Error, DRV_ERROR 0|1"},
-    {"IP", "Is Position, mm (1, 2 or 3)"},
-    {"IA", "Is Axis, count 1|2|3"},
+    {"IP", "Is Position, packed | groups"},
+    {"IA", "Is Axis, motors+servos"},
     {"IT", "Is Target, mm or -"},
     {"IR", "Is Ready, motion 0|1"},
     {"IW", "Is Waiting, 0|1"},
@@ -547,7 +579,7 @@ static const HelpRow k_help_rows[] = {
     {"PG", "Path Go, play buffer"},
     {"PN", "Path Number, sample count"},
     {"PS", "Path Slice, us >=1000; bare resets"},
-    {"EO", "Ext Out, EO0..3 0|1; bare toggles"},
+    {"EO", "Ext Out, EO1..4 0|1; bare toggles"},
     {"BE", "Beep, pulse buzzer ~0.1s"},
     {"CS", "Config Set, persistent key"},
     {"CR", "Config Reset, all defaults"},
@@ -556,7 +588,7 @@ static const HelpRow k_help_rows[] = {
     {"WT", "Wait Time, delay sec (default 1)"},
     {"WM", "Wait Moving, until move done"},
     {"WH", "Wait Homing, until home done"},
-    {"WP", "Wait Pos, until axis1 pos"},
+    {"WP", "Wait Pos, until master pos"},
     {"WC", "Wait Cruise, until cruise or idle"},
     {"WN", "Wait Not cruise, until not M"},
     {"VA", "Version About, about string"},
@@ -606,34 +638,43 @@ static void cmd_pinout_index(void) {
     }                                                                          \
   } while (0)
 
-  PIN_IX_ADD(PIN_EXT_0, "EXT_0", "Extender output 0 (EO0)");
   PIN_IX_ADD(PIN_EXT_1, "EXT_1", "Extender output 1 (EO1)");
   PIN_IX_ADD(PIN_EXT_2, "EXT_2", "Extender output 2 (EO2)");
   PIN_IX_ADD(PIN_EXT_3, "EXT_3", "Extender output 3 (EO3)");
-  PIN_IX_ADD(PIN_DRV_STEP, "DRV_STEP", "STEP to driver");
-  PIN_IX_ADD(PIN_DRV_DIR, "DRV_DIR", "DIR to driver");
-  PIN_IX_ADD(PIN_DRV_EN, "DRV_EN", "Driver enable");
-  PIN_IX_ADD(PIN_DRV_ERROR, "DRV_ERROR", "Driver fault / E-stop input");
-  PIN_IX_ADD(PIN_SW_LIMIT_L, "SW_LIMIT_L", "Hard limit left");
-  PIN_IX_ADD(PIN_SW_LIMIT_R, "SW_LIMIT_R", "Hard limit right");
+  if (config_ext_available(3)) {
+    PIN_IX_ADD(PIN_EXT_4, "EXT_4", "Extender output 4 (EO4)");
+  }
+  if (config_servo_count() >= 1) {
+    PIN_IX_ADD(PIN_SERVO_1, "SERVO_1", "RC servo 1 PWM");
+  }
+  if (config_servo_count() >= 2) {
+    PIN_IX_ADD(PIN_SERVO_2, "SERVO_2", "RC servo 2 PWM");
+  }
+  if (config_servo_count() >= 3) {
+    PIN_IX_ADD(PIN_SERVO_3, "SERVO_3", "RC servo 3 PWM");
+  }
+  PIN_IX_ADD(PIN_DRV_STEP_1, "DRV_STEP_1", "STEP to driver");
+  PIN_IX_ADD(PIN_DRV_DIR_1, "DRV_DIR_1", "DIR to driver");
+  PIN_IX_ADD(PIN_DRV_ENABLE, "DRV_ENABLE", "Driver enable (all axes)");
+  PIN_IX_ADD(PIN_DRV_ERROR_1, "DRV_ERROR_1", "Driver fault / E-stop input");
+  PIN_IX_ADD(PIN_SW_LIMIT_L_1, "SW_LIMIT_L_1", "Hard limit left");
+  PIN_IX_ADD(PIN_SW_LIMIT_R_1, "SW_LIMIT_R_1", "Hard limit right");
   if (config_axis2_enabled()) {
-    PIN_IX_ADD(PIN_DRV_STEP2, "DRV_STEP2", "STEP axis2");
-    PIN_IX_ADD(PIN_DRV_DIR2, "DRV_DIR2", "DIR axis2");
-    PIN_IX_ADD(PIN_DRV_EN2, "DRV_EN2", "Enable axis2");
-    PIN_IX_ADD(PIN_DRV_ERROR2, "DRV_ERROR2", "Fault / E-stop axis2");
-    PIN_IX_ADD(PIN_SW_LIMIT_L2, "SW_LIMIT_L2", "Hard limit left axis2");
-    PIN_IX_ADD(PIN_SW_LIMIT_R2, "SW_LIMIT_R2", "Hard limit right axis2");
+    PIN_IX_ADD(PIN_DRV_STEP_2, "DRV_STEP_2", "STEP axis2");
+    PIN_IX_ADD(PIN_DRV_DIR_2, "DRV_DIR_2", "DIR axis2");
+    PIN_IX_ADD(PIN_DRV_ERROR_2, "DRV_ERROR_2", "Fault / E-stop axis2");
+    PIN_IX_ADD(PIN_SW_LIMIT_L_2, "SW_LIMIT_L_2", "Hard limit left axis2");
+    PIN_IX_ADD(PIN_SW_LIMIT_R_2, "SW_LIMIT_R_2", "Hard limit right axis2");
   }
   if (config_axis3_enabled()) {
-    PIN_IX_ADD(PIN_DRV_STEP3, "DRV_STEP3", "STEP axis3");
-    PIN_IX_ADD(PIN_DRV_DIR3, "DRV_DIR3", "DIR axis3");
-    PIN_IX_ADD(PIN_DRV_EN3, "DRV_EN3", "Enable axis3");
-    PIN_IX_ADD(PIN_DRV_ERROR3, "DRV_ERROR3", "Fault / E-stop axis3");
-    PIN_IX_ADD(PIN_SW_LIMIT_L3, "SW_LIMIT_L3", "Hard limit left axis3");
-    PIN_IX_ADD(PIN_SW_LIMIT_R3, "SW_LIMIT_R3", "Hard limit right axis3");
+    PIN_IX_ADD(PIN_DRV_STEP_3, "DRV_STEP_3", "STEP axis3");
+    PIN_IX_ADD(PIN_DRV_DIR_3, "DRV_DIR_3", "DIR axis3");
+    PIN_IX_ADD(PIN_DRV_ERROR_3, "DRV_ERROR_3", "Fault / E-stop axis3");
+    PIN_IX_ADD(PIN_SW_LIMIT_L_3, "SW_LIMIT_L_3", "Hard limit left axis3");
+    PIN_IX_ADD(PIN_SW_LIMIT_R_3, "SW_LIMIT_R_3", "Hard limit right axis3");
   }
 #ifdef PIN_CAMERA_CTRL
-  PIN_IX_ADD(PIN_CAMERA_CTRL, "CAMERA_CTRL", "Camera control (reserved)");
+  PIN_IX_ADD(PIN_CAMERA_CTRL, "CAMERA_CTRL", "Trigger input (OC / pullup, low-active)");
 #endif
   PIN_IX_ADD(PIN_UART_TX, "UART_TX", "UART TX to UIC (115200 baud)");
   PIN_IX_ADD(PIN_UART_RX, "UART_RX", "UART RX from UIC (115200 baud)");
@@ -666,7 +707,7 @@ static void cmd_pinout_index(void) {
   }
 }
 
-/** Commands allowed while PIN_DRV_ERROR is asserted (diagnostics / config / halt). */
+/** Commands allowed while PIN_DRV_ERROR_* is asserted (diagnostics / config / halt). */
 static bool emo_command_allowed(const char *cmd) {
   const char *rest = cmd;
   static const char *k[] = {"IE", "IA", "ID", "IC", "VA", "VF", "VP", "VG", "IG",
@@ -701,10 +742,10 @@ static int match_ext_cmd(const char *cmd, const char **rest_out) {
     return -1;
   }
   skip_ws(&rest);
-  if (*rest < '0' || *rest > '3') {
-    return -2; /* EO without 0..3 */
+  if (*rest < '1' || *rest > '4') {
+    return -2; /* EO without 1..4 */
   }
-  int ch = *rest - '0';
+  int ch = *rest - '1';
   ++rest;
   skip_ws(&rest);
   *rest_out = rest;
@@ -738,7 +779,7 @@ bool protocol_exec_command(const char *cmd) {
   {
     int xi = match_ext_cmd(cmd, &rest);
     if (xi == -2) {
-      protocol_error("parse", "EO 0..3");
+      protocol_error("parse", "EO 1..4");
       return false;
     }
     if (xi >= 0) {
@@ -766,9 +807,8 @@ bool protocol_exec_command(const char *cmd) {
 
   /* --- M motion (longer prefixes before M) --- */
   if (match_any(cmd, &rest, "MT", "MoveTo", nullptr)) {
-    float a = 0.0f, b = NAN, c = NAN;
-    bool have2 = false, have3 = false;
-    if (!parse_move_args(rest, &a, &b, &c, &have2, &have3)) {
+    AxisParsed p;
+    if (!parse_axis_args(rest, AXIS_MOVE, &p)) {
       protocol_error("parse", "MT args");
       return false;
     }
@@ -776,28 +816,17 @@ bool protocol_exec_command(const char *cmd) {
       protocol_error("disabled", "enable first");
       return false;
     }
-    bool ok;
-    if ((have2 || have3) && config_axis2_enabled()) {
-      /* Dest == current → that axis idles (only the other moves). */
-      McStatus cur;
-      motion_get_status(&cur);
-      if (!isnan(a) && fabsf(a - cur.pos_mm) < 1e-4f) {
-        a = NAN;
+    float dest[MC_CH_MAX];
+    parsed_to_dest(&p, dest);
+    McStatus cur;
+    motion_get_status(&cur);
+    int n = config_axis_count();
+    for (int i = 0; i < n; ++i) {
+      if (!isnan(dest[i]) && fabsf(dest[i] - cur.pos[i]) < 1e-4f) {
+        dest[i] = NAN;
       }
-      if (!isnan(b) && fabsf(b - cur.pos_mm_2) < 1e-4f) {
-        b = NAN;
-      }
-      if (!config_axis3_enabled()) {
-        c = NAN;
-      } else if (!isnan(c) && fabsf(c - cur.pos_mm_3) < 1e-4f) {
-        c = NAN;
-      }
-      ok = motion_move_to_n(a, b, c);
-    } else if (!isnan(a)) {
-      ok = motion_move_to(a);
-    } else {
-      ok = true; /* skip-only */
     }
+    bool ok = motion_move_to_n(dest);
     if (!ok) {
       motion_get_status(&st);
       const char *code = "soft";
@@ -818,22 +847,23 @@ bool protocol_exec_command(const char *cmd) {
       protocol_error("parse", "MJ args");
       return false;
     }
-    float a = jp.set[0] ? jp.v[0] : 0.0f;
-    float b = NAN, c = NAN;
-    if (config_axis2_enabled()) {
-      b = jp.set[1] ? jp.v[1] : 0.0f;
-      if (config_axis3_enabled()) {
-        c = jp.set[2] ? jp.v[2] : 0.0f;
+    float pct[MC_CH_MAX];
+    int n = config_axis_count();
+    for (int i = 0; i < MC_CH_MAX; ++i) {
+      if (i < n) {
+        pct[i] = jp.set[i] ? jp.v[i] : (jp.named ? 0.0f : (i == 0 ? 0.0f : 0.0f));
+        if (!jp.named && !jp.set[i]) {
+          pct[i] = 0.0f;
+        }
+      } else {
+        pct[i] = NAN;
       }
-    } else if (jp.set[1] || jp.set[2]) {
-      protocol_error("parse", "MJ args");
-      return false;
     }
     if (!st.enabled) {
       protocol_error("disabled", "enable first");
       return false;
     }
-    if (!motion_joy(a, b, c)) {
+    if (!motion_joy(pct)) {
       protocol_error("disabled", "enable first");
     }
     return false;
@@ -847,7 +877,7 @@ bool protocol_exec_command(const char *cmd) {
     int axis = 1;
     if (*rest) {
       if (!parse_int_arg(rest, &axis) || axis < 1 || axis > 3 ||
-          axis > config_axis_count()) {
+          axis > config_motor_count()) {
         protocol_error("parse", "MH 1|2|3");
         return false;
       }
@@ -867,9 +897,8 @@ bool protocol_exec_command(const char *cmd) {
   }
 
   if (match_any(cmd, &rest, "MB", nullptr, nullptr)) {
-    float a = 0.0f, b = NAN, c = NAN;
-    bool have2 = false, have3 = false;
-    if (!parse_move_args(rest, &a, &b, &c, &have2, &have3)) {
+    AxisParsed p;
+    if (!parse_axis_args(rest, AXIS_MOVE, &p)) {
       protocol_error("parse", "MB args");
       return false;
     }
@@ -877,27 +906,23 @@ bool protocol_exec_command(const char *cmd) {
       protocol_error("disabled", "enable first");
       return false;
     }
-    bool ok;
-    if ((have2 || have3) && config_axis2_enabled()) {
-      McStatus cur;
-      motion_get_status(&cur);
-      float t0 = isnan(a) ? NAN : (cur.pos_mm + a);
-      float t1 = isnan(b) ? NAN : (cur.pos_mm_2 + b);
-      float t2 = isnan(c) ? NAN : (cur.pos_mm_3 + c);
-      if (!isnan(t1) && fabsf(b) < 1e-6f) {
-        t1 = NAN; /* zero delta = idle */
-      }
-      if (!config_axis3_enabled()) {
-        t2 = NAN;
-      } else if (!isnan(t2) && fabsf(c) < 1e-6f) {
-        t2 = NAN;
-      }
-      ok = motion_move_to_n(t0, t1, t2);
-    } else if (!isnan(a)) {
-      ok = motion_move_by(a);
-    } else {
-      ok = true;
+    McStatus cur;
+    motion_get_status(&cur);
+    float dest[MC_CH_MAX];
+    int n = config_axis_count();
+    for (int i = 0; i < MC_CH_MAX; ++i) {
+      dest[i] = NAN;
     }
+    for (int i = 0; i < n; ++i) {
+      if (!p.set[i] || isnan(p.v[i])) {
+        continue;
+      }
+      if (fabsf(p.v[i]) < 1e-6f) {
+        continue;
+      }
+      dest[i] = cur.pos[i] + p.v[i];
+    }
+    bool ok = motion_move_to_n(dest);
     if (!ok) {
       motion_get_status(&st);
       const char *code = "soft";
@@ -926,10 +951,11 @@ bool protocol_exec_command(const char *cmd) {
       protocol_error("parse", "PD -32768..32767");
       return false;
     }
-    int16_t ia = pp.set[0] ? (int16_t)pp.v[0] : 0;
-    int16_t ib = pp.set[1] ? (int16_t)pp.v[1] : 0;
-    int16_t ic = pp.set[2] ? (int16_t)pp.v[2] : 0;
-    if (!motion_path_add3(ia, ib, ic)) {
+    int16_t samp[MC_CH_MAX];
+    for (int i = 0; i < MC_CH_MAX; ++i) {
+      samp[i] = pp.set[i] ? (int16_t)pp.v[i] : 0;
+    }
+    if (!motion_path_addn(samp)) {
       protocol_error("full", "path buffer full");
     }
     return false;
@@ -1060,21 +1086,12 @@ bool protocol_exec_command(const char *cmd) {
       motion_reset_window_left();
       return false;
     }
-    float a = NAN, b = NAN, c = NAN;
-    bool set0 = false, set1 = false, set2 = false, have2 = false, have3 = false;
-    if (!parse_window_args(rest, &set0, &a, &set1, &b, &set2, &c, &have2, &have3)) {
+    AxisParsed p;
+    if (!parse_axis_args(rest, AXIS_WINDOW, &p)) {
       protocol_error("parse", "SL args");
       return false;
     }
-    (void)have2;
-    (void)have3;
-    if (!config_axis2_enabled()) {
-      set1 = false;
-    }
-    if (!config_axis3_enabled()) {
-      set2 = false;
-    }
-    if (!motion_set_window_left(set0, a, set1, b, set2, c)) {
+    if (!motion_set_window_left(p.set, p.v)) {
       protocol_error("limit", "SL");
     }
     return false;
@@ -1085,21 +1102,12 @@ bool protocol_exec_command(const char *cmd) {
       motion_reset_window_right();
       return false;
     }
-    float a = NAN, b = NAN, c = NAN;
-    bool set0 = false, set1 = false, set2 = false, have2 = false, have3 = false;
-    if (!parse_window_args(rest, &set0, &a, &set1, &b, &set2, &c, &have2, &have3)) {
+    AxisParsed p;
+    if (!parse_axis_args(rest, AXIS_WINDOW, &p)) {
       protocol_error("parse", "SR args");
       return false;
     }
-    (void)have2;
-    (void)have3;
-    if (!config_axis2_enabled()) {
-      set1 = false;
-    }
-    if (!config_axis3_enabled()) {
-      set2 = false;
-    }
-    if (!motion_set_window_right(set0, a, set1, b, set2, c)) {
+    if (!motion_set_window_right(p.set, p.v)) {
       protocol_error("limit", "SR");
     }
     return false;
@@ -1110,31 +1118,21 @@ bool protocol_exec_command(const char *cmd) {
       protocol_error("busy", "SP");
       return false;
     }
-    float a = 0.0f, b = NAN, c = NAN;
+    float dest[MC_CH_MAX];
+    int n = config_axis_count();
     if (!*rest) {
-      a = 0.0f;
-      b = config_axis2_enabled() ? 0.0f : NAN;
-      c = config_axis3_enabled() ? 0.0f : NAN;
+      for (int i = 0; i < MC_CH_MAX; ++i) {
+        dest[i] = (i < n) ? 0.0f : NAN;
+      }
     } else {
-      bool have2 = false, have3 = false;
-      if (!parse_move_args(rest, &a, &b, &c, &have2, &have3)) {
+      AxisParsed p;
+      if (!parse_axis_args(rest, AXIS_MOVE, &p)) {
         protocol_error("parse", "SP args");
         return false;
       }
-      if (!have2) {
-        b = NAN;
-      }
-      if (!have3) {
-        c = NAN;
-      }
-      if (!config_axis2_enabled()) {
-        b = NAN;
-      }
-      if (!config_axis3_enabled()) {
-        c = NAN;
-      }
+      parsed_to_dest(&p, dest);
     }
-    if (!motion_set_position(a, b, c)) {
+    if (!motion_set_position(dest)) {
       protocol_error("busy", "SP");
     }
     return false;
@@ -1167,13 +1165,11 @@ bool protocol_exec_command(const char *cmd) {
     return false;
   }
   if (match_any(cmd, &rest, "GL", "GetLeft", nullptr)) {
-    reply_window("GL", session_effective_left(0), session_effective_left(1),
-                 session_effective_left(2));
+    reply_window("GL");
     return false;
   }
   if (match_any(cmd, &rest, "GR", "GetRight", nullptr)) {
-    reply_window("GR", session_effective_right(0), session_effective_right(1),
-                 session_effective_right(2));
+    reply_window("GR");
     return false;
   }
 
@@ -1201,18 +1197,7 @@ bool protocol_exec_command(const char *cmd) {
   if (match_any(cmd, &rest, "IP", "IsPosition", nullptr)) {
     motion_get_status(&st);
     int n = config_axis_count();
-    if (n >= 3) {
-      char buf[64];
-      snprintf(buf, sizeof(buf), "IP:%.2f %.2f %.2f\n", (double)st.pos_mm,
-               (double)st.pos_mm_2, (double)st.pos_mm_3);
-      protocol_write(buf);
-    } else if (n >= 2) {
-      char buf[48];
-      snprintf(buf, sizeof(buf), "IP:%.2f %.2f\n", (double)st.pos_mm, (double)st.pos_mm_2);
-      protocol_write(buf);
-    } else {
-      reply_query_float("IP", st.pos_mm);
-    }
+    reply_pipe_floats("IP", st.pos, n, false);
     return false;
   }
   if (match_any(cmd, &rest, "IA", "Axis", "IsAxis")) {
@@ -1222,7 +1207,7 @@ bool protocol_exec_command(const char *cmd) {
   if (match_any(cmd, &rest, "IT", "IsTarget", nullptr)) {
     motion_get_status(&st);
     if (st.has_target) {
-      reply_query_float("IT", st.target_mm);
+      reply_query_float("IT", st.target[0]);
     } else {
       reply_query("IT", "-");
     }
@@ -1339,58 +1324,68 @@ bool protocol_exec_command(const char *cmd) {
   }
   if (match_any(cmd, &rest, "VG", "VersionGPIO", nullptr)) {
     char line[48];
-    snprintf(line, sizeof(line), "VG:PIN_DRV_STEP=%d", PIN_DRV_STEP);
+    snprintf(line, sizeof(line), "VG:PIN_DRV_STEP_1=%d", PIN_DRV_STEP_1);
     protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_DRV_DIR=%d", PIN_DRV_DIR);
+    snprintf(line, sizeof(line), "VG:PIN_DRV_DIR_1=%d", PIN_DRV_DIR_1);
     protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_DRV_EN=%d", PIN_DRV_EN);
+    snprintf(line, sizeof(line), "VG:PIN_DRV_ENABLE=%d", PIN_DRV_ENABLE);
     protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_DRV_ERROR=%d", PIN_DRV_ERROR);
+    snprintf(line, sizeof(line), "VG:PIN_DRV_ERROR_1=%d", PIN_DRV_ERROR_1);
     protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_L=%d", PIN_SW_LIMIT_L);
+    snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_L_1=%d", PIN_SW_LIMIT_L_1);
     protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_R=%d", PIN_SW_LIMIT_R);
+    snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_R_1=%d", PIN_SW_LIMIT_R_1);
     protocol_writeln(line);
     if (config_axis2_enabled()) {
-      snprintf(line, sizeof(line), "VG:PIN_DRV_STEP2=%d", PIN_DRV_STEP2);
+      snprintf(line, sizeof(line), "VG:PIN_DRV_STEP_2=%d", PIN_DRV_STEP_2);
       protocol_writeln(line);
-      snprintf(line, sizeof(line), "VG:PIN_DRV_DIR2=%d", PIN_DRV_DIR2);
+      snprintf(line, sizeof(line), "VG:PIN_DRV_DIR_2=%d", PIN_DRV_DIR_2);
       protocol_writeln(line);
-      snprintf(line, sizeof(line), "VG:PIN_DRV_EN2=%d", PIN_DRV_EN2);
+      snprintf(line, sizeof(line), "VG:PIN_DRV_ERROR_2=%d", PIN_DRV_ERROR_2);
       protocol_writeln(line);
-      snprintf(line, sizeof(line), "VG:PIN_DRV_ERROR2=%d", PIN_DRV_ERROR2);
+      snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_L_2=%d", PIN_SW_LIMIT_L_2);
       protocol_writeln(line);
-      snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_L2=%d", PIN_SW_LIMIT_L2);
-      protocol_writeln(line);
-      snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_R2=%d", PIN_SW_LIMIT_R2);
+      snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_R_2=%d", PIN_SW_LIMIT_R_2);
       protocol_writeln(line);
     }
     if (config_axis3_enabled()) {
-      snprintf(line, sizeof(line), "VG:PIN_DRV_STEP3=%d", PIN_DRV_STEP3);
+      snprintf(line, sizeof(line), "VG:PIN_DRV_STEP_3=%d", PIN_DRV_STEP_3);
       protocol_writeln(line);
-      snprintf(line, sizeof(line), "VG:PIN_DRV_DIR3=%d", PIN_DRV_DIR3);
+      snprintf(line, sizeof(line), "VG:PIN_DRV_DIR_3=%d", PIN_DRV_DIR_3);
       protocol_writeln(line);
-      snprintf(line, sizeof(line), "VG:PIN_DRV_EN3=%d", PIN_DRV_EN3);
+      snprintf(line, sizeof(line), "VG:PIN_DRV_ERROR_3=%d", PIN_DRV_ERROR_3);
       protocol_writeln(line);
-      snprintf(line, sizeof(line), "VG:PIN_DRV_ERROR3=%d", PIN_DRV_ERROR3);
+      snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_L_3=%d", PIN_SW_LIMIT_L_3);
       protocol_writeln(line);
-      snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_L3=%d", PIN_SW_LIMIT_L3);
-      protocol_writeln(line);
-      snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_R3=%d", PIN_SW_LIMIT_R3);
+      snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_R_3=%d", PIN_SW_LIMIT_R_3);
       protocol_writeln(line);
     }
 #ifdef PIN_CAMERA_CTRL
     snprintf(line, sizeof(line), "VG:PIN_CAMERA_CTRL=%d", PIN_CAMERA_CTRL);
     protocol_writeln(line);
 #endif
-    snprintf(line, sizeof(line), "VG:PIN_EXT_0=%d", PIN_EXT_0);
-    protocol_writeln(line);
     snprintf(line, sizeof(line), "VG:PIN_EXT_1=%d", PIN_EXT_1);
     protocol_writeln(line);
     snprintf(line, sizeof(line), "VG:PIN_EXT_2=%d", PIN_EXT_2);
     protocol_writeln(line);
     snprintf(line, sizeof(line), "VG:PIN_EXT_3=%d", PIN_EXT_3);
     protocol_writeln(line);
+    if (config_ext_available(3)) {
+      snprintf(line, sizeof(line), "VG:PIN_EXT_4=%d", PIN_EXT_4);
+      protocol_writeln(line);
+    }
+    if (config_servo_count() >= 1) {
+      snprintf(line, sizeof(line), "VG:PIN_SERVO_1=%d", PIN_SERVO_1);
+      protocol_writeln(line);
+    }
+    if (config_servo_count() >= 2) {
+      snprintf(line, sizeof(line), "VG:PIN_SERVO_2=%d", PIN_SERVO_2);
+      protocol_writeln(line);
+    }
+    if (config_servo_count() >= 3) {
+      snprintf(line, sizeof(line), "VG:PIN_SERVO_3=%d", PIN_SERVO_3);
+      protocol_writeln(line);
+    }
     if (config_get()->buzzer_use && PIN_BUZZER != PIN_LED) {
       snprintf(line, sizeof(line), "VG:PIN_BUZZER=%d", PIN_BUZZER);
       protocol_writeln(line);
@@ -1420,7 +1415,7 @@ bool protocol_exec_command(const char *cmd) {
 
   /* --- C config --- */
   if (match_any(cmd, &rest, "CS", "ConfigSet", nullptr)) {
-    char buf[CFG_LINE_MAX];
+    static char buf[CFG_LINE_MAX];
     strncpy(buf, rest, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = 0;
     char *val = nullptr;
@@ -1438,7 +1433,7 @@ bool protocol_exec_command(const char *cmd) {
       if (starts_cmd(key, "BUZZER_use", &krest)) {
         board_buzzer_reconfigure();
       }
-      if (starts_cmd(key, "axis", &krest)) {
+      if (starts_cmd(key, "motors", &krest) || starts_cmd(key, "servos", &krest)) {
         board_gpio_init();
 #ifndef HOST_TEST
         if (!pio_step_reconfigure()) {
@@ -1446,6 +1441,8 @@ bool protocol_exec_command(const char *cmd) {
           return false;
         }
 #endif
+        servo_pwm_reconfigure();
+        motion_on_counts_changed();
       }
     }
     /* CS updates session for init_speed/init_accel/init_terminal/init_verbose; refresh motion. */
@@ -1534,7 +1531,7 @@ bool protocol_exec_command(const char *cmd) {
 }
 
 void protocol_handle_line(const char *line) {
-  char buf[CFG_LINE_MAX];
+  static char buf[CFG_LINE_MAX];
   strncpy(buf, line, sizeof(buf) - 1);
   buf[sizeof(buf) - 1] = 0;
 

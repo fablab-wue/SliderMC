@@ -21,9 +21,10 @@ Recommendations deferred from the experimental 3rd-axis plan. Stay on Pico / Zer
 - [x] **Stale rate comments.** `pio_step.h` already states max ≈ 259 kHz. Host `max hz >= 300k` still uses a 125 MHz `planner_max_step_hz` argument (not the 50 MHz SM clock).
 - [ ] **Do not move axis 3 onto `pio1`** unless polarity-share ever fails (extra IRQ path). Sharing by STEP polarity is enough: worst case axis1=0 and axis2=1 already occupies both 14-word slots; axis 3 reuses axis 2’s program (`DRV_STEP_3_active` stays absent).
 
-## Protocol / clients / docs (explicitly out of scope on `axis3`)
+## Protocol / clients / docs
+
+Firmware is **VP:3**: `CS motors` / `CS servos` (not `CS axis`), `MOTOR_*` / `SERVO_*` envelopes, packed `IA` / `CG axis` = motors+servos, banner `{motors}+{servos} axis`. Clients must not send `CS axis` or `CS slider_*`.
 
 - [ ] **`CAMERA_CTRL` command.** Pin is reserved and inited inactive (`IX`/`VG` may list it). No protocol yet — add with docs and clients.
-- [ ] **SliderDoc** pinouts, protocol tables, cheatsheets, architecture notes for axis 3 and the EXT / `CAMERA_CTRL` remap.
-- [ ] **SliderCtrl / SliderWeb / SliderHost / UIC** — `MC_Client` third argument on `MT`/`M`/`MJ`/`SP`/`SL`/`SR`/`PD`, `IA:3`, `CG axis`, and verbose `#I p1 | p2 | p3`. Clients will not send a 3rd token until this pass.
-- [ ] Config key rename already shipped in firmware (`SW_LIMIT_R_3_use`, `DRV_STEP_1_active`, `home_mode_1`, …; no `axis2_use` / `SW_HOME_*`). Update clients and docs to the new names; no firmware aliases.
+- [ ] **SliderDoc** pinouts, protocol tables, cheatsheets — keep in lockstep with VP:3 (motors/servos, servo PWM GP26/27/18 Pico).
+- [ ] Config key rename already shipped (`MOTOR_N_*` / `SERVO_N_*`; no `slider_*` / `axis` writes). Clients and docs must use the new names.

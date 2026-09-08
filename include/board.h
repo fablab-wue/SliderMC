@@ -10,11 +10,23 @@ extern "C" {
 
 void board_gpio_init(void);
 
-/** Set extender output 0..5: on=true → active level from EXT_n_active. */
+/** Set extender output 0..3 (EO1..EO4): on=true → active level from EXT_n_active. */
 bool board_ext_set(int index, bool on);
 
-/** Current logical on/off for extender output 0..5. */
+/** Current logical on/off for extender output 0..3 (EO1..EO4). */
 bool board_ext_get(int index);
+
+/**
+ * Consume CAMERA_CTRL trigger for one status line.
+ * Returns true once per low press (open-collector, pull-up, low-active).
+ * Held-at-boot does not fire; must go high then low again for the next T.
+ */
+bool board_camera_ctrl_take_trigger(void);
+
+#ifdef HOST_TEST
+/** Inject CAMERA_CTRL level for host tests (true = pin low / asserted). */
+void board_camera_ctrl_inject(bool low);
+#endif
 
 /** Pulse PIN_BUZZER high ~100 ms (no-op if BUZZER_use=0 or pin is PIN_LED). */
 void board_buzzer_pulse(void);

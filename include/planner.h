@@ -36,6 +36,8 @@ void planner_set_cruise_accel(int axis, float cruise_mm_s, float accel_mm_s2);
  * planner_request_stop()/planner_request_halt() decelerates from that speed.
  */
 void planner_takeover_from_path(int axis, int64_t pos_steps, float vel_mm_s);
+/** Path playback: set servo pose/vel (deg). */
+void planner_path_set_servo(int s, float deg, float vel_deg_s);
 
 /** Redefine the step counter so IP reports mm (no motion). */
 void planner_set_position(int axis, float mm);

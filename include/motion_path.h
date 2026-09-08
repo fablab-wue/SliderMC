@@ -32,10 +32,12 @@ void motion_path_init(void);
 bool motion_path_clear(void); /* PC; false if active */
 /** Append one sample to both buffers (axis1 = 0). Compat wrapper. */
 bool motion_path_add(int16_t distance_um);
-/** Append a sample pair (third column 0). */
+/** Append a sample pair (remaining columns 0). */
 bool motion_path_add2(int16_t a_um, int16_t b_um);
 /** Append a sample triple. */
 bool motion_path_add3(int16_t a_um, int16_t b_um, int16_t c_um);
+/** Append a sample for all live packed channels. */
+bool motion_path_addn(const int16_t *samp);
 uint32_t motion_path_count(void); /* PN */
 
 bool motion_path_set_slice_us(uint32_t us); /* PS <value>; false if active or < min */

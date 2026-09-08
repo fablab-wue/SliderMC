@@ -10,10 +10,35 @@
 #include "hardware/gpio.h"
 
 static const uint8_t k_ext_pins[PIN_EXT_COUNT] = {
-    PIN_EXT_0, PIN_EXT_1, PIN_EXT_2, PIN_EXT_3,
+    PIN_EXT_1, PIN_EXT_2, PIN_EXT_3, PIN_EXT_4,
 };
 
 static bool g_ext_on[PIN_EXT_COUNT];
+static bool g_cam_low;
+static bool g_cam_consumed;
+
+static bool camera_ctrl_read_low(void) {
+#ifdef PIN_CAMERA_CTRL
+  return digitalRead(PIN_CAMERA_CTRL) == LOW;
+#else
+  return false;
+#endif
+}
+
+bool board_camera_ctrl_take_trigger(void) {
+#ifdef PIN_CAMERA_CTRL
+  g_cam_low = camera_ctrl_read_low();
+#endif
+  if (!g_cam_low) {
+    g_cam_consumed = false;
+    return false;
+  }
+  if (g_cam_consumed) {
+    return false;
+  }
+  g_cam_consumed = true;
+  return true;
+}
 
 static void ext_write_level(int index, bool on) {
   const McConfig *c = config_get();
@@ -26,7 +51,6 @@ static void ext_write_level(int index, bool on) {
 static void init_axis_gpio(int axis) {
   const int step = axis_hw_step_pin(axis);
   const int dir = axis_hw_dir_pin(axis);
-  const int en = axis_hw_en_pin(axis);
   const int err = axis_hw_error_pin(axis);
 
   pinMode(step, OUTPUT);
@@ -36,13 +60,6 @@ static void init_axis_gpio(int axis) {
   pinMode(dir, OUTPUT);
   digitalWrite(dir, LOW);
   gpio_set_drive_strength(dir, GPIO_DRIVE_STRENGTH_8MA);
-
-  pinMode(en, OUTPUT);
-  {
-    int inactive = axis_hw_en_active(axis) ? LOW : HIGH;
-    digitalWrite(en, inactive);
-  }
-  gpio_set_drive_strength(en, GPIO_DRIVE_STRENGTH_8MA);
 
   pinMode(err, INPUT_PULLUP);
 
@@ -62,14 +79,31 @@ void board_gpio_init(void) {
     init_axis_gpio(axis);
   }
 
+  {
+    const int en = PIN_DRV_ENABLE;
+    pinMode(en, OUTPUT);
+    int inactive = axis_hw_en_active(0) ? LOW : HIGH;
+    digitalWrite(en, inactive);
+    gpio_set_drive_strength(en, GPIO_DRIVE_STRENGTH_12MA);
+  }
+
   for (int i = 0; i < PIN_EXT_COUNT; ++i) {
+    if (!config_ext_available(i)) {
+      continue;
+    }
     pinMode(k_ext_pins[i], OUTPUT);
+    gpio_set_drive_strength(k_ext_pins[i], GPIO_DRIVE_STRENGTH_8MA);
     ext_write_level(i, false); /* inactive at boot */
   }
 
 #ifdef PIN_CAMERA_CTRL
-  pinMode(PIN_CAMERA_CTRL, OUTPUT);
-  digitalWrite(PIN_CAMERA_CTRL, LOW); /* inactive */
+  pinMode(PIN_CAMERA_CTRL, INPUT_PULLUP); /* open-collector released */
+  gpio_set_drive_strength(PIN_CAMERA_CTRL, GPIO_DRIVE_STRENGTH_12MA);
+  g_cam_low = camera_ctrl_read_low();
+  g_cam_consumed = g_cam_low; /* held-at-boot does not fire T */
+#else
+  g_cam_low = false;
+  g_cam_consumed = false;
 #endif
 
   board_buzzer_reconfigure();
@@ -77,7 +111,7 @@ void board_gpio_init(void) {
 }
 
 bool board_ext_set(int index, bool on) {
-  if (index < 0 || index >= PIN_EXT_COUNT) {
+  if (index < 0 || index >= PIN_EXT_COUNT || !config_ext_available(index)) {
     return false;
   }
   ext_write_level(index, on);
@@ -153,16 +187,20 @@ void board_buzzer_tick(unsigned dt_ms) {
 #else /* HOST_TEST */
 
 static bool g_ext_on[PIN_EXT_COUNT];
+static bool g_cam_low;
+static bool g_cam_consumed;
 
 void board_gpio_init(void) {
   (void)config_axis_count();
   for (int i = 0; i < PIN_EXT_COUNT; ++i) {
     g_ext_on[i] = false;
   }
+  g_cam_low = false;
+  g_cam_consumed = false;
 }
 
 bool board_ext_set(int index, bool on) {
-  if (index < 0 || index >= PIN_EXT_COUNT) {
+  if (index < 0 || index >= PIN_EXT_COUNT || !config_ext_available(index)) {
     return false;
   }
   g_ext_on[index] = on;
@@ -174,6 +212,25 @@ bool board_ext_get(int index) {
     return false;
   }
   return g_ext_on[index];
+}
+
+bool board_camera_ctrl_take_trigger(void) {
+  if (!g_cam_low) {
+    g_cam_consumed = false;
+    return false;
+  }
+  if (g_cam_consumed) {
+    return false;
+  }
+  g_cam_consumed = true;
+  return true;
+}
+
+void board_camera_ctrl_inject(bool low) {
+  g_cam_low = low;
+  if (!low) {
+    g_cam_consumed = false;
+  }
 }
 
 void board_buzzer_pulse(void) {}

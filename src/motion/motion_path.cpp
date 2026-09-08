@@ -14,7 +14,7 @@
 #endif
 
 #define PATH_FILL_SCAN_BUDGET 256
-#define PATH_AXES 3
+#define PATH_AXES MC_CH_MAX
 
 static int16_t g_path_pool[PATH_POOL_SAMPLES];
 static uint32_t g_path_count;
@@ -37,7 +37,7 @@ static int g_slice_sign[PATH_AXES];
 static uint32_t g_slice_delay_cycles[PATH_AXES];
 static bool g_slice_has_steps[PATH_AXES];
 
-static int path_naxes(void) { return axis_hw_count(); }
+static int path_naxes(void) { return config_axis_count(); }
 
 static int path_stride(void) { return PATH_POOL_SAMPLES / path_naxes(); }
 
@@ -86,17 +86,24 @@ bool motion_path_clear(void) {
   return true;
 }
 
-bool motion_path_add3(int16_t a_um, int16_t b_um, int16_t c_um) {
-  if ((int)g_path_count >= path_buffer_limit()) {
+bool motion_path_addn(const int16_t *samp) {
+  if (!samp || (int)g_path_count >= path_buffer_limit()) {
     return false;
   }
   int n = path_naxes();
-  int16_t v[3] = {a_um, b_um, c_um};
   for (int a = 0; a < n; ++a) {
-    path_col(a)[g_path_count] = v[a];
+    path_col(a)[g_path_count] = samp[a];
   }
   ++g_path_count;
   return true;
+}
+
+bool motion_path_add3(int16_t a_um, int16_t b_um, int16_t c_um) {
+  int16_t v[MC_CH_MAX] = {0};
+  v[0] = a_um;
+  v[1] = b_um;
+  v[2] = c_um;
+  return motion_path_addn(v);
 }
 
 bool motion_path_add2(int16_t a_um, int16_t b_um) { return motion_path_add3(a_um, b_um, 0); }
@@ -136,7 +143,13 @@ uint32_t motion_path_diffuse_cycles(uint32_t slice_us, uint32_t sysclk_hz, doubl
 }
 
 static float path_pos_mm(int axis) {
-  float spmm = axis_hw_steps_per_unit(axis);
+  int nm = config_motor_count();
+  float spmm;
+  if (axis < nm) {
+    spmm = axis_hw_steps_per_unit(axis);
+  } else {
+    spmm = 1000.0f; /* millideg per degree */
+  }
   if (spmm < 1e-3f) {
     spmm = 1.0f;
   }
@@ -152,18 +165,13 @@ void motion_path_get_status(McStatus *out) {
   out->enabled = true;
   out->moving = true;
   int n = path_naxes();
-  out->pos_mm = path_pos_mm(0);
-  out->vel_mm_s = g_path_last_vel_mm_s[0];
-  out->target_mm = out->pos_mm;
-  if (n >= 2) {
-    out->pos_mm_2 = path_pos_mm(1);
-    out->vel_mm_s_2 = g_path_last_vel_mm_s[1];
-    out->target_mm_2 = out->pos_mm_2;
-  }
-  if (n >= 3) {
-    out->pos_mm_3 = path_pos_mm(2);
-    out->vel_mm_s_3 = g_path_last_vel_mm_s[2];
-    out->target_mm_3 = out->pos_mm_3;
+  out->pos[0] = path_pos_mm(0);
+  out->vel[0] = g_path_last_vel_mm_s[0];
+  out->target[0] = out->pos[0];
+  for (int a = 1; a < n && a < PATH_AXES; ++a) {
+    out->pos[a] = path_pos_mm(a);
+    out->vel[a] = g_path_last_vel_mm_s[a];
+    out->target[a] = out->pos[a];
   }
 }
 
@@ -180,13 +188,16 @@ bool motion_path_go(void) {
   }
   motion_end_joy();
   int n = path_naxes();
-  float pos[3] = {st.pos_mm, st.pos_mm_2, st.pos_mm_3};
+  int nm = config_motor_count();
   for (int a = 0; a < PATH_AXES; ++a) {
-    float spmm = axis_hw_steps_per_unit(a);
-    if (spmm < 1e-3f) {
-      spmm = 1.0f;
+    float spmm = 1000.0f;
+    if (a < nm) {
+      spmm = axis_hw_steps_per_unit(a);
+      if (spmm < 1e-3f) {
+        spmm = 1.0f;
+      }
     }
-    g_path_pos_steps[a] = (a < n) ? (int64_t)lroundf(pos[a] * spmm) : 0;
+    g_path_pos_steps[a] = (a < n) ? (int64_t)lroundf(st.pos[a] * spmm) : 0;
     g_step_err[a] = 0.0;
     g_path_last_vel_mm_s[a] = 0.0f;
     g_slice_steps_left[a] = 0;
@@ -203,7 +214,7 @@ bool motion_path_go(void) {
     g_path_slice_us_active = (uint32_t)PATH_SLICE_US_MIN;
   }
   g_path_active = true;
-  for (int a = 0; a < n; ++a) {
+  for (int a = 0; a < nm; ++a) {
     pio_step_clear_stall(a);
   }
   pio_step_kick_feed();
@@ -214,9 +225,14 @@ void motion_path_abort_to_planner(void) {
   if (!g_path_active) {
     return;
   }
-  int n = path_naxes();
+  int n = config_motor_count();
   for (int a = 0; a < n; ++a) {
     planner_takeover_from_path(a, g_path_pos_steps[a], g_path_last_vel_mm_s[a]);
+  }
+  int ns = config_servo_count();
+  int nm = n;
+  for (int s = 0; s < ns; ++s) {
+    planner_path_set_servo(s, path_pos_mm(nm + s), g_path_last_vel_mm_s[nm + s]);
   }
   g_path_active = false;
   g_slice_in_progress = false;
@@ -227,7 +243,7 @@ int motion_path_fill_fifo(void) {
   int emitted = 0;
   unsigned scan_budget = PATH_FILL_SCAN_BUDGET;
   uint32_t sysclk = pio_step_sysclk_hz();
-  const int n = path_naxes();
+  const int n = config_motor_count();
   float spmm[PATH_AXES];
   for (int a = 0; a < n; ++a) {
     spmm[a] = axis_hw_steps_per_unit(a);
@@ -261,6 +277,8 @@ int motion_path_fill_fifo(void) {
       int16_t d[PATH_AXES];
       int32_t steps[PATH_AXES];
       bool any_steps = false;
+      bool any_servo = false;
+      const int ns = config_servo_count();
       for (int a = 0; a < n; ++a) {
         d[a] = path_col(a)[g_path_play_index];
         steps[a] = motion_path_diffuse_steps(d[a], spmm[a], &g_step_err[a]);
@@ -268,14 +286,43 @@ int motion_path_fill_fifo(void) {
           any_steps = true;
         }
       }
+      int32_t servo_steps[SERVO_MAX];
+      for (int s = 0; s < ns; ++s) {
+        int a = n + s;
+        d[a] = path_col(a)[g_path_play_index];
+        servo_steps[s] = motion_path_diffuse_steps(d[a], 1000.0f, &g_step_err[a]);
+        if (servo_steps[s] != 0) {
+          any_servo = true;
+        }
+      }
       ++g_path_play_index;
       uint32_t cycles = motion_path_diffuse_cycles(g_path_slice_us_active, sysclk, &g_time_err);
 
-      if (!any_steps) {
+      if (!any_steps && !any_servo) {
         g_gap_cycles += (double)cycles;
-        for (int a = 0; a < n; ++a) {
+        for (int a = 0; a < PATH_AXES; ++a) {
           g_path_last_vel_mm_s[a] = 0.0f;
         }
+        for (int s = 0; s < ns; ++s) {
+          planner_path_set_servo(s, path_pos_mm(n + s), 0.0f);
+        }
+        continue;
+      }
+
+      float slice_s = (float)g_path_slice_us_active * 1e-6f;
+      if (slice_s < 1e-9f) {
+        slice_s = 1e-9f;
+      }
+      for (int s = 0; s < ns; ++s) {
+        int a = n + s;
+        g_path_pos_steps[a] += (int64_t)servo_steps[s];
+        float ddeg = (float)servo_steps[s] / 1000.0f;
+        float vel = ddeg / slice_s;
+        g_path_last_vel_mm_s[a] = vel;
+        planner_path_set_servo(s, path_pos_mm(a), vel);
+      }
+
+      if (!any_steps) {
         continue;
       }
 

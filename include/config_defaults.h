@@ -7,13 +7,22 @@
 #define CFG_DEFAULT_MAX_SPEED_MM_S 100.0f
 #define CFG_DEFAULT_MAX_ACCEL_MM_S2 300.0f
 #define CFG_DEFAULT_STEPS_PER_UNIT 320.0f
-#define CFG_DEFAULT_SLIDER_MIN_MM 0.0f
-#define CFG_DEFAULT_SLIDER_MAX_MM 600.0f
+#define CFG_DEFAULT_MOTOR_MIN 0.0f
+#define CFG_DEFAULT_MOTOR_MAX 600.0f
+#define CFG_DEFAULT_SERVO_MIN -135.0f
+#define CFG_DEFAULT_SERVO_MAX 135.0f
+#define CFG_DEFAULT_SERVO_MAX_SPEED 180.0f
+#define CFG_DEFAULT_SERVO_MAX_ACCEL 360.0f
+#define CFG_DEFAULT_SERVO_ACTIVE 1
 #define CFG_DEFAULT_INIT_VERBOSE 0
 #define CFG_DEFAULT_INIT_TERMINAL 0
 #define CFG_DEFAULT_INIT_DEBUG_LEVEL 3
 #define CFG_DEFAULT_WDT_USE 1
-#define CFG_DEFAULT_AXIS 1 /* 1|2|3 live STEP/DIR axes */
+#define CFG_DEFAULT_MOTORS 1 /* 1|2|3 live STEP/DIR axes */
+#define CFG_DEFAULT_SERVOS 0 /* 0..3 RC servos */
+#define MOTOR_MAX 3
+#define SERVO_MAX 3
+#define MC_CH_MAX 6 /* packed motors then servos */
 #define CFG_NAME_MAX 32 /* device name for welcome banner (incl. NUL) */
 #define CFG_UNIT_NAME_MAX 8 /* unit label for UIC, e.g. "mm" / "deg" (incl. NUL) */
 #define CFG_DEFAULT_UNIT_NAME "mm"
@@ -21,14 +30,14 @@
 /* Pin active level: 0 = low-active, 1 = high-active */
 #define CFG_DEFAULT_DRV_STEP_ACTIVE 1
 #define CFG_DEFAULT_DRV_DIR_ACTIVE 1
-#define CFG_DEFAULT_DRV_EN_ACTIVE 0
+#define CFG_DEFAULT_DRV_ENABLE_ACTIVE 0
 #define CFG_DEFAULT_DRV_ERROR_ACTIVE 0
 #define CFG_DEFAULT_SW_LIMIT_L_ACTIVE 0
 #define CFG_DEFAULT_SW_LIMIT_R_ACTIVE 0
 #define CFG_DEFAULT_SW_LIMIT_L_USE 0
 #define CFG_DEFAULT_SW_LIMIT_R_USE 0
 #define CFG_DEFAULT_BUZZER_USE 0
-#define CFG_DEFAULT_EXT_ACTIVE 1 /* EXT_0..5_active default (high-active) */
+#define CFG_DEFAULT_EXT_ACTIVE 1 /* EXT_1..4_active default (high-active) */
 
 #define CFG_DEFAULT_HOME_MODE 0
 #define CFG_DEFAULT_HOME_MOVE_OUT_MM 3.0f
@@ -48,7 +57,7 @@
 #define CFG_DEFAULT_INIT_PATH_SLICE_US 10000
 #define PATH_SLICE_US_MIN 1000
 
-#define CFG_LINE_MAX 160
+#define CFG_LINE_MAX 1024
 #define CFG_DEFAULT_VERBOSE_RATE_HZ 3
 #define CFG_KEY_MAX 32
 #define CFG_VAL_MAX 48

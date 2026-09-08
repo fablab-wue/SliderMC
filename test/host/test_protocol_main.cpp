@@ -1,6 +1,9 @@
 #include "protocol.h"
 #include "config_store.h"
 #include "motion_api.h"
+#include "board.h"
+#include "servo_pwm.h"
+#include "config_defaults.h"
 
 #include <cmath>
 #include <cstdio>
@@ -144,6 +147,21 @@ int main(void) {
   expect_not_contains("realtime ? 1-axis has no axis separator", " | ");
   expect_not_contains("realtime ? not old format", "<I|P:");
 
+  board_camera_ctrl_inject(true);
+  reset_out();
+  protocol_feed_byte('?');
+  expect_contains("CAMERA_CTRL low overlays T once", "#T ");
+  reset_out();
+  protocol_feed_byte('?');
+  expect_contains("CAMERA_CTRL still low uses motion letter", "#I ");
+  expect_not_contains("CAMERA_CTRL no second T while held", "#T ");
+  board_camera_ctrl_inject(false);
+  board_camera_ctrl_inject(true);
+  reset_out();
+  protocol_feed_byte('?');
+  expect_contains("CAMERA_CTRL new press overlays T again", "#T ");
+  board_camera_ctrl_inject(false);
+
   reset_out();
   feed("CS init_speed 25\n");
   expect_empty("CS silent");
@@ -201,6 +219,16 @@ int main(void) {
   expect_empty("CS SW_LIMIT_R_3_use restore");
 
   reset_out();
+  feed("CS DRV_ENABLE_active 1\n");
+  expect_empty("CS DRV_ENABLE_active 1");
+  reset_out();
+  feed("CG DRV_ENABLE_active\n");
+  expect_contains("CG DRV_ENABLE_active", "CG:DRV_ENABLE_active=1");
+  reset_out();
+  feed("CS DRV_ENABLE_active 0\n");
+  expect_empty("CS DRV_ENABLE_active restore");
+
+  reset_out();
   feed("CS DRV_STEP_active 0\n");
   expect_contains("old DRV_STEP_active rejected", "!E:cfg bad key/value");
   reset_out();
@@ -212,6 +240,12 @@ int main(void) {
   reset_out();
   feed("CS axis2_use 1\n");
   expect_contains("old axis2_use rejected", "!E:cfg bad key/value");
+  reset_out();
+  feed("CS DRV_EN_1_active 0\n");
+  expect_contains("old DRV_EN_1_active rejected", "!E:cfg bad key/value");
+  reset_out();
+  feed("CS EXT_0_active 1\n");
+  expect_contains("old EXT_0_active rejected", "!E:cfg bad key/value");
 
   reset_out();
   feed("SS 50\n");
@@ -282,7 +316,7 @@ int main(void) {
   expect_contains("VF", "VF:1.0");
   reset_out();
   feed("VP\n");
-  expect_contains("VP", "VP:2");
+  expect_contains("VP", "VP:3");
 
   /* Timeout cancels remainder of chain */
   reset_out();
@@ -549,17 +583,20 @@ int main(void) {
   expect_empty("HT Halt silent");
 
   reset_out();
-  feed("EO00\n");
-  expect_empty("EO00 glued = EO0 0");
+  feed("EO10\n");
+  expect_empty("EO10 glued = EO1 0");
   reset_out();
-  feed("EO0\n");
-  expect_empty("EO0 bare toggles on");
+  feed("EO1\n");
+  expect_empty("EO1 bare toggles on");
   reset_out();
-  feed("EO1 1\n");
-  expect_empty("EO1 on");
+  feed("EO2 1\n");
+  expect_empty("EO2 on");
   reset_out();
-  feed("EO2\n");
-  expect_empty("EO2 bare toggles");
+  feed("EO3\n");
+  expect_empty("EO3 bare toggles");
+  reset_out();
+  feed("EO0 1\n");
+  expect_contains("EO0 rejected", "!E:parse");
 
   reset_out();
   feed("ZZZ\n");
@@ -782,7 +819,7 @@ int main(void) {
     McStatus st;
     motion_get_status(&st);
     char cmd[64];
-    std::snprintf(cmd, sizeof(cmd), "CS slider_max_1 %.3f\n", (double)st.pos_mm);
+    std::snprintf(cmd, sizeof(cmd), "CS MOTOR_1_max %.3f\n", (double)st.pos[0]);
     reset_out();
     feed(cmd);
     expect_empty("CS slider_max to current pos");
@@ -791,8 +828,8 @@ int main(void) {
   feed("MJ 50\n");
   expect_empty("MJ into soft rail silent");
   reset_out();
-  feed("CS slider_max_1 600\n");
-  expect_empty("CS slider_max_1 restore");
+  feed("CS MOTOR_1_max 600\n");
+  expect_empty("CS MOTOR_1_max restore");
   reset_out();
   feed("SR\n");
   expect_empty("SR bare restores session right after CS squeeze");
@@ -821,8 +858,8 @@ int main(void) {
   feed("GL\n");
   expect_contains("GL after SL", "GL:120.00");
   reset_out();
-  feed("CG slider_min_1\n");
-  expect_contains("envelope unchanged by SL", "CG:slider_min_1=0");
+  feed("CG MOTOR_1_min\n");
+  expect_contains("envelope unchanged by SL", "CG:MOTOR_1_min=0");
   reset_out();
   feed("SL\n");
   expect_empty("SL bare reset");
@@ -845,14 +882,14 @@ int main(void) {
   feed("SL 80\n");
   expect_empty("SL 80 before CS clamp");
   reset_out();
-  feed("CS slider_min_1 150\n");
-  expect_empty("CS slider_min_1 150");
+  feed("CS MOTOR_1_min 150\n");
+  expect_empty("CS MOTOR_1_min 150");
   reset_out();
   feed("GL\n");
   expect_contains("CS clamps session left", "GL:150.00");
   reset_out();
-  feed("CS slider_min_1 0\n");
-  expect_empty("CS slider_min_1 restore 0");
+  feed("CS MOTOR_1_min 0\n");
+  expect_empty("CS MOTOR_1_min restore 0");
   reset_out();
   feed("GL\n");
   expect_contains("CS widen envelope keeps window", "GL:150.00");
@@ -874,8 +911,8 @@ int main(void) {
   feed("GL\n");
   expect_contains("GL after SL none uses envelope", "GL:0.00");
   reset_out();
-  feed("CS slider_min_1 none\n");
-  expect_empty("CS slider_min_1 none");
+  feed("CS MOTOR_1_min none\n");
+  expect_empty("CS MOTOR_1_min none");
   reset_out();
   feed("SL none\n");
   expect_empty("SL none with open envelope");
@@ -883,9 +920,9 @@ int main(void) {
   feed("GL\n");
   expect_contains("GL open after none+none envelope", "GL:-");
   reset_out();
-  feed("CS slider_min_1 0\n");
+  feed("CS MOTOR_1_min 0\n");
   feed("SL\n");
-  expect_empty("restore slider_min_1 and bare SL");
+  expect_empty("restore MOTOR_1_min and bare SL");
   reset_out();
   feed("MT none\n");
   expect_contains("MT none not a skip", "!E:parse");
@@ -920,8 +957,8 @@ int main(void) {
   expect_contains("IA before axis2", "IA:1");
 
   reset_out();
-  feed("CS axis 2\n");
-  expect_empty("CS axis 2");
+  feed("CS motors 2\n");
+  expect_empty("CS motors 2");
   reset_out();
   feed("CG axis\n");
   expect_contains("CG axis 2", "CG:axis=2");
@@ -935,7 +972,7 @@ int main(void) {
 
   reset_out();
   protocol_send_banner();
-  expect_contains("banner 2 Axis", "- 2 Axis");
+  expect_contains("banner 2+0 axis", "- 2+0 axis");
   expect_not_contains("banner no name yet", "Foo - Slider");
 
   reset_out();
@@ -968,7 +1005,7 @@ int main(void) {
   reset_out();
   protocol_send_banner();
   expect_contains("named 2-axis banner", "# Foo - Slider Motion Controller V");
-  expect_contains("named banner has 2 Axis", "- 2 Axis");
+  expect_contains("named banner has 2+0 axis", "- 2+0 axis");
 
   reset_out();
   feed("MT 0 0\n");
@@ -1089,7 +1126,7 @@ int main(void) {
   feed("MTX20Z100\n");
   expect_contains("MT X+Z without Y on 2-axis", "!E:parse");
   reset_out();
-  feed("CS axis 3\n");
+  feed("CS motors 3\n");
   expect_empty("temp axis 3 for named XYZ");
   reset_out();
   feed("SE 1\n");
@@ -1103,7 +1140,7 @@ int main(void) {
   expect_empty("SP glued named");
   reset_out();
   feed("IP\n");
-  expect_contains("IP after glued XYZ", "IP:20.00 50.00 100.00");
+  expect_contains("IP after glued XYZ", "IP:20.00 | 50.00 | 100.00");
   reset_out();
   feed("MJ Y50\n");
   expect_empty("MJ Y50 named");
@@ -1117,7 +1154,7 @@ int main(void) {
   feed("MBX-5\n");
   expect_empty("MBX-5 relative");
   reset_out();
-  feed("CS axis 2\n");
+  feed("CS motors 2\n");
   expect_empty("restore axis 2 after named XYZ");
   reset_out();
   feed("SE 1\n");
@@ -1149,8 +1186,8 @@ int main(void) {
   {
     McStatus st;
     motion_get_status(&st);
-    expect_true("snapshot axis0 moving", st.vel_mm_s > 0.0f);
-    expect_true("snapshot axis1 stopped", std::fabs(st.vel_mm_s_2) < 0.01f);
+    expect_true("snapshot axis0 moving", st.vel[0] > 0.0f);
+    expect_true("snapshot axis1 stopped", std::fabs(st.vel[1]) < 0.01f);
   }
   expect_true("snapshot axis0 cruise 32", std::fabs(motion_host_axis_cruise(0) - 32.0f) < 0.01f);
 
@@ -1160,8 +1197,8 @@ int main(void) {
   {
     McStatus st;
     motion_get_status(&st);
-    expect_true("MJ 40 vel+", st.vel_mm_s > 0.0f);
-    expect_true("MJ -20 vel-", st.vel_mm_s_2 < 0.0f);
+    expect_true("MJ 40 vel+", st.vel[0] > 0.0f);
+    expect_true("MJ -20 vel-", st.vel[1] < 0.0f);
   }
   expect_true("MJ 40 cruise 32", std::fabs(motion_host_axis_cruise(0) - 32.0f) < 0.01f);
   expect_true("MJ -20 cruise 16", std::fabs(motion_host_axis_cruise(1) - 16.0f) < 0.01f);
@@ -1199,41 +1236,51 @@ int main(void) {
   expect_empty("SL skip axis1");
   reset_out();
   feed("GL\n");
-  expect_contains("GL dual skip axis2", "GL:0.00 40.00");
+  expect_contains("GL dual skip axis2", "GL:0.00 | 40.00");
   reset_out();
   feed("SL none 50\n");
   expect_empty("SL none axis1 set axis2");
   reset_out();
   feed("GL\n");
-  expect_contains("GL after SL none 50", "GL:0.00 50.00");
+  expect_contains("GL after SL none 50", "GL:0.00 | 50.00");
   reset_out();
   feed("SR 200\n");
   feed("SL _ none\n");
   expect_empty("SL clear axis2 only");
   reset_out();
   feed("GL\n");
-  expect_contains("GL after SL _ none", "GL:0.00 0.00");
+  expect_contains("GL after SL _ none", "GL:0.00 | 0.00");
   reset_out();
   feed("SL\n");
   expect_empty("SL bare resets both axes");
   reset_out();
   feed("GL\n");
-  expect_contains("GL dual after bare SL", "GL:0.00 0.00");
+  expect_contains("GL dual after bare SL", "GL:0.00 | 0.00");
 
   reset_out();
   feed("EO4 1\n");
-  expect_contains("EO4 invalid", "!E:parse");
+  expect_empty("EO4 on");
+  reset_out();
+  feed("EO5 1\n");
+  expect_contains("EO5 invalid", "!E:parse");
   reset_out();
   feed("EO6 1\n");
   expect_contains("EO6 invalid", "!E:parse");
 
   reset_out();
   feed("IG\n");
-  expect_contains("IG has STEP2 when axis2", "DRV_STEP2");
+  expect_contains("IG has STEP_2 when axis2", "DRV_STEP_2");
+  expect_contains("IG has DRV_ENABLE", "DRV_ENABLE");
+  expect_not_contains("IG no per-axis EN2", "DRV_EN2");
   reset_out();
   feed("VG\n");
-  expect_contains("VG has STEP2 when axis2", "PIN_DRV_STEP2=");
+  expect_contains("VG has STEP_2 when axis2", "PIN_DRV_STEP_2=");
+  expect_contains("VG has PIN_DRV_ENABLE", "PIN_DRV_ENABLE=");
+  expect_not_contains("VG no PIN_DRV_EN2", "PIN_DRV_EN2=");
 
+  reset_out();
+  feed("SP 100 50\n");
+  expect_empty("park dual non-zero for idle ?");
   reset_out();
   protocol_feed_byte('?');
   expect_contains("realtime ? with pos2", "#I ");
@@ -1260,17 +1307,17 @@ int main(void) {
   }
 
   reset_out();
-  feed("CS axis 1\n");
-  expect_empty("CS axis 1 restore 1-axis");
+  feed("CS motors 1\n");
+  expect_empty("CS motors 1 restore 1-axis");
   reset_out();
   feed("IA\n");
   expect_contains("IA restored 1-axis", "IA:1");
   reset_out();
   feed("IG\n");
-  expect_not_contains("IG no STEP2 when 1-axis", "DRV_STEP2");
+  expect_not_contains("IG no STEP_2 when 1-axis", "DRV_STEP_2");
   reset_out();
   feed("VG\n");
-  expect_not_contains("VG no STEP2 when 1-axis", "PIN_DRV_STEP2=");
+  expect_not_contains("VG no STEP_2 when 1-axis", "PIN_DRV_STEP_2=");
   reset_out();
   feed("IP\n");
   expect_contains("IP single-field 1-axis", "IP:");
@@ -1299,7 +1346,7 @@ int main(void) {
   }
   reset_out();
   protocol_send_banner();
-  expect_not_contains("1-axis banner no 2 Axis", "2 Axis");
+  expect_not_contains("1-axis banner no 2+0", "2+0 axis");
   expect_contains("named 1-axis banner", "# Foo - Slider Motion Controller V");
   reset_out();
   feed("RB\n");
@@ -1338,18 +1385,18 @@ int main(void) {
   feed("CS home_mode_1 0\n");
   expect_empty("CS home_mode_1 0 restore");
   reset_out();
-  feed("CS axis 2\n");
+  feed("CS motors 2\n");
   feed("SP 10 20\n");
   expect_empty("SP dual silent");
   reset_out();
   feed("IP\n");
-  expect_contains("SP dual pose", "IP:10.00 20.00");
+  expect_contains("SP dual pose", "IP:10.00 | 20.00");
   reset_out();
   feed("SP _ 0\n");
   expect_empty("SP skip axis1");
   reset_out();
   feed("IP\n");
-  expect_contains("SP skip keeps axis1", "IP:10.00 0.00");
+  expect_contains("SP skip keeps axis1", "IP:10.00 | 0.00");
   reset_out();
   feed("MT 50\n");
   reset_out();
@@ -1357,13 +1404,13 @@ int main(void) {
   expect_contains("SP rejected while moving", "!E:busy");
   reset_out();
   feed("MS\n");
-  feed("CS axis 1\n");
+  feed("CS motors 1\n");
   expect_empty("restore 1-axis after SP tests");
 
   /* --- axis3 protocol --- */
   reset_out();
-  feed("CS axis 3\n");
-  expect_empty("CS axis 3");
+  feed("CS motors 3\n");
+  expect_empty("CS motors 3");
   reset_out();
   feed("CG axis\n");
   expect_contains("CG axis 3", "CG:axis=3");
@@ -1372,17 +1419,17 @@ int main(void) {
   expect_contains("IA after axis 3", "IA:3");
   reset_out();
   protocol_send_banner();
-  expect_contains("banner 3 Axis", "- 3 Axis");
+  expect_contains("banner 3+0 axis", "- 3+0 axis");
 
   reset_out();
-  feed("CS axis 2\n");
-  expect_empty("CS axis 2 from 3");
+  feed("CS motors 2\n");
+  expect_empty("CS motors 2 from 3");
   reset_out();
   feed("IA\n");
-  expect_contains("CS axis 2 sets IA:2", "IA:2");
+  expect_contains("CS motors 2 sets IA:2", "IA:2");
   reset_out();
-  feed("CS axis 3\n");
-  expect_empty("CS axis 3 again");
+  feed("CS motors 3\n");
+  expect_empty("CS motors 3 again");
 
   reset_out();
   feed("MS\n");
@@ -1390,7 +1437,7 @@ int main(void) {
   expect_empty("SP triple origin");
   reset_out();
   feed("IP\n");
-  expect_contains("IP triple origin", "IP:0.00 0.00 0.00");
+  expect_contains("IP triple origin", "IP:0.00 | 0.00 | 0.00");
 
   reset_out();
   feed("MT 100 50 25\n");
@@ -1414,7 +1461,7 @@ int main(void) {
   expect_empty("SP skip first two");
   reset_out();
   feed("IP\n");
-  expect_contains("SP skip keeps 1+2 zeros axis3", "IP:0.00 0.00 40.00");
+  expect_contains("SP skip keeps 1+2 zeros axis3", "IP:0.00 | 0.00 | 40.00");
 
   reset_out();
   feed("PC\n");
@@ -1453,32 +1500,7 @@ int main(void) {
   reset_out();
   feed("SP 0 0 0\n");
   protocol_feed_byte('?');
-  {
-    size_t hash = g_out.find("#I ");
-    if (hash == std::string::npos) {
-      std::fprintf(stderr, "FAIL idle ? 3-axis: no #I in:\n%s\n", g_out.c_str());
-      ++g_fail;
-    } else {
-      std::string line = g_out.substr(hash);
-      size_t nl = line.find('\n');
-      if (nl != std::string::npos) {
-        line = line.substr(0, nl);
-      }
-      int seps = 0;
-      for (size_t i = 0; i + 2 < line.size(); ++i) {
-        if (line[i] == ' ' && line[i + 1] == '|' && line[i + 2] == ' ') {
-          ++seps;
-        }
-      }
-      if (seps != 2) {
-        std::fprintf(stderr, "FAIL idle ? needs pos1 | pos2 | pos3, got:\n%s\n",
-                     line.c_str());
-        ++g_fail;
-      } else {
-        std::printf("OK   idle ? triple positions\n");
-      }
-    }
-  }
+  expect_contains("idle ? 3-axis elides zero groups", "#I||");
 
   reset_out();
   feed("SS 80\n");
@@ -1492,9 +1514,9 @@ int main(void) {
   {
     McStatus st;
     motion_get_status(&st);
-    expect_true("MJ triple vel+", st.vel_mm_s > 0.0f);
-    expect_true("MJ triple vel2+", st.vel_mm_s_2 > 0.0f);
-    expect_true("MJ triple vel3+", st.vel_mm_s_3 > 0.0f);
+    expect_true("MJ triple vel+", st.vel[0] > 0.0f);
+    expect_true("MJ triple vel2+", st.vel[1] > 0.0f);
+    expect_true("MJ triple vel3+", st.vel[2] > 0.0f);
   }
   reset_out();
   feed("MS\n");
@@ -1505,17 +1527,290 @@ int main(void) {
   expect_empty("SL triple");
   reset_out();
   feed("GL\n");
-  expect_contains("GL triple", "GL:10.00 20.00 30.00");
+  expect_contains("GL triple", "GL:10.00 | 20.00 | 30.00");
   reset_out();
   feed("SL\n");
   expect_empty("SL bare after triple");
 
   reset_out();
-  feed("CS axis 1\n");
+  feed("CS motors 1\n");
   expect_empty("restore 1-axis after axis3 tests");
   reset_out();
   feed("IA\n");
   expect_contains("IA restored after axis3", "IA:1");
+
+  /* --- servo PWM axes --- */
+  reset_out();
+  feed("CS axis 2\n");
+  expect_contains("CS axis rejected", "!E:cfg bad key/value");
+  reset_out();
+  feed("CS slider_min_1 0\n");
+  expect_contains("slider_min rejected", "!E:cfg bad key/value");
+  reset_out();
+  feed("CS motors 1\n");
+  feed("CS servos 0\n");
+  feed("SL\n");
+  feed("SR\n");
+  expect_empty("CS motors 1 servos 0");
+  reset_out();
+  protocol_send_banner();
+  expect_contains("banner 1+0 axis", "1+0 axis");
+  reset_out();
+  feed("IA\n");
+  expect_contains("IA 1+0", "IA:1");
+  reset_out();
+  feed("CG axis\n");
+  expect_contains("CG axis sum 1", "CG:axis=1");
+  reset_out();
+  feed("CG\n");
+  expect_contains("bare CG dump axis 1", "CG:axis=1");
+
+  reset_out();
+  feed("CS servos 2\n");
+  expect_empty("CS servos 2");
+  reset_out();
+  feed("IA\n");
+  expect_contains("IA 1+2", "IA:3");
+  reset_out();
+  feed("CG axis\n");
+  expect_contains("CG axis sum 3", "CG:axis=3");
+  reset_out();
+  feed("CG\n");
+  expect_contains("bare CG dump axis 3", "CG:axis=3");
+  reset_out();
+  protocol_send_banner();
+  expect_contains("banner 1+2 axis", "1+2 axis");
+
+  reset_out();
+  feed("CS MOTOR_1_min 0\n");
+  feed("CS SERVO_1_min -90\n");
+  expect_empty("kind-stable envelopes");
+  reset_out();
+  feed("CG MOTOR_1_min\n");
+  expect_contains("CG MOTOR_1_min", "CG:MOTOR_1_min=0");
+  reset_out();
+  feed("CG SERVO_1_min\n");
+  expect_contains("CG SERVO_1_min", "CG:SERVO_1_min=-90");
+  reset_out();
+  feed("CS axis_min_2 -45\n");
+  expect_empty("CS axis_min_2 write-through");
+  reset_out();
+  feed("CG SERVO_1_min\n");
+  expect_contains("axis_min_2 wrote SERVO_1_min", "CG:SERVO_1_min=-45");
+  reset_out();
+  feed("CG axis_min_2\n");
+  expect_contains("CG axis_min_2 synth", "CG:axis_min_2=-45");
+  reset_out();
+  feed("CS SERVO_1_min -135\n");
+  expect_empty("restore SERVO_1_min");
+
+  reset_out();
+  feed("SE 1\n");
+  feed("SP 0 0 0\n");
+  expect_empty("SP three packed zeros");
+  reset_out();
+  feed("MT Y10\n");
+  expect_contains("Y rejected when motors=1", "!E:parse");
+  reset_out();
+  feed("MT Z10\n");
+  expect_contains("Z rejected when motors=1", "!E:parse");
+  reset_out();
+  feed("MT C10\n");
+  expect_contains("C rejected when servos=2", "!E:parse");
+  reset_out();
+  feed("MH A\n");
+  expect_contains("MH letter A parse fail", "!E:parse");
+
+  reset_out();
+  feed("CS servos 1\n");
+  expect_empty("CS servos 1 for mix");
+  reset_out();
+  feed("SE 1\n");
+  feed("SP 0 0\n");
+  expect_empty("SP motor+servo origin");
+  reset_out();
+  feed("MT X10 A-45\n");
+  expect_empty("MT X10 A-45");
+  motion_stub_tick_ms(2000);
+  reset_out();
+  feed("IP\n");
+  expect_contains("IP motor|servo after named MT", "IP:10.00 | -45.00");
+  reset_out();
+  feed("MS\n");
+  feed("SP 10 -45\n");
+  expect_empty("park 10 -45");
+  reset_out();
+  feed("MT 20 -90\n");
+  expect_empty("positional MT motors then servos");
+  motion_stub_tick_ms(2000);
+  reset_out();
+  feed("IP\n");
+  expect_contains("IP after positional MT", "IP:20.00 | -90.00");
+
+  reset_out();
+  feed("MS\n");
+  feed("SP 10 0\n");
+  feed("CS servos 2\n");
+  feed("SP 10 0 -45\n");
+  expect_empty("park 10 0 -45");
+  reset_out();
+  protocol_feed_byte('?');
+  expect_contains("verbose middle-zero elide", "#I 10 || -45");
+  reset_out();
+  feed("IP\n");
+  expect_contains("IP keeps explicit 0", "IP:10.00 | 0.00 | -45.00");
+  reset_out();
+  feed("GL\n");
+  expect_contains("GL pipes with zeros", "GL:");
+  expect_contains("GL has pipe", " | ");
+
+  reset_out();
+  feed("CS motors 1\n");
+  feed("CS servos 0\n");
+  feed("SE 1\n");
+  feed("SP 0\n");
+  expect_empty("single channel park 0");
+  reset_out();
+  protocol_feed_byte('?');
+  expect_contains("single-channel idle 0 kept", "#I 0");
+
+  reset_out();
+  feed("SE 0\n");
+  expect_true("SE 0 stops PWM", !servo_pwm_enabled());
+  reset_out();
+  feed("CS servos 1\n");
+  feed("SE 1\n");
+  expect_true("SE 1 starts PWM with servos", servo_pwm_enabled());
+  reset_out();
+  feed("SE 0\n");
+  expect_true("SE 0 limp again", !servo_pwm_enabled());
+
+  reset_out();
+  feed("CS servos 3\n");
+  expect_empty("CS servos 3 steals EXT_4");
+  reset_out();
+  feed("EO4 1\n");
+  expect_contains("EO4 fails when servos=3", "!E:parse");
+  reset_out();
+  feed("CS servos 0\n");
+  expect_empty("restore servos 0");
+  reset_out();
+  feed("EO4 1\n");
+  expect_empty("EO4 ok after servos 0");
+  reset_out();
+  feed("EO4 0\n");
+  expect_empty("EO4 off");
+
+  reset_out();
+  {
+    std::string line(CFG_LINE_MAX, 'x');
+    line.push_back('\n');
+    feed(line.c_str());
+    expect_contains("1024-char line accepted", "!E:parse unknown command");
+  }
+  reset_out();
+  {
+    std::string line(CFG_LINE_MAX + 1, 'x');
+    line.push_back('\n');
+    feed(line.c_str());
+    expect_contains("1025-char line rejected", "!E:parse line too long");
+  }
+
+  reset_out();
+  feed("CS motors 2\n");
+  feed("CS servos 0\n");
+  feed("SE 1\n");
+  feed("SS 50\n");
+  feed("SA 200\n");
+  feed("SP 10 0\n");
+  expect_empty("park dest1==current setup");
+  reset_out();
+  feed("MT 10 80\n");
+  expect_empty("MT dest1 current motor2 moves");
+  expect_true("motor 2 is master", motion_master_channel() == 1);
+  expect_true("master cruise is SS", std::fabs(motion_host_axis_cruise(1) - 50.0f) < 0.01f);
+  reset_out();
+  feed("MS\n");
+  feed("CS motors 1\n");
+  feed("CS servos 1\n");
+  feed("SE 1\n");
+  feed("SP 0 0\n");
+  feed("MT A45\n");
+  expect_empty("servo-only MT");
+  expect_true("servo 1 is master", motion_master_channel() == 1);
+  expect_true("SS as deg/s on servo master",
+              std::fabs(motion_host_axis_cruise(1) - 50.0f) < 0.01f);
+
+  reset_out();
+  feed("MS\n");
+  feed("CS servos 0\n");
+  feed("CS motors 2\n");
+  feed("SP 0 0\n");
+  feed("MT 100 80\n");
+  reset_out();
+  feed("WP 40\n");
+  expect_empty("WP keys motor 1");
+  {
+    bool ran = false;
+    for (int i = 0; i < 200; ++i) {
+      protocol_poll(20);
+      reset_out();
+      feed("IW\n");
+      if (g_out.find("IW:0") != std::string::npos) {
+        ran = true;
+        break;
+      }
+    }
+    expect_true("WP 40 on motor 1 completed", ran);
+  }
+  reset_out();
+  feed("MS\n");
+  feed("SP 0 0\n");
+  feed("MT _ 80\n");
+  reset_out();
+  feed("WP 40\n");
+  expect_empty("WP keys motor 2");
+  {
+    bool ran = false;
+    for (int i = 0; i < 200; ++i) {
+      protocol_poll(20);
+      reset_out();
+      feed("IW\n");
+      if (g_out.find("IW:0") != std::string::npos) {
+        ran = true;
+        break;
+      }
+    }
+    expect_true("WP 40 on motor 2 completed", ran);
+  }
+  reset_out();
+  feed("MS\n");
+  feed("CS motors 1\n");
+  feed("CS servos 1\n");
+  feed("SP 0 0\n");
+  feed("MT A45\n");
+  reset_out();
+  feed("WP 10\n");
+  expect_empty("WP servo-only");
+  {
+    bool ran = false;
+    for (int i = 0; i < 200; ++i) {
+      protocol_poll(20);
+      reset_out();
+      feed("IW\n");
+      if (g_out.find("IW:0") != std::string::npos) {
+        ran = true;
+        break;
+      }
+    }
+    expect_true("WP 10 on servo 1 completed", ran);
+  }
+
+  reset_out();
+  feed("MS\n");
+  feed("CS motors 1\n");
+  feed("CS servos 0\n");
+  expect_empty("restore 1+0 after servo tests");
 
   if (g_fail) {
     std::fprintf(stderr, "\n%d test(s) failed\n", g_fail);

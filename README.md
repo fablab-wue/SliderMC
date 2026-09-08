@@ -1,6 +1,6 @@
 # SliderMC
 
-**Deterministic motion firmware for DIY motorized camera sliders** — C++ / FreeRTOS on Raspberry Pi Pico, STEP/DIR axis with PIO timing.
+**Deterministic motion firmware for DIY motorized camera sliders** — C++ / FreeRTOS on Raspberry Pi Pico, STEP/DIR motors plus optional RC servo PWM (protocol **VP:3**).
 
 ## About
 
@@ -25,6 +25,7 @@ Docs and manuals: **[SliderDoc](https://github.com/fablab-wue/SliderDoc)**.
 - **Live retarget** during movement — change target or speed without stopping the shoot  
 - **Sine ramp** acceleration and deceleration — smooth starts and stops  
 - **Homing**, soft travel limits, hard-limit alarms, **`DRV_ERROR` / EMO** interlock  
+- **1–3 STEP/DIR motors** (`CS motors`) plus **0–3 RC servos** (`CS servos`); banner `{motors}+{servos} axis`; `IA` / `CG axis` = packed sum. **`CS axis` is rejected** — do not send it  
 - **Path playback** — host-authored motion paths for advanced moves  
 - **Joystick hold (`MJ`)** — signed % of session speed, 1- or 2-axis  
 - **API units:** mm, mm/s, mm/s² (steps handled internally)
