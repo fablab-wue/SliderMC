@@ -22,6 +22,9 @@ typedef struct {
   float servo_max_speed[SERVO_MAX];
   float servo_max_accel[SERVO_MAX];
   int servo_active[SERVO_MAX]; /* 1 = high pulse, 0 = invert */
+  int servo_min_pulse[SERVO_MAX]; /* µs; envelope min maps here unless swap */
+  int servo_max_pulse[SERVO_MAX]; /* µs */
+  int servo_swap[SERVO_MAX]; /* 1 = reverse mechanical sense */
   int init_verbose;
   int verbose_rate_hz; /* verbose `#…` push rate (1..200; proto task polls at 200 Hz) */
   int init_terminal; /* Terminal Mode (local echo) */

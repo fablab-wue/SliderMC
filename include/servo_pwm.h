@@ -17,6 +17,15 @@ bool servo_pwm_enabled(void);
 /** Write compare from angle (clamped to SERVO_N envelope). No-op if disabled or index unused. */
 void servo_pwm_write_deg(int servo0, float deg);
 
+/** Re-apply last pose to PWM after CS pulse/swap/envelope/active. */
+void servo_pwm_refresh(void);
+
+/**
+ * Linear envelope → pulse µs (swap + clamp). Host-testable; no Pico PWM.
+ * Invalid servo0 → 0.
+ */
+float servo_pwm_deg_to_us(int servo0, float deg);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1443,6 +1443,10 @@ bool protocol_exec_command(const char *cmd) {
 #endif
         servo_pwm_reconfigure();
         motion_on_counts_changed();
+      } else if (starts_cmd(key, "SERVO", &krest) || starts_cmd(key, "axis_min", &krest) ||
+                 starts_cmd(key, "axis_max", &krest) || starts_cmd(key, "soft_min", &krest) ||
+                 starts_cmd(key, "soft_max", &krest)) {
+        servo_pwm_refresh();
       }
     }
     /* CS updates session for init_speed/init_accel/init_terminal/init_verbose; refresh motion. */
@@ -1459,6 +1463,7 @@ bool protocol_exec_command(const char *cmd) {
   if (match_any(cmd, &rest, "CR", "ConfigReset", nullptr)) {
     config_reset_to_defaults();
     board_buzzer_reconfigure();
+    servo_pwm_refresh();
     motion_set_speed(sess->speed_mm_s);
     motion_set_accel(sess->accel_mm_s2);
     if (!board_config_save_to_fs()) {

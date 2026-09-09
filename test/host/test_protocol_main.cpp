@@ -1605,6 +1605,48 @@ int main(void) {
   expect_empty("restore SERVO_1_min");
 
   reset_out();
+  feed("CG SERVO_1_min_pulse\n");
+  expect_contains("CG default min_pulse", "CG:SERVO_1_min_pulse=500");
+  reset_out();
+  feed("CG SERVO_1_max_pulse\n");
+  expect_contains("CG default max_pulse", "CG:SERVO_1_max_pulse=2500");
+  reset_out();
+  feed("CG SERVO_1_swap\n");
+  expect_contains("CG default swap", "CG:SERVO_1_swap=0");
+  expect_true("map -135 → 500 µs",
+              fabsf(servo_pwm_deg_to_us(0, -135.0f) - 500.0f) < 0.5f);
+  expect_true("map 135 → 2500 µs",
+              fabsf(servo_pwm_deg_to_us(0, 135.0f) - 2500.0f) < 0.5f);
+  expect_true("map 0 → 1500 µs",
+              fabsf(servo_pwm_deg_to_us(0, 0.0f) - 1500.0f) < 0.5f);
+  reset_out();
+  feed("CS SERVO_1_min_pulse 1000\n");
+  feed("CS SERVO_1_max_pulse 2000\n");
+  expect_empty("analog 1000–2000 pulse");
+  expect_true("analog map -135 → 1000 µs",
+              fabsf(servo_pwm_deg_to_us(0, -135.0f) - 1000.0f) < 0.5f);
+  expect_true("analog map 135 → 2000 µs",
+              fabsf(servo_pwm_deg_to_us(0, 135.0f) - 2000.0f) < 0.5f);
+  reset_out();
+  feed("CS SERVO_1_swap 1\n");
+  expect_empty("CS swap");
+  expect_true("swap flips -135 → 2000 µs",
+              fabsf(servo_pwm_deg_to_us(0, -135.0f) - 2000.0f) < 0.5f);
+  expect_true("swap flips 135 → 1000 µs",
+              fabsf(servo_pwm_deg_to_us(0, 135.0f) - 1000.0f) < 0.5f);
+  reset_out();
+  feed("CS SERVO_1_min_pulse 300\n");
+  expect_contains("pulse 300 rejected", "!E:cfg bad key/value");
+  reset_out();
+  feed("CS SERVO_1_min_pulse 2000\n");
+  expect_contains("min_pulse >= max_pulse rejected", "!E:cfg bad key/value");
+  reset_out();
+  feed("CS SERVO_1_min_pulse 500\n");
+  feed("CS SERVO_1_max_pulse 2500\n");
+  feed("CS SERVO_1_swap 0\n");
+  expect_empty("restore digital pulse + swap");
+
+  reset_out();
   feed("SE 1\n");
   feed("SP 0 0 0\n");
   expect_empty("SP three packed zeros");

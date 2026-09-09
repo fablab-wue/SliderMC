@@ -15,11 +15,50 @@
 
 #define SERVO_FRAME_HZ 100u
 #define SERVO_WRAP 65535u
-#define SERVO_US_MIN 1000.0f
-#define SERVO_US_MAX 2000.0f
 
 static bool g_pwm_on;
 static float g_last_deg[SERVO_MAX];
+
+float servo_pwm_deg_to_us(int servo0, float deg) {
+  if (servo0 < 0 || servo0 >= SERVO_MAX) {
+    return 0.0f;
+  }
+  const McConfig *c = config_get();
+  float mn = c->servo_min[servo0];
+  float mx = c->servo_max[servo0];
+  if (isnan(mn)) {
+    mn = CFG_DEFAULT_SERVO_MIN;
+  }
+  if (isnan(mx)) {
+    mx = CFG_DEFAULT_SERVO_MAX;
+  }
+  if (mx < mn) {
+    float t = mn;
+    mn = mx;
+    mx = t;
+  }
+  if (deg < mn) {
+    deg = mn;
+  }
+  if (deg > mx) {
+    deg = mx;
+  }
+  int pmin = c->servo_min_pulse[servo0];
+  int pmax = c->servo_max_pulse[servo0];
+  if (pmin < CFG_SERVO_PULSE_US_LO || pmax > CFG_SERVO_PULSE_US_HI || pmin >= pmax) {
+    pmin = CFG_DEFAULT_SERVO_MIN_PULSE;
+    pmax = CFG_DEFAULT_SERVO_MAX_PULSE;
+  }
+  float span = mx - mn;
+  float t = 0.0f;
+  if (span > 1e-6f) {
+    t = (deg - mn) / span;
+  }
+  if (c->servo_swap[servo0]) {
+    return (float)pmax - t * (float)(pmax - pmin);
+  }
+  return (float)pmin + t * (float)(pmax - pmin);
+}
 
 static float servo_boot_deg(int s) {
   const McConfig *c = config_get();
@@ -48,36 +87,9 @@ static int servo_pin(int s) {
 }
 
 static uint16_t deg_to_cc(int s, float deg) {
-  const McConfig *c = config_get();
-  float mn = c->servo_min[s];
-  float mx = c->servo_max[s];
-  if (isnan(mn)) {
-    mn = CFG_DEFAULT_SERVO_MIN;
-  }
-  if (isnan(mx)) {
-    mx = CFG_DEFAULT_SERVO_MAX;
-  }
-  if (mx < mn) {
-    float t = mn;
-    mn = mx;
-    mx = t;
-  }
-  if (deg < mn) {
-    deg = mn;
-  }
-  if (deg > mx) {
-    deg = mx;
-  }
-  float span = mx - mn;
-  float us = SERVO_US_MIN;
-  if (span > 1e-6f) {
-    us = SERVO_US_MIN + (deg - mn) / span * (SERVO_US_MAX - SERVO_US_MIN);
-  }
-  if (us < SERVO_US_MIN) {
-    us = SERVO_US_MIN;
-  }
-  if (us > SERVO_US_MAX) {
-    us = SERVO_US_MAX;
+  float us = servo_pwm_deg_to_us(s, deg);
+  if (us < 0.0f) {
+    us = 0.0f;
   }
   float cc = us * ((float)(SERVO_WRAP + 1u) / 10000.0f);
   if (cc < 0.0f) {
@@ -191,5 +203,19 @@ void servo_pwm_write_deg(int servo0, float deg) {
   }
 #ifndef HOST_TEST
   apply_cc(servo0, deg_to_cc(servo0, deg));
+#endif
+}
+
+void servo_pwm_refresh(void) {
+  int ns = config_servo_count();
+  if (!g_pwm_on) {
+    return;
+  }
+#ifndef HOST_TEST
+  for (int s = 0; s < ns; ++s) {
+    apply_cc(s, deg_to_cc(s, g_last_deg[s]));
+  }
+#else
+  (void)ns;
 #endif
 }

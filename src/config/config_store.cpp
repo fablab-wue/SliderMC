@@ -173,6 +173,9 @@ static void config_apply_defaults(void) {
     g_cfg.servo_max_speed[i] = CFG_DEFAULT_SERVO_MAX_SPEED;
     g_cfg.servo_max_accel[i] = CFG_DEFAULT_SERVO_MAX_ACCEL;
     g_cfg.servo_active[i] = CFG_DEFAULT_SERVO_ACTIVE;
+    g_cfg.servo_min_pulse[i] = CFG_DEFAULT_SERVO_MIN_PULSE;
+    g_cfg.servo_max_pulse[i] = CFG_DEFAULT_SERVO_MAX_PULSE;
+    g_cfg.servo_swap[i] = CFG_DEFAULT_SERVO_SWAP;
   }
   g_cfg.init_verbose = CFG_DEFAULT_INIT_VERBOSE;
   g_cfg.verbose_rate_hz = CFG_DEFAULT_VERBOSE_RATE_HZ;
@@ -482,6 +485,22 @@ static bool set_01(const char *value, int *field) {
   return true;
 }
 
+static bool set_servo_pulse(const char *value, int *field, int other, bool field_is_min) {
+  int i;
+  if (!parse_int(value, &i) || i < CFG_SERVO_PULSE_US_LO || i > CFG_SERVO_PULSE_US_HI) {
+    return false;
+  }
+  if (field_is_min) {
+    if (i >= other) {
+      return false;
+    }
+  } else if (i <= other) {
+    return false;
+  }
+  *field = i;
+  return true;
+}
+
 /* kind_N_field with N in 1..3, e.g. MOTOR_2_min, SERVO_1_max_speed. */
 static bool match_kind_n_field(const char *key, const char *kind, const char *field, int *idx0) {
   size_t kn = strlen(kind);
@@ -659,6 +678,17 @@ bool config_set_key(const char *key, const char *value) {
     }
     if (match_kind_n_field(key, "MOTOR", "max", &idx)) {
       return set_env_none_or_float(value, &g_cfg.motor_max[idx]);
+    }
+    if (match_kind_n_field(key, "SERVO", "min_pulse", &idx)) {
+      return set_servo_pulse(value, &g_cfg.servo_min_pulse[idx], g_cfg.servo_max_pulse[idx],
+                             true);
+    }
+    if (match_kind_n_field(key, "SERVO", "max_pulse", &idx)) {
+      return set_servo_pulse(value, &g_cfg.servo_max_pulse[idx], g_cfg.servo_min_pulse[idx],
+                             false);
+    }
+    if (match_kind_n_field(key, "SERVO", "swap", &idx)) {
+      return set_01(value, &g_cfg.servo_swap[idx]);
     }
     if (match_kind_n_field(key, "SERVO", "min", &idx)) {
       return set_env_none_or_float(value, &g_cfg.servo_min[idx]);
@@ -1077,6 +1107,18 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     if (match_kind_n_field(key, "MOTOR", "max", &idx)) {
       return fmt_env(out, out_len, c->motor_max[idx]);
     }
+    if (match_kind_n_field(key, "SERVO", "min_pulse", &idx)) {
+      snprintf(out, out_len, "%d", c->servo_min_pulse[idx]);
+      return true;
+    }
+    if (match_kind_n_field(key, "SERVO", "max_pulse", &idx)) {
+      snprintf(out, out_len, "%d", c->servo_max_pulse[idx]);
+      return true;
+    }
+    if (match_kind_n_field(key, "SERVO", "swap", &idx)) {
+      snprintf(out, out_len, "%d", c->servo_swap[idx]);
+      return true;
+    }
     if (match_kind_n_field(key, "SERVO", "min", &idx)) {
       return fmt_env(out, out_len, c->servo_min[idx]);
     }
@@ -1392,16 +1434,25 @@ void config_foreach(config_foreach_fn fn, void *ctx) {
       "SERVO_1_max_speed",
       "SERVO_1_max_accel",
       "SERVO_1_active",
+      "SERVO_1_min_pulse",
+      "SERVO_1_max_pulse",
+      "SERVO_1_swap",
       "SERVO_2_min",
       "SERVO_2_max",
       "SERVO_2_max_speed",
       "SERVO_2_max_accel",
       "SERVO_2_active",
+      "SERVO_2_min_pulse",
+      "SERVO_2_max_pulse",
+      "SERVO_2_swap",
       "SERVO_3_min",
       "SERVO_3_max",
       "SERVO_3_max_speed",
       "SERVO_3_max_accel",
       "SERVO_3_active",
+      "SERVO_3_min_pulse",
+      "SERVO_3_max_pulse",
+      "SERVO_3_swap",
       "ramp_start_hz",
       "stop_approach_hz",
       "dir_change_pause_s",
