@@ -1,8 +1,10 @@
 #include "protocol_internal.h"
 #include "config_store.h"
 #include "motion_api.h"
+#include "motion_path.h"
 #include "config_defaults.h"
 #include "version.h"
+#include "board.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -165,7 +167,7 @@ void protocol_init(ProtocolIo io) {
 }
 
 void protocol_send_banner(void) {
-  /* GRBL-style ready banner: `# ` (hash + space) — distinct from `#I …` status. */
+  /* Fixed identity prefix `# MC V1 -`; remainder is name / axis info. */
   char banner[160];
   const McConfig *c = config_get();
   const int nm = config_motor_count();
@@ -173,12 +175,10 @@ void protocol_send_banner(void) {
   const bool named = c->name[0] != 0;
   if (named) {
     snprintf(banner, sizeof(banner),
-             "# %s - Slider Motion Controller V%s - %d+%d axis ['$' for help]\n", c->name,
-             MC_VERSION_FW, nm, ns);
+             "# MC V1 - %s - %d+%d axis ['?' for help]\n", c->name, nm, ns);
   } else {
     snprintf(banner, sizeof(banner),
-             "# Slider Motion Controller V%s - %d+%d axis ['$' for help]\n", MC_VERSION_FW, nm,
-             ns);
+             "# MC V1 - Slider Motion Controller - %d+%d axis ['?' for help]\n", nm, ns);
   }
   protocol_write(banner);
 }
@@ -246,6 +246,7 @@ static void on_wait_timeout(void) {
 
 void protocol_poll(unsigned dt_ms) {
   motion_stub_tick_ms(dt_ms);
+  board_camera_ctrl_tick(dt_ms);
 
   if (g_wait_active) {
     if (g_wait_kind == PROTOCOL_WAIT_DELAY) {
@@ -283,12 +284,19 @@ void protocol_poll(unsigned dt_ms) {
 }
 
 static void handle_realtime(uint8_t b) {
-  if (b == '?' || b == '#') {
+  if (b == '#') {
     protocol_send_status();
     return;
   }
-  if (b == '!' || b == 0x1B) {
+  if (b == '!') {
     motion_stop();
+    return;
+  }
+  if (b == 0x1B) {
+    if (motion_path_is_active()) {
+      motion_path_abort_to_planner();
+    }
+    motion_halt();
     return;
   }
   if (b == 0x18) {
@@ -305,8 +313,22 @@ static void echo_byte(uint8_t b) {
   protocol_write_n(&c, 1);
 }
 
+static void strip_line_comment(char *line) {
+  char *slash = strchr(line, '/');
+  if (slash) {
+    *slash = 0;
+  }
+}
+
+static bool line_is_blank(const char *s) {
+  while (*s == ' ' || *s == '\t') {
+    ++s;
+  }
+  return *s == 0;
+}
+
 static void feed_byte(ProtocolSrc src, uint8_t b) {
-  if (b == '?' || b == '#' || b == '!' || b == 0x1B || b == 0x18) {
+  if (b == '#' || b == '!' || b == 0x1B || b == 0x18) {
     handle_realtime(b);
     return;
   }
@@ -326,23 +348,29 @@ static void feed_byte(ProtocolSrc src, uint8_t b) {
     return;
   }
 
-  if (b == '\n') {
-    g_line[g_len] = 0;
-    if (session_get()->terminal) {
-      protocol_write_n("\n", 1);
-    }
-    if (g_len > 0) {
-      /* Sniff UIC→MC commands on USB before execute (Terminal Mode). */
-      if (src == PROTOCOL_SRC_UART && session_get()->terminal) {
-        protocol_write_debug_n(g_line, g_len);
-        protocol_write_debug_n("\n", 1);
+    if (b == '\n') {
+      g_line[g_len] = 0;
+      if (session_get()->terminal) {
+        protocol_write_n("\n", 1);
       }
-      protocol_handle_line(g_line);
+      if (g_len > 0) {
+        /* Sniff UIC→MC commands on USB before execute (Terminal Mode). */
+        if (src == PROTOCOL_SRC_UART && session_get()->terminal) {
+          protocol_write_debug_n(g_line, g_len);
+          protocol_write_debug_n("\n", 1);
+        }
+        strip_line_comment(g_line);
+        if (!line_is_blank(g_line)) {
+          protocol_handle_line(g_line);
+        }
+      } else {
+        /* Host handshake: empty line after unlock re-prints the welcome. */
+        protocol_send_banner();
+      }
+      g_len = 0;
+      g_line[0] = 0;
+      return;
     }
-    g_len = 0;
-    g_line[0] = 0;
-    return;
-  }
 
   if (g_len >= CFG_LINE_MAX) {
     g_len = 0;

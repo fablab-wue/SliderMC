@@ -1,6 +1,6 @@
 # SliderMC
 
-**Deterministic motion firmware for DIY motorized camera sliders** — C++ / FreeRTOS on Raspberry Pi Pico, STEP/DIR motors plus optional RC servo PWM (protocol **VP:3**).
+**Deterministic motion firmware for DIY motorized camera sliders** — C++ / FreeRTOS on Raspberry Pi Pico, STEP/DIR motors plus optional RC servo PWM (banner `# MC V1 - …`, protocol **VP:1**).
 
 ## About
 
@@ -104,7 +104,7 @@ powershell -File scripts/run_host_tests.ps1
 
 | Area | State |
 |------|--------|
-| Protocol (2-letter cmds, X/Y/Z args, `?`/`#`, `!`/ESC) | Implemented |
+| Protocol (2-letter cmds, X/Y/Z args, `#` status, `!`/ESC, `CT`) | Implemented |
 | FreeRTOS tasks (feed / plan / proto) + heartbeat/WDT | Implemented |
 | PIO STEP + sine planner (live retarget, soft/hard stop) | Implemented |
 | Soft/hard limits, homing, EMO/`DRV_ERROR` | Implemented |

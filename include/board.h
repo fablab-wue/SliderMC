@@ -23,13 +23,22 @@ bool board_ext_get(int index);
  */
 bool board_camera_ctrl_take_trigger(void);
 
+/** True while a `CT` open-collector pulse is driving the pin low. */
+bool board_camera_ctrl_pulse_active(void);
+
+/** Sink PIN_CAMERA_CTRL low for `ms`, then release to INPUT_PULLUP. Re-issue restarts. */
+void board_camera_ctrl_pulse(unsigned ms);
+
+/** Countdown active camera pulse; call every proto/heartbeat tick. */
+void board_camera_ctrl_tick(unsigned dt_ms);
+
 #ifdef HOST_TEST
 /** Inject CAMERA_CTRL level for host tests (true = pin low / asserted). */
 void board_camera_ctrl_inject(bool low);
 #endif
 
-/** Pulse PIN_BUZZER high ~100 ms (no-op if BUZZER_use=0 or pin is PIN_LED). */
-void board_buzzer_pulse(void);
+/** Pulse PIN_BUZZER high for `ms` (no-op if BUZZER_use=0 or pin is PIN_LED). */
+void board_buzzer_pulse(unsigned ms);
 /** Countdown active buzzer pulse; call every proto/heartbeat tick. */
 void board_buzzer_tick(unsigned dt_ms);
 /** Apply BUZZER_use (claim or release pin). */

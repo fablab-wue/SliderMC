@@ -168,6 +168,27 @@ static bool take_int(const char **s, int *out) {
   return true;
 }
 
+static bool parse_optional_pulse_ms(const char *s, int lo, int hi, int *out) {
+  skip_ws(&s);
+  if (*s == 0) {
+    *out = 100;
+    return true;
+  }
+  int v = 0;
+  if (!take_int(&s, &v)) {
+    return false;
+  }
+  skip_ws(&s);
+  if (*s != 0) {
+    return false;
+  }
+  if (v < lo || v > hi) {
+    return false;
+  }
+  *out = v;
+  return true;
+}
+
 enum AxisArgKind { AXIS_MOVE = 0, AXIS_WINDOW, AXIS_PATH, AXIS_JOY };
 
 typedef struct {
@@ -538,7 +559,7 @@ typedef struct {
   const char *desc;
 } HelpRow;
 
-/* Two columns. Group order: S → G → I → M → P → E/B → C → W → V → special. */
+/* Two columns. Group order: S → G → I → M → P → W → E → Special → C → V → now. */
 static const HelpRow k_help_rows[] = {
     {"SS", "Set Speed, cruise mm/s"},
     {"SA", "Set Accel, mm/s2"},
@@ -574,31 +595,33 @@ static const HelpRow k_help_rows[] = {
     {"MJ", "Move Joy, % of SS signed"},
     {"MH", "Move Home, cycle 1|2|3"},
     {"MS", "Move Stop, soft decelerate"},
+    {"ME", "Move E-Stop, Halt; EN off"},
     {"PC", "Path Clear, empty buffer"},
     {"PD", "Path Data, um -32768..32767"},
     {"PG", "Path Go, play buffer"},
     {"PN", "Path Number, sample count"},
     {"PS", "Path Slice, us >=1000; bare resets"},
-    {"EO", "Ext Out, EO1..4 0|1; bare toggles"},
-    {"BE", "Beep, pulse buzzer ~0.1s"},
-    {"CS", "Config Set, persistent key"},
-    {"CR", "Config Reset, all defaults"},
-    {"CG", "Config Get, key(s)"},
-    {"RB", "Reboot, soft MCU reset"},
     {"WT", "Wait Time, delay sec (default 1)"},
     {"WM", "Wait Moving, until move done"},
     {"WH", "Wait Homing, until home done"},
     {"WP", "Wait Pos, until master pos"},
     {"WC", "Wait Cruise, until cruise or idle"},
     {"WN", "Wait Not cruise, until not M"},
+    {"EO", "Ext Out, EO1..4 0|1; bare toggles"},
+    {"RB", "Reboot, soft MCU reset"},
+    {"BE", "Beep, pulse buzzer [ms] 1..1000"},
+    {"CT", "Camera Trigger, pulse [ms] 1..60000"},
+    {"HL/?", "Help, list commands"},
+    {"CS", "Config Set, persistent key"},
+    {"CR", "Config Reset, all defaults"},
+    {"CG", "Config Get, key(s)"},
     {"VA", "Version About, about string"},
     {"VF", "Version FW, firmware version"},
     {"VP", "Version Protocol, protocol version"},
     {"VG", "Version GPIO, PIN_*= lines"},
-    {"HT", "Halt, EN off; cancel waits"},
-    {"HL/$", "Help, list commands"},
-    {"?/#", "Status now, compact line"},
-    {"!/ESC", "Soft stop now"},
+    {"#", "Status now, compact line"},
+    {"!", "Soft stop now"},
+    {"ESC", "Halt now (same as ME)"},
 };
 
 static void cmd_help(void) {
@@ -610,6 +633,9 @@ static void cmd_help(void) {
     snprintf(line, sizeof(line), "%-5s %s", r->sh, r->desc);
     protocol_writeln(line);
   }
+  protocol_writeln("/ comments to end of line");
+  protocol_writeln("Now: # status  ! soft-stop  ESC halt");
+  protocol_writeln("? is help (needs newline), not status");
 }
 
 typedef struct {
@@ -674,7 +700,7 @@ static void cmd_pinout_index(void) {
     PIN_IX_ADD(PIN_SW_LIMIT_R_3, "SW_LIMIT_R_3", "Hard limit right axis3");
   }
 #ifdef PIN_CAMERA_CTRL
-  PIN_IX_ADD(PIN_CAMERA_CTRL, "CAMERA_CTRL", "Trigger input (OC / pullup, low-active)");
+  PIN_IX_ADD(PIN_CAMERA_CTRL, "CAMERA_CTRL", "Camera OC sink (CT) / listen, low-active");
 #endif
   PIN_IX_ADD(PIN_UART_TX, "UART_TX", "UART TX to UIC (115200 baud)");
   PIN_IX_ADD(PIN_UART_RX, "UART_RX", "UART RX from UIC (115200 baud)");
@@ -711,28 +737,28 @@ static void cmd_pinout_index(void) {
 static bool emo_command_allowed(const char *cmd) {
   const char *rest = cmd;
   static const char *k[] = {"IE", "IA", "ID", "IC", "VA", "VF", "VP", "VG", "IG",
-                            "HL", "CS", "CR", "CG", "HT", "RB", "BE", "EO"};
+                            "HL", "CS", "CR", "CG", "ME", "RB", "BE", "CT", "EO"};
   for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); ++i) {
     if (cmd_verb(cmd, k[i], &rest)) {
       return true;
     }
   }
-  return cmd[0] == '$';
+  return cmd[0] == '?';
 }
 
 /** Commands allowed while path-mode (PG) is active: safety/queries/stop/PD (live-move) only. */
 static bool path_command_allowed(const char *cmd) {
   const char *rest = cmd;
   static const char *k[] = {
-      "MS", "HT", "RB", "PD", "PN", "IM", "IH", "IL", "IE", "IP", "IA", "IT",
+      "MS", "ME", "RB", "PD", "PN", "IM", "IH", "IL", "IE", "IP", "IA", "IT",
       "IR", "IW", "ID", "IC", "IG", "GS", "GA", "GE", "GT", "GV", "GD", "GL",
-      "GR", "VA", "VF", "VP", "VG", "HL", "CG", "BE"};
+      "GR", "VA", "VF", "VP", "VG", "HL", "CG", "BE", "CT"};
   for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); ++i) {
     if (cmd_verb(cmd, k[i], &rest)) {
       return true;
     }
   }
-  return cmd[0] == '$';
+  return cmd[0] == '?';
 }
 
 /** Match EO + channel; return 0..3 or -1. Rest is the optional 0|1. */
@@ -797,11 +823,26 @@ bool protocol_exec_command(const char *cmd) {
   }
 
   if (match_any(cmd, &rest, "BE", nullptr, nullptr)) {
-    if (*rest) {
-      protocol_error("parse", "BE args");
+    int ms = 100;
+    if (!parse_optional_pulse_ms(rest, 1, 1000, &ms)) {
+      protocol_error("parse", "BE ms");
       return false;
     }
-    board_buzzer_pulse();
+    board_buzzer_pulse((unsigned)ms);
+    return false;
+  }
+
+  if (match_any(cmd, &rest, "CT", nullptr, nullptr)) {
+    int ms = 100;
+    if (!parse_optional_pulse_ms(rest, 1, 60000, &ms)) {
+      protocol_error("parse", "CT ms");
+      return false;
+    }
+    board_camera_ctrl_pulse((unsigned)ms);
+    if (session_get()->verbose) {
+      protocol_verbose_reset_dedupe();
+      protocol_send_status();
+    }
     return false;
   }
 
@@ -1499,8 +1540,8 @@ bool protocol_exec_command(const char *cmd) {
   }
 
   /* --- Special --- */
-  /* HT — emergency halt. */
-  if (match_any(cmd, &rest, "HT", nullptr, nullptr)) {
+  /* ME — emergency halt. */
+  if (match_any(cmd, &rest, "ME", nullptr, nullptr)) {
     if (motion_path_is_active()) {
       motion_path_abort_to_planner();
     }
@@ -1526,7 +1567,7 @@ bool protocol_exec_command(const char *cmd) {
   }
 
   if (match_any(cmd, &rest, "HL", nullptr, nullptr) ||
-      (cmd[0] == '$' && (cmd[1] == 0 || cmd[1] == ' ' || cmd[1] == '\t'))) {
+      (cmd[0] == '?' && (cmd[1] == 0 || cmd[1] == ' ' || cmd[1] == '\t'))) {
     cmd_help();
     return false;
   }

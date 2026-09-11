@@ -16,6 +16,7 @@ static const uint8_t k_ext_pins[PIN_EXT_COUNT] = {
 static bool g_ext_on[PIN_EXT_COUNT];
 static bool g_cam_low;
 static bool g_cam_consumed;
+static unsigned g_cam_pulse_ms;
 
 static bool camera_ctrl_read_low(void) {
 #ifdef PIN_CAMERA_CTRL
@@ -38,6 +39,35 @@ bool board_camera_ctrl_take_trigger(void) {
   }
   g_cam_consumed = true;
   return true;
+}
+
+bool board_camera_ctrl_pulse_active(void) { return g_cam_pulse_ms > 0; }
+
+void board_camera_ctrl_pulse(unsigned ms) {
+#ifdef PIN_CAMERA_CTRL
+  if (ms == 0) {
+    return;
+  }
+  pinMode(PIN_CAMERA_CTRL, OUTPUT);
+  digitalWrite(PIN_CAMERA_CTRL, LOW);
+  g_cam_pulse_ms = ms;
+#else
+  (void)ms;
+#endif
+}
+
+void board_camera_ctrl_tick(unsigned dt_ms) {
+  if (g_cam_pulse_ms == 0) {
+    return;
+  }
+  if (dt_ms >= g_cam_pulse_ms) {
+    g_cam_pulse_ms = 0;
+#ifdef PIN_CAMERA_CTRL
+    pinMode(PIN_CAMERA_CTRL, INPUT_PULLUP);
+#endif
+    return;
+  }
+  g_cam_pulse_ms -= dt_ms;
 }
 
 static void ext_write_level(int index, bool on) {
@@ -101,9 +131,11 @@ void board_gpio_init(void) {
   gpio_set_drive_strength(PIN_CAMERA_CTRL, GPIO_DRIVE_STRENGTH_12MA);
   g_cam_low = camera_ctrl_read_low();
   g_cam_consumed = g_cam_low; /* held-at-boot does not fire T */
+  g_cam_pulse_ms = 0;
 #else
   g_cam_low = false;
   g_cam_consumed = false;
+  g_cam_pulse_ms = 0;
 #endif
 
   board_buzzer_reconfigure();
@@ -124,8 +156,6 @@ bool board_ext_get(int index) {
   }
   return g_ext_on[index];
 }
-
-#define BUZZER_PULSE_MS 100u
 
 static unsigned g_buzzer_remain_ms;
 static bool g_buzzer_claimed;
@@ -156,8 +186,8 @@ void board_buzzer_reconfigure(void) {
   }
 }
 
-void board_buzzer_pulse(void) {
-  if (!buzzer_hw_ok()) {
+void board_buzzer_pulse(unsigned ms) {
+  if (!buzzer_hw_ok() || ms == 0) {
     return;
   }
   if (!g_buzzer_claimed) {
@@ -167,7 +197,7 @@ void board_buzzer_pulse(void) {
     return;
   }
   digitalWrite(PIN_BUZZER, HIGH);
-  g_buzzer_remain_ms = BUZZER_PULSE_MS;
+  g_buzzer_remain_ms = ms;
 }
 
 void board_buzzer_tick(unsigned dt_ms) {
@@ -189,6 +219,7 @@ void board_buzzer_tick(unsigned dt_ms) {
 static bool g_ext_on[PIN_EXT_COUNT];
 static bool g_cam_low;
 static bool g_cam_consumed;
+static unsigned g_cam_pulse_ms;
 
 void board_gpio_init(void) {
   (void)config_axis_count();
@@ -197,6 +228,7 @@ void board_gpio_init(void) {
   }
   g_cam_low = false;
   g_cam_consumed = false;
+  g_cam_pulse_ms = 0;
 }
 
 bool board_ext_set(int index, bool on) {
@@ -233,7 +265,30 @@ void board_camera_ctrl_inject(bool low) {
   }
 }
 
-void board_buzzer_pulse(void) {}
+bool board_camera_ctrl_pulse_active(void) { return g_cam_pulse_ms > 0; }
+
+void board_camera_ctrl_pulse(unsigned ms) {
+  if (ms == 0) {
+    return;
+  }
+  g_cam_pulse_ms = ms;
+  g_cam_low = true;
+}
+
+void board_camera_ctrl_tick(unsigned dt_ms) {
+  if (g_cam_pulse_ms == 0) {
+    return;
+  }
+  if (dt_ms >= g_cam_pulse_ms) {
+    g_cam_pulse_ms = 0;
+    g_cam_low = false;
+    g_cam_consumed = false;
+    return;
+  }
+  g_cam_pulse_ms -= dt_ms;
+}
+
+void board_buzzer_pulse(unsigned ms) { (void)ms; }
 void board_buzzer_tick(unsigned dt_ms) { (void)dt_ms; }
 void board_buzzer_reconfigure(void) {}
 

@@ -23,7 +23,7 @@ Recommendations deferred from the experimental 3rd-axis plan. Stay on Pico / Zer
 
 ## Protocol / clients / docs
 
-Firmware is **VP:3**: `CS motors` / `CS servos` (not `CS axis`), `MOTOR_*` / `SERVO_*` envelopes, packed `IA` / `CG axis` = motors+servos, banner `{motors}+{servos} axis`. Clients must not send `CS axis` or `CS slider_*`.
+Firmware is **VP:1**: welcome `# MC V1 - …`, `CS motors` / `CS servos` (not `CS axis`), `MOTOR_*` / `SERVO_*` envelopes, packed `IA` / `CG axis` = motors+servos, banner `{motors}+{servos} axis`. Clients must not send `CS axis` or `CS slider_*`.
 
 - [ ] **`CAMERA_CTRL` command.** Pin is reserved and inited inactive (`IX`/`VG` may list it). No protocol yet — add with docs and clients.
 - [ ] **SliderDoc** pinouts, protocol tables, cheatsheets — keep in lockstep with VP:3 (motors/servos, servo PWM GP26/27/18 Pico).

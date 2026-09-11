@@ -21,12 +21,12 @@ typedef struct {
 void protocol_init(ProtocolIo io);
 
 /**
- * Send the GRBL-style ready banner (`# Slider Motion Controller V…`).
+ * Send the ready banner (`# MC V1 - …`).
  * Call after unlock (`\n` on UIC UART or USB); host tests may call immediately after protocol_init.
  */
 void protocol_send_banner(void);
 
-/** Feed one RX byte from USB CDC (and host tests). Realtime: `?`/`#` status, `!`/ESC stop, 0x18 reset. */
+/** Feed one RX byte from USB CDC (and host tests). Realtime: `#` status, `!` soft stop, ESC halt, 0x18 reset. `?` is a line command (help). After newline, `/` to EOL is stripped as a comment. */
 void protocol_feed_byte(uint8_t b);
 
 /**
@@ -42,7 +42,7 @@ void protocol_feed_uart_byte(uint8_t b);
  */
 void protocol_poll(unsigned dt_ms);
 
-/** Format and send a `?` status line (same compact `#…` / ` | ` format as verbose). */
+/** Format and send a compact `#…` status line (same format as verbose). */
 void protocol_send_status(void);
 
 /**

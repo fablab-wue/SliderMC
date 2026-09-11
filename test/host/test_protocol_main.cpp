@@ -101,13 +101,15 @@ int main(void) {
   ProtocolIo io = {io_write, io_debug, nullptr};
   protocol_init(io);
   protocol_send_banner();
-  expect_contains("startup banner", "# Slider Motion Controller V");
-  expect_contains("startup help hint", "['$' for help]");
+  expect_contains("startup banner", "# MC V1 -");
+  expect_contains("startup help hint", "['?' for help]");
 
   reset_out();
   feed("\n");
+  expect_contains("empty line re-banners", "# MC V1 -");
+  reset_out();
   feed("\r\n");
-  expect_empty("empty line silent");
+  expect_contains("CRLF re-banners", "# MC V1 -");
 
   reset_out();
   feed("GE\n");
@@ -142,23 +144,29 @@ int main(void) {
   expect_contains("IE IsError clear", "IE:0");
 
   reset_out();
+  protocol_feed_byte('#');
+  expect_contains("realtime # compact", "#I ");
+  expect_not_contains("realtime # 1-axis has no axis separator", " | ");
+  expect_not_contains("realtime # not old format", "<I|P:");
+
+  reset_out();
   protocol_feed_byte('?');
-  expect_contains("realtime ? compact", "#I ");
-  expect_not_contains("realtime ? 1-axis has no axis separator", " | ");
-  expect_not_contains("realtime ? not old format", "<I|P:");
+  expect_empty("? is not realtime");
+  feed("\n");
+  expect_contains("? newline is help", "Cmd  Description");
 
   board_camera_ctrl_inject(true);
   reset_out();
-  protocol_feed_byte('?');
+  protocol_feed_byte('#');
   expect_contains("CAMERA_CTRL low overlays T once", "#T ");
   reset_out();
-  protocol_feed_byte('?');
+  protocol_feed_byte('#');
   expect_contains("CAMERA_CTRL still low uses motion letter", "#I ");
   expect_not_contains("CAMERA_CTRL no second T while held", "#T ");
   board_camera_ctrl_inject(false);
   board_camera_ctrl_inject(true);
   reset_out();
-  protocol_feed_byte('?');
+  protocol_feed_byte('#');
   expect_contains("CAMERA_CTRL new press overlays T again", "#T ");
   board_camera_ctrl_inject(false);
 
@@ -316,7 +324,7 @@ int main(void) {
   expect_contains("VF", "VF:1.0");
   reset_out();
   feed("VP\n");
-  expect_contains("VP", "VP:3");
+  expect_contains("VP", "VP:1");
 
   /* Timeout cancels remainder of chain */
   reset_out();
@@ -338,7 +346,7 @@ int main(void) {
   feed("MT200;WM;SS 12\n");
   protocol_poll(5);
   reset_out();
-  feed("HT\n");
+  feed("ME\n");
   expect_empty("HT silent");
   for (int i = 0; i < 50; ++i) {
     protocol_poll(20);
@@ -432,7 +440,7 @@ int main(void) {
   expect_not_contains("WP timeout canceled SS", "GS:9.00");
 
   reset_out();
-  feed("HT\nSE 1\nSS 50\nSA 200\n");
+  feed("ME\nSE 1\nSS 50\nSA 200\n");
   expect_empty("re-enable after HT");
   reset_out();
   feed("MT 0; WM\n");
@@ -500,7 +508,7 @@ int main(void) {
   feed("MT 100; WP 40; SS 11\n");
   protocol_poll(5);
   reset_out();
-  feed("HT\n");
+  feed("ME\n");
   expect_empty("HT during WP silent");
   for (int i = 0; i < 50; ++i) {
     protocol_poll(20);
@@ -522,7 +530,10 @@ int main(void) {
   feed("GS\n");
   expect_contains("BE then SS immediately", "GS:13.00");
   reset_out();
-  feed("BE 1\n");
+  feed("BE foo\n");
+  expect_contains("BE junk arg parse", "!E:parse");
+  reset_out();
+  feed("BE 50 1\n");
   expect_contains("BE extra arg parse", "!E:parse");
   reset_out();
   feed("CG BUZZER_use\n");
@@ -567,11 +578,17 @@ int main(void) {
   expect_contains("HL Wait Cruise", "WC    Wait Cruise");
   expect_contains("HL Wait Not", "WN    Wait Not");
   expect_contains("HL Beep", "BE    Beep");
-  expect_contains("HL Halt", "HT    Halt");
-  expect_contains("HL self", "HL/$");
+  expect_contains("HL Halt", "ME    Move E-Stop");
+  expect_contains("HL Camera", "CT    Camera Trigger");
+  expect_contains("HL self", "HL/?");
+  expect_contains("HL comment footer", "/ comments to end of line");
+  expect_contains("HL now footer", "Now: # status");
   reset_out();
   feed("$\n");
-  expect_contains("$ help alias", "Version Protocol");
+  expect_contains("$ gone", "!E:parse");
+  reset_out();
+  feed("?\n");
+  expect_contains("? help alias", "Version Protocol");
   reset_out();
   feed("Help\n");
   expect_contains("Help long gone", "!E:parse");
@@ -580,7 +597,87 @@ int main(void) {
   expect_contains("H gone", "!E:parse");
   reset_out();
   feed("HT\n");
-  expect_empty("HT Halt silent");
+  expect_contains("HT gone", "!E:parse");
+  reset_out();
+  feed("ME\n");
+  expect_empty("ME Halt silent");
+
+  /* / comments */
+  reset_out();
+  feed("SS 41 / note; SS 99\n");
+  expect_empty("comment cuts rest of line");
+  reset_out();
+  feed("GS\n");
+  expect_contains("SS with comment ran", "GS:41.00");
+  expect_not_contains("comment dropped SS 99", "GS:99.00");
+  reset_out();
+  feed("/ only comment\n");
+  expect_empty("comment-only no banner");
+  reset_out();
+  feed("SS 50 / restore cruise\n");
+  expect_empty("restore SS after comment tests");
+
+  /* CT / BE pulse parse; CT does not busy-out motion */
+  reset_out();
+  feed("SV 0\n");
+  expect_empty("SV 0 before CT tests");
+  reset_out();
+  feed("CT 0\n");
+  expect_contains("CT 0 parse", "!E:parse");
+  reset_out();
+  feed("CT 60001\n");
+  expect_contains("CT 60001 parse", "!E:parse");
+  reset_out();
+  feed("BE 0\n");
+  expect_contains("BE 0 parse", "!E:parse");
+  reset_out();
+  feed("BE 1001\n");
+  expect_contains("BE 1001 parse", "!E:parse");
+  reset_out();
+  feed("BE 50\n");
+  expect_empty("BE 50 silent");
+  reset_out();
+  feed("BE\n");
+  expect_empty("BE bare silent");
+  reset_out();
+  feed("CT\n");
+  expect_empty("CT verbose off silent");
+  expect_not_contains("CT verbose off no T", "#T");
+  reset_out();
+  feed("IM\n");
+  expect_contains("CT then IM accepted", "IM:");
+  reset_out();
+  feed("CT 40\n");
+  expect_empty("CT 40 silent");
+  reset_out();
+  protocol_feed_byte('#');
+  expect_contains("# during CT pulse is T", "#T ");
+  reset_out();
+  feed("SE 1\n");
+  expect_empty("SE 1 before MT during CT");
+  reset_out();
+  feed("MT 10\n");
+  expect_empty("MT during CT not busy");
+  protocol_poll(40);
+  reset_out();
+  protocol_feed_byte('#');
+  expect_not_contains("after CT pulse no T", "#T ");
+  reset_out();
+  feed("SV 1\n");
+  expect_empty("SV 1 silent");
+  reset_out();
+  feed("CT 20\n");
+  expect_contains("CT verbose on sends T", "#T ");
+  reset_out();
+  feed("SV 0\n");
+  expect_empty("SV 0 silent");
+  protocol_poll(20);
+  reset_out();
+  feed("ME\n");
+  expect_empty("ME after CT tests");
+  reset_out();
+  feed("SE 1\nSP 0\n");
+  expect_empty("park after CT tests");
 
   reset_out();
   feed("EO10\n");
@@ -620,6 +717,9 @@ int main(void) {
   feed("W\n");
   expect_contains("W gone", "!E:parse");
 
+  reset_out();
+  feed("ME\nSE 1\nSP 0\n");
+  expect_empty("idle before late #");
   reset_out();
   protocol_feed_byte('#');
   expect_contains("realtime # compact", "#I ");
@@ -1004,7 +1104,7 @@ int main(void) {
   expect_contains("CG steps_per_mm_1 alias", "CG:steps_per_mm_1=320");
   reset_out();
   protocol_send_banner();
-  expect_contains("named 2-axis banner", "# Foo - Slider Motion Controller V");
+  expect_contains("named 2-axis banner", "# MC V1 - Foo");
   expect_contains("named banner has 2+0 axis", "- 2+0 axis");
 
   reset_out();
@@ -1017,7 +1117,7 @@ int main(void) {
   feed("MT 100 50\n");
   expect_empty("MT dual absolute accepted");
   reset_out();
-  protocol_feed_byte('?');
+  protocol_feed_byte('#');
   expect_contains("moving ? grouped axis2", " | ");
   {
     /* |d2|/|d1| = 50/100 = 0.5 */
@@ -1282,8 +1382,8 @@ int main(void) {
   feed("SP 100 50\n");
   expect_empty("park dual non-zero for idle ?");
   reset_out();
-  protocol_feed_byte('?');
-  expect_contains("realtime ? with pos2", "#I ");
+  protocol_feed_byte('#');
+  expect_contains("realtime # with pos2", "#I ");
   expect_contains("idle ? grouped axis2", " | ");
   {
     size_t hash = g_out.find("#I ");
@@ -1347,7 +1447,7 @@ int main(void) {
   reset_out();
   protocol_send_banner();
   expect_not_contains("1-axis banner no 2+0", "2+0 axis");
-  expect_contains("named 1-axis banner", "# Foo - Slider Motion Controller V");
+  expect_contains("named 1-axis banner", "# MC V1 - Foo");
   reset_out();
   feed("RB\n");
   expect_empty("RB silent on host");
@@ -1499,7 +1599,7 @@ int main(void) {
 
   reset_out();
   feed("SP 0 0 0\n");
-  protocol_feed_byte('?');
+  protocol_feed_byte('#');
   expect_contains("idle ? 3-axis elides zero groups", "#I||");
 
   reset_out();
@@ -1696,7 +1796,7 @@ int main(void) {
   feed("SP 10 0 -45\n");
   expect_empty("park 10 0 -45");
   reset_out();
-  protocol_feed_byte('?');
+  protocol_feed_byte('#');
   expect_contains("verbose middle-zero elide", "#I 10 || -45");
   reset_out();
   feed("IP\n");
@@ -1713,7 +1813,7 @@ int main(void) {
   feed("SP 0\n");
   expect_empty("single channel park 0");
   reset_out();
-  protocol_feed_byte('?');
+  protocol_feed_byte('#');
   expect_contains("single-channel idle 0 kept", "#I 0");
 
   reset_out();

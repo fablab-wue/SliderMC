@@ -585,7 +585,7 @@ static void refresh_state(int axis) {
 
 /**
  * Emergency halt: immediate STEP abort, EN off, cancel waits/chain.
- * Used by HT/H, hard-limit trips, and PIN_DRV_ERROR_*.
+ * Used by ME, ESC, hard-limit trips, and PIN_DRV_ERROR_*.
  */
 static void planner_halt_axis(int axis) {
   AX.vel_mm_s = 0.0f;

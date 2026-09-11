@@ -116,7 +116,9 @@ static void build_status_line(char *buf, size_t buflen) {
   McStatus st;
   motion_get_status(&st);
   char letter = protocol_state_letter();
-  if (board_camera_ctrl_take_trigger()) {
+  if (board_camera_ctrl_pulse_active()) {
+    letter = 'T';
+  } else if (board_camera_ctrl_take_trigger()) {
     letter = 'T';
   }
   snprintf(buf, buflen, "#%c", letter);
