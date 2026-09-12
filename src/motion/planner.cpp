@@ -1153,24 +1153,40 @@ static void apply_joy_cruise_accel(void) {
   }
 }
 
+static bool pio_axis_drained(int axis) {
+  return pio_step_tx_empty(axis) && pio_step_pending_steps(axis) <= 0;
+}
+
+/* At the commanded pose with nothing left in PIO: leftover vel_mm_s is stale
+ * (no pulses are going out). Zero it and leave M, otherwise a 0-step MT can
+ * sit in M forever with a cruise residue and no position change. */
+static void settle_idle_at_pose(int axis) {
+  AX.vel_mm_s = 0.0f;
+  AX.st.moving = false;
+  AX.st.homing = false;
+  AX.stopping = false;
+  AX.fill_wants_more = false;
+  AX.braking = false;
+  AX.brake_d = 0;
+  AX.target_steps = AX.pos_steps;
+  reset_ramp(axis);
+  pio_step_stop_soft(axis);
+  refresh_state(axis);
+  coord_clear_if_idle();
+}
+
 static void settle_if_done(int axis) {
   int64_t err = AX.target_steps - AX.pos_steps;
   if (AX.stopping) {
-    if (fabsf(AX.vel_mm_s) < 0.01f && pio_step_tx_empty(axis)) {
-      AX.vel_mm_s = 0.0f;
-      AX.st.moving = false;
-      AX.st.homing = false;
-      AX.home_phase = HOME_IDLE;
+    /* Keep the vel gate here so a momentary empty FIFO during a real stop
+     * ramp does not abort the remaining brake words. */
+    if (fabsf(AX.vel_mm_s) < 0.01f && pio_axis_drained(axis)) {
       home_restore_speeds(axis);
       if (g_enabled) {
         apply_en_axis(axis, true);
       }
-      AX.stopping = false;
-      AX.target_steps = AX.pos_steps;
-      reset_ramp(axis);
-      pio_step_stop_soft(axis);
-      refresh_state(axis);
-      coord_clear_if_idle();
+      AX.home_phase = HOME_IDLE;
+      settle_idle_at_pose(axis);
     }
     return;
   }
@@ -1178,16 +1194,18 @@ static void settle_if_done(int axis) {
     /* Homing FSM owns completion (home_poll_fsm / home_finish). */
     return;
   }
-  if (err == 0 && fabsf(AX.vel_mm_s) < 0.01f) {
-    AX.vel_mm_s = 0.0f;
-    AX.st.moving = false;
-    AX.st.homing = false;
-    reset_ramp(axis);
-    if (pio_step_tx_empty(axis)) {
-      pio_step_stop_soft(axis);
-    }
-    refresh_state(axis);
-    coord_clear_if_idle();
+  if (err == 0 && pio_step_tx_empty(axis)) {
+    /* Do not wait for pending_steps==0: shadow can stay stale after TXSTALL
+     * while the FIFO is already empty, which stuck M at v=0. */
+    settle_idle_at_pose(axis);
+    return;
+  }
+  /* Fill gave up (fill_wants_more=false) while still short of the target and
+   * nothing is pulsing — re-arm rather than sit in M. */
+  if (!AX.dir_pause && fabsf(AX.vel_mm_s) < 0.01f && pio_step_tx_empty(axis) &&
+      !AX.fill_wants_more) {
+    AX.fill_wants_more = true;
+    pio_step_kick_feed();
   }
 }
 
@@ -1306,7 +1324,10 @@ int planner_fill_fifo(int axis) {
 
     float rem_mm = (float)rem / AX.spmm;
     float vmax = planner_vmax_for_distance(rem_mm, AX.accel_mm_s2);
-    bool need_brake = !AX.stopping && !reverse_decel &&
+    /* vel≈0 is a launch/crawl, not a brake. Stopping-distance + 4 with v=0 is
+     * rem<=4, which aborted 1–4 step MT (FRAME_NEXT) with fill_wants_more=false
+     * and left the axis in M at v=0 with the target still ahead. */
+    bool need_brake = !AX.stopping && !reverse_decel && fabsf(AX.vel_mm_s) > 0.01f &&
                       rem <= planner_stop_rem_steps(fabsf(AX.vel_mm_s), AX.accel_mm_s2, AX.spmm) + 4;
     /*
      * Ramp target is either cruise or 0. Feeding it min(cruise, vmax) would
@@ -1342,13 +1363,20 @@ int planner_fill_fifo(int axis) {
         AX.brake_v0 = fabsf(AX.vel_mm_s);
       }
       rem = AX.brake_d - (int)llabs(AX.pos_steps - AX.brake_pos0);
-      if (rem <= 0 || AX.brake_v0 <= 0.0f) {
+      if (rem <= 0) {
         AX.vel_mm_s = 0.0f;
         reset_ramp(axis);
         AX.braking = false;
         AX.brake_d = 0;
         AX.fill_wants_more = false;
         break;
+      }
+      if (AX.brake_v0 <= 0.01f) {
+        /* Committed brake with no speed: remaining distance is a crawl. */
+        AX.braking = false;
+        AX.brake_d = 0;
+        decel = false;
+        v_cmd = (float)sign * cruise_cap(axis);
       }
     } else {
       AX.brake_d = 0;
@@ -1617,6 +1645,8 @@ void planner_tick_axis(int axis, float dt_s) {
       AX.dir_pause_s = 0.0f;
       AX.last_sign = 0;
       pio_step_clear_stall(axis);
+      AX.fill_wants_more = true;
+      pio_step_kick_feed();
     }
   }
 
@@ -1720,6 +1750,20 @@ void planner_request_move_to(int axis, float mm) {
     return;
   }
   AX.target_steps = mm_to_steps(axis, mm);
+  /* Sub-step MT (or overlapping MT to the live pose) can round to 0 steps.
+   * Arming moving with an empty PIO and a leftover cruise sticks in M: fill
+   * never issues words, settle used to require vel≈0, and the UI shows speed
+   * with no position change until MS. */
+  if (AX.target_steps == AX.pos_steps) {
+    if (pio_axis_drained(axis)) {
+      AX.st.has_target = true;
+      AX.st.homing = false;
+      settle_idle_at_pose(axis);
+      return;
+    }
+    planner_request_stop_axis(axis);
+    return;
+  }
   AX.stopping = false;
   AX.st.moving = true;
   AX.st.homing = false;

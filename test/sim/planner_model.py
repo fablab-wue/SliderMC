@@ -233,8 +233,9 @@ class Sim:
             rem_mm = rem / SPMM
             vmax = vmax_for_distance(rem_mm, self.accel)
             cruise_cap = min(self.cruise, MAX_SPEED_MM_S)
-            need_brake = (not self.stopping and not reverse_decel and
-                          rem <= self.stop_rem_steps(abs(self.vel), self.accel, SPMM) + 4)
+            need_brake = (not self.stopping and not reverse_decel
+                          and abs(self.vel) > 0.01
+                          and rem <= self.stop_rem_steps(abs(self.vel), self.accel, SPMM) + 4)
             if (self.stopping or reverse_decel):
                 v_cmd = 0.0
             elif BRAKE_SCURVE and (self.braking or need_brake):
@@ -254,11 +255,16 @@ class Sim:
                     self.brake_pos0 = self.pos
                     self.brake_v0 = abs(self.vel)
                 rem = self.brake_d - abs(self.pos - self.brake_pos0)
-                if rem <= 0 or self.brake_v0 <= 0.0:
+                if rem <= 0:
                     self.vel = 0.0
                     self.reset_ramp()
                     self.brake_d = 0
                     break
+                if self.brake_v0 <= 0.01:
+                    self.braking = False
+                    self.brake_d = 0
+                    decel = False
+                    v_cmd = sign * cruise_cap
             else:
                 self.brake_d = 0
 
@@ -379,8 +385,17 @@ class Sim:
                 self.last_sign = 0
                 self.log("dir_pause end")
         err = self.target - self.pos
-        if not self.stopping and err == 0 and abs(self.vel) < 0.01:
-            if self.moving:
+        hw_idle = (not self.fifo and self.cur is None)
+        if self.stopping:
+            if abs(self.vel) < 0.01 and hw_idle:
+                self.vel = 0.0
+                self.moving = False
+                self.stopping = False
+                self.reset_ramp()
+                self.log("SETTLE stop -> idle")
+            return
+        if err == 0 and hw_idle:
+            if self.moving or abs(self.vel) >= 0.01:
                 self.moving = False
                 self.vel = 0.0
                 self.reset_ramp()
@@ -391,6 +406,18 @@ class Sim:
         self.stopping = False
         self.braking = False
         self.brake_d = 0
+        if self.target == self.pos:
+            hw_idle = (not self.fifo and self.cur is None)
+            if hw_idle:
+                self.vel = 0.0
+                self.moving = False
+                self.reset_ramp()
+                self.log("cmd mt%g already-there idle" % mm)
+                return
+            self.stopping = True
+            self.begin_ramp(0.0)
+            self.log("cmd mt%g already-there stop" % mm)
+            return
         self.moving = True
         self.begin_ramp(self.vel)
         self.log("cmd mt%g" % mm)

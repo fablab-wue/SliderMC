@@ -233,5 +233,62 @@ class PlannerScenarioMatrix(unittest.TestCase):
             self.fail("%d scenario(s) failed:\n  %s" % (len(fails), "\n  ".join(fails[:20])))
 
 
+class ZeroStepMoveTo(unittest.TestCase):
+    """MT that rounds to 0 steps must not stick in M (FRAME_NEXT / overlapping MT)."""
+
+    def test_mt_current_pose_stays_idle(self):
+        res = run_scenario(
+            "zero-step idle", 50.0, 200.0,
+            [(0.0, lambda s: s.move_to(0.0))],
+            t_end=1.0)
+        self.assertLess(res.t, 0.5, res.detail)
+        self.assertLess(res.pos_err, 1e-4, res.detail)
+        self.assertLess(res.peak_v, 0.05, res.detail)
+        self.assertTrue(any("already-there idle" in m for *_, m in res.events), res.events)
+
+    def test_mt_substep_distance_stays_idle(self):
+        # 0.4 step @ 320 P/mm rounds to 0 — protocol 1e-4 mm NAN does not catch this
+        # once dist is above motion_move_to_n's 1e-6 skip.
+        mm = 0.4 / 320.0
+        res = run_scenario(
+            "zero-step quantize", 50.0, 200.0,
+            [(0.0, lambda s: s.move_to(mm))],
+            t_end=1.0)
+        self.assertLess(res.t, 0.5, res.detail)
+        self.assertLess(res.peak_v, 0.05, res.detail)
+        self.assertTrue(any("already-there idle" in m for *_, m in res.events), res.events)
+
+    def test_mt_stale_cruise_clears_m(self):
+        def stale(s):
+            s.vel = 3.8
+            s.last_sign = 1
+            s.moving = True
+            s.move_to(0.0)
+
+        res = run_scenario(
+            "zero-step stale vel", 50.0, 200.0,
+            [(0.0, stale)],
+            t_end=2.0)
+        self.assertLess(res.t, 0.5, res.detail)
+        self.assertLess(res.pos_err, 1e-4, res.detail)
+        self.assertTrue(any("already-there idle" in m for *_, m in res.events), res.events)
+
+
+class FewStepMoveTo(unittest.TestCase):
+    """1–4 step MT from rest used to abort the brake with v=0 and stick in M."""
+
+    def test_few_steps_from_rest_complete(self):
+        for n in (1, 2, 4):
+            mm = n / 320.0
+            res = run_scenario(
+                "few-step %d" % n, 50.0, 200.0,
+                [(0.0, lambda s, dest=mm: s.move_to(dest))],
+                t_end=5.0)
+            self.assertLess(res.t, 2.0, "%s %s" % (n, res.detail))
+            self.assertAlmostEqual(res.pos_mm, mm, places=3, msg="%s %s" % (n, res.detail))
+            self.assertFalse(any(m.startswith("cmd mt") and "already-there" in m
+                                 for *_, m in res.events), res.events)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
