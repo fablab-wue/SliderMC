@@ -43,7 +43,10 @@ uint32_t motion_path_count(void); /* PN */
 bool motion_path_set_slice_us(uint32_t us); /* PS <value>; false if active or < min */
 uint32_t motion_path_get_slice_us(void);
 
-bool motion_path_go(void); /* PG; false if active, empty, or disabled */
+bool motion_path_go(void); /* PG; play 0..count-1 forward; false if active, empty, or disabled */
+/** 0-based inclusive sample range. start > end plays reverse with negated deltas. */
+bool motion_path_go_range(uint32_t start_index, uint32_t end_index);
+uint32_t motion_path_play_index(void); /* PI: next/current 0-based sample (0 if idle) */
 bool motion_path_is_active(void);
 
 /** Called by the motion feed task instead of planner_fill_fifo() while active. */

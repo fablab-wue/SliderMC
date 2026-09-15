@@ -332,6 +332,51 @@ static void parsed_to_dest(const AxisParsed *p, float dest[MC_CH_MAX]) {
   }
 }
 
+static bool parse_two_ints(const char *s, int *a, int *b) {
+  if (!s || !*s || !a || !b) {
+    return false;
+  }
+  char *end = nullptr;
+  long v1 = strtol(s, &end, 10);
+  if (end == s) {
+    return false;
+  }
+  while (*end == ' ' || *end == '\t') {
+    ++end;
+  }
+  char *end2 = nullptr;
+  long v2 = strtol(end, &end2, 10);
+  if (end2 == end) {
+    return false;
+  }
+  while (*end2 == ' ' || *end2 == '\t') {
+    ++end2;
+  }
+  if (*end2 != 0) {
+    return false;
+  }
+  *a = (int)v1;
+  *b = (int)v2;
+  return true;
+}
+
+/** Match ED0..3 / EI0..3; return 0..3 or -1. rest is remaining args. */
+static int match_ext_index0_cmd(const char *cmd, const char *verb, const char **rest_out) {
+  const char *rest = cmd;
+  if (!cmd_verb(cmd, verb, &rest)) {
+    return -1;
+  }
+  skip_ws(&rest);
+  if (*rest < '0' || *rest > '3') {
+    return -2;
+  }
+  int ch = *rest - '0';
+  ++rest;
+  skip_ws(&rest);
+  *rest_out = rest;
+  return ch;
+}
+
 static bool parse_int_arg(const char *s, int *out) {
   if (!s || !*s) {
     return false;
@@ -598,8 +643,9 @@ static const HelpRow k_help_rows[] = {
     {"ME", "Move E-Stop, Halt; EN off"},
     {"PC", "Path Clear, empty buffer"},
     {"PD", "Path Data, um -32768..32767"},
-    {"PG", "Path Go, play buffer"},
+    {"PG", "Path Go, [start end] 0-based; reverse if start>end"},
     {"PN", "Path Number, sample count"},
+    {"PI", "Path Index, playhead 0-based"},
     {"PS", "Path Slice, us >=1000; bare resets"},
     {"WT", "Wait Time, delay sec (default 1)"},
     {"WM", "Wait Moving, until move done"},
@@ -608,6 +654,8 @@ static const HelpRow k_help_rows[] = {
     {"WC", "Wait Cruise, until cruise or idle"},
     {"WN", "Wait Not cruise, until not M"},
     {"EO", "Ext Out, EO1..4 0|1; bare toggles"},
+    {"ED", "Ext Dir, ED0..3 I|O|T (in/out/OC)"},
+    {"EI", "Ext In, EI0..3 read pin 0|1"},
     {"RB", "Reboot, soft MCU reset"},
     {"BE", "Beep, pulse buzzer [ms] 1..1000"},
     {"CT", "Camera Trigger, pulse [ms] 1..60000"},
@@ -616,6 +664,7 @@ static const HelpRow k_help_rows[] = {
     {"CR", "Config Reset, all defaults"},
     {"CG", "Config Get, key(s)"},
     {"VA", "Version About, about string"},
+    {"VH", "Version Hello, welcome banner"},
     {"VF", "Version FW, firmware version"},
     {"VP", "Version Protocol, protocol version"},
     {"VG", "Version GPIO, PIN_*= lines"},
@@ -736,8 +785,8 @@ static void cmd_pinout_index(void) {
 /** Commands allowed while PIN_DRV_ERROR_* is asserted (diagnostics / config / halt). */
 static bool emo_command_allowed(const char *cmd) {
   const char *rest = cmd;
-  static const char *k[] = {"IE", "IA", "ID", "IC", "VA", "VF", "VP", "VG", "IG",
-                            "HL", "CS", "CR", "CG", "ME", "RB", "BE", "CT", "EO"};
+  static const char *k[] = {"IE", "IA", "ID", "IC", "VA", "VF", "VP", "VG", "VH", "IG",
+                            "HL", "CS", "CR", "CG", "ME", "RB", "BE", "CT", "EO", "EI"};
   for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); ++i) {
     if (cmd_verb(cmd, k[i], &rest)) {
       return true;
@@ -750,9 +799,9 @@ static bool emo_command_allowed(const char *cmd) {
 static bool path_command_allowed(const char *cmd) {
   const char *rest = cmd;
   static const char *k[] = {
-      "MS", "ME", "RB", "PD", "PN", "IM", "IH", "IL", "IE", "IP", "IA", "IT",
+      "MS", "ME", "RB", "PD", "PN", "PI", "IM", "IH", "IL", "IE", "IP", "IA", "IT",
       "IR", "IW", "ID", "IC", "IG", "GS", "GA", "GE", "GT", "GV", "GD", "GL",
-      "GR", "VA", "VF", "VP", "VG", "HL", "CG", "BE", "CT"};
+      "GR", "VA", "VF", "VP", "VG", "VH", "HL", "CG", "BE", "CT", "EI"};
   for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); ++i) {
     if (cmd_verb(cmd, k[i], &rest)) {
       return true;
@@ -818,6 +867,69 @@ bool protocol_exec_command(const char *cmd) {
         protocol_error("parse", "EO");
         return false;
       }
+      return false;
+    }
+  }
+
+  {
+    int xi = match_ext_index0_cmd(cmd, "ED", &rest);
+    if (xi == -2) {
+      protocol_error("parse", "ED 0..3");
+      return false;
+    }
+    if (xi >= 0) {
+      if (!rest || !*rest) {
+        protocol_error("parse", "ED I|O|T");
+        return false;
+      }
+      char m = rest[0];
+      if (m >= 'a' && m <= 'z') {
+        m = (char)(m - 'a' + 'A');
+      }
+      BoardExtMode mode = BOARD_EXT_IN;
+      if (m == 'I') {
+        mode = BOARD_EXT_IN;
+      } else if (m == 'O') {
+        mode = BOARD_EXT_OUT;
+      } else if (m == 'T') {
+        mode = BOARD_EXT_OC;
+      } else {
+        protocol_error("parse", "ED I|O|T");
+        return false;
+      }
+      ++rest;
+      skip_ws(&rest);
+      if (*rest) {
+        protocol_error("parse", "ED I|O|T");
+        return false;
+      }
+      if (!board_ext_set_mode(xi, mode)) {
+        protocol_error("parse", "ED");
+        return false;
+      }
+      return false;
+    }
+  }
+
+  {
+    int xi = match_ext_index0_cmd(cmd, "EI", &rest);
+    if (xi == -2) {
+      protocol_error("parse", "EI 0..3");
+      return false;
+    }
+    if (xi >= 0) {
+      if (rest && *rest) {
+        protocol_error("parse", "EI 0..3");
+        return false;
+      }
+      int high = 0;
+      if (!board_ext_read_pin(xi, &high)) {
+        protocol_error("parse", "EI");
+        return false;
+      }
+      char line[24];
+      snprintf(line, sizeof(line), "EI:%d %d\n", xi, high);
+      protocol_write(line);
       return false;
     }
   }
@@ -1011,7 +1123,24 @@ bool protocol_exec_command(const char *cmd) {
       protocol_error("empty", "path buffer empty");
       return false;
     }
-    if (!motion_path_go()) {
+    if (!*rest) {
+      if (!motion_path_go()) {
+        protocol_error("busy", "path active");
+      }
+      return false;
+    }
+    int start_i = 0;
+    int end_i = 0;
+    if (!parse_two_ints(rest, &start_i, &end_i)) {
+      protocol_error("parse", "PG start end");
+      return false;
+    }
+    uint32_t n = motion_path_count();
+    if (start_i < 0 || end_i < 0 || (uint32_t)start_i >= n || (uint32_t)end_i >= n) {
+      protocol_error("range", "PG start end");
+      return false;
+    }
+    if (!motion_path_go_range((uint32_t)start_i, (uint32_t)end_i)) {
       protocol_error("busy", "path active");
     }
     return false;
@@ -1019,6 +1148,11 @@ bool protocol_exec_command(const char *cmd) {
 
   if (match_any(cmd, &rest, "PN", "PathNumber", nullptr)) {
     reply_query_int("PN", (int)motion_path_count());
+    return false;
+  }
+
+  if (match_any(cmd, &rest, "PI", "PathIndex", nullptr)) {
+    reply_query_int("PI", (int)motion_path_play_index());
     return false;
   }
 
@@ -1351,6 +1485,10 @@ bool protocol_exec_command(const char *cmd) {
   }
 
   /* --- V version --- */
+  if (match_any(cmd, &rest, "VH", "VersionHello", nullptr)) {
+    protocol_send_banner();
+    return false;
+  }
   if (match_any(cmd, &rest, "VA", "VersionAbout", nullptr)) {
     reply_query("VA", MC_VERSION_ABOUT);
     return false;

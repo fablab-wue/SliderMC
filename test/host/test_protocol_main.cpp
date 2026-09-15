@@ -105,6 +105,10 @@ int main(void) {
   expect_contains("startup help hint", "['?' for help]");
 
   reset_out();
+  feed("VH\n");
+  expect_contains("VH reprints banner", "# MC V1 -");
+
+  reset_out();
   feed("\n");
   expect_contains("empty line re-banners", "# MC V1 -");
   reset_out();

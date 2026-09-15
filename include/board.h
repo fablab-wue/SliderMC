@@ -10,11 +10,23 @@ extern "C" {
 
 void board_gpio_init(void);
 
+typedef enum {
+  BOARD_EXT_IN = 0, /* input + pull-up */
+  BOARD_EXT_OUT,    /* push-pull */
+  BOARD_EXT_OC      /* open-collector + pull-up */
+} BoardExtMode;
+
 /** Set extender output 0..3 (EO1..EO4): on=true → active level from EXT_n_active. */
 bool board_ext_set(int index, bool on);
 
 /** Current logical on/off for extender output 0..3 (EO1..EO4). */
 bool board_ext_get(int index);
+
+/** ED: I / O / T. Default at boot is I. */
+bool board_ext_set_mode(int index, BoardExtMode mode);
+BoardExtMode board_ext_get_mode(int index);
+/** EI: electrical 1=HIGH, 0=LOW (valid in I, O, and T). */
+bool board_ext_read_pin(int index, int *high);
 
 /**
  * Consume CAMERA_CTRL trigger for one status line.

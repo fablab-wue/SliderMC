@@ -14,6 +14,7 @@ static const uint8_t k_ext_pins[PIN_EXT_COUNT] = {
 };
 
 static bool g_ext_on[PIN_EXT_COUNT];
+static BoardExtMode g_ext_mode[PIN_EXT_COUNT];
 static bool g_cam_low;
 static bool g_cam_consumed;
 static unsigned g_cam_pulse_ms;
@@ -70,12 +71,38 @@ void board_camera_ctrl_tick(unsigned dt_ms) {
   g_cam_pulse_ms -= dt_ms;
 }
 
-static void ext_write_level(int index, bool on) {
+static void ext_apply_pin(int index) {
   const McConfig *c = config_get();
   int active = c->ext_active[index] ? 1 : 0;
-  int level = on ? active : (active ? 0 : 1);
-  digitalWrite(k_ext_pins[index], level ? HIGH : LOW);
+  int level = g_ext_on[index] ? active : (active ? 0 : 1);
+  uint8_t pin = k_ext_pins[index];
+  switch (g_ext_mode[index]) {
+  case BOARD_EXT_IN:
+    pinMode(pin, INPUT_PULLUP);
+    break;
+  case BOARD_EXT_OUT:
+    pinMode(pin, OUTPUT);
+    gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_8MA);
+    digitalWrite(pin, level ? HIGH : LOW);
+    break;
+  case BOARD_EXT_OC:
+    if (g_ext_on[index]) {
+      pinMode(pin, OUTPUT);
+      gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_8MA);
+      digitalWrite(pin, level ? HIGH : LOW);
+    } else {
+      pinMode(pin, INPUT_PULLUP);
+    }
+    break;
+  }
+}
+
+static void ext_write_level(int index, bool on) {
   g_ext_on[index] = on;
+  if (g_ext_mode[index] == BOARD_EXT_IN) {
+    g_ext_mode[index] = BOARD_EXT_OUT;
+  }
+  ext_apply_pin(index);
 }
 
 static void init_axis_gpio(int axis) {
@@ -118,12 +145,12 @@ void board_gpio_init(void) {
   }
 
   for (int i = 0; i < PIN_EXT_COUNT; ++i) {
+    g_ext_on[i] = false;
+    g_ext_mode[i] = BOARD_EXT_IN;
     if (!config_ext_available(i)) {
       continue;
     }
-    pinMode(k_ext_pins[i], OUTPUT);
-    gpio_set_drive_strength(k_ext_pins[i], GPIO_DRIVE_STRENGTH_8MA);
-    ext_write_level(i, false); /* inactive at boot */
+    ext_apply_pin(i);
   }
 
 #ifdef PIN_CAMERA_CTRL
@@ -155,6 +182,30 @@ bool board_ext_get(int index) {
     return false;
   }
   return g_ext_on[index];
+}
+
+bool board_ext_set_mode(int index, BoardExtMode mode) {
+  if (index < 0 || index >= PIN_EXT_COUNT || !config_ext_available(index)) {
+    return false;
+  }
+  g_ext_mode[index] = mode;
+  ext_apply_pin(index);
+  return true;
+}
+
+BoardExtMode board_ext_get_mode(int index) {
+  if (index < 0 || index >= PIN_EXT_COUNT) {
+    return BOARD_EXT_IN;
+  }
+  return g_ext_mode[index];
+}
+
+bool board_ext_read_pin(int index, int *high) {
+  if (index < 0 || index >= PIN_EXT_COUNT || !config_ext_available(index) || !high) {
+    return false;
+  }
+  *high = digitalRead(k_ext_pins[index]) == HIGH ? 1 : 0;
+  return true;
 }
 
 static unsigned g_buzzer_remain_ms;
@@ -217,6 +268,7 @@ void board_buzzer_tick(unsigned dt_ms) {
 #else /* HOST_TEST */
 
 static bool g_ext_on[PIN_EXT_COUNT];
+static BoardExtMode g_ext_mode[PIN_EXT_COUNT];
 static bool g_cam_low;
 static bool g_cam_consumed;
 static unsigned g_cam_pulse_ms;
@@ -225,6 +277,7 @@ void board_gpio_init(void) {
   (void)config_axis_count();
   for (int i = 0; i < PIN_EXT_COUNT; ++i) {
     g_ext_on[i] = false;
+    g_ext_mode[i] = BOARD_EXT_IN;
   }
   g_cam_low = false;
   g_cam_consumed = false;
@@ -236,6 +289,9 @@ bool board_ext_set(int index, bool on) {
     return false;
   }
   g_ext_on[index] = on;
+  if (g_ext_mode[index] == BOARD_EXT_IN) {
+    g_ext_mode[index] = BOARD_EXT_OUT;
+  }
   return true;
 }
 
@@ -244,6 +300,29 @@ bool board_ext_get(int index) {
     return false;
   }
   return g_ext_on[index];
+}
+
+bool board_ext_set_mode(int index, BoardExtMode mode) {
+  if (index < 0 || index >= PIN_EXT_COUNT || !config_ext_available(index)) {
+    return false;
+  }
+  g_ext_mode[index] = mode;
+  return true;
+}
+
+BoardExtMode board_ext_get_mode(int index) {
+  if (index < 0 || index >= PIN_EXT_COUNT) {
+    return BOARD_EXT_IN;
+  }
+  return g_ext_mode[index];
+}
+
+bool board_ext_read_pin(int index, int *high) {
+  if (index < 0 || index >= PIN_EXT_COUNT || !config_ext_available(index) || !high) {
+    return false;
+  }
+  *high = g_ext_on[index] ? 1 : 0;
+  return true;
 }
 
 bool board_camera_ctrl_take_trigger(void) {

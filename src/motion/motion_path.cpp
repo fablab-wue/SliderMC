@@ -19,6 +19,9 @@
 static int16_t g_path_pool[PATH_POOL_SAMPLES];
 static uint32_t g_path_count;
 static uint32_t g_path_play_index;
+static uint32_t g_path_play_last; /* inclusive last sample */
+static int g_path_dir;           /* +1 forward, -1 reverse */
+static bool g_path_range_done;
 static bool g_path_active;
 
 static uint32_t g_path_slice_us_active;
@@ -47,6 +50,9 @@ void motion_path_init(void) {
   memset(g_path_pool, 0, sizeof(g_path_pool));
   g_path_count = 0;
   g_path_play_index = 0;
+  g_path_play_last = 0;
+  g_path_dir = 1;
+  g_path_range_done = false;
   g_path_active = false;
   g_path_slice_us_active = 0;
   for (int a = 0; a < PATH_AXES; ++a) {
@@ -83,6 +89,9 @@ bool motion_path_clear(void) {
   }
   g_path_count = 0;
   g_path_play_index = 0;
+  g_path_play_last = 0;
+  g_path_dir = 1;
+  g_path_range_done = false;
   return true;
 }
 
@@ -112,6 +121,8 @@ bool motion_path_add(int16_t distance_um) { return motion_path_add3(distance_um,
 
 uint32_t motion_path_count(void) { return g_path_count; }
 
+uint32_t motion_path_play_index(void) { return g_path_play_index; }
+
 bool motion_path_set_slice_us(uint32_t us) {
   if (g_path_active || us < (uint32_t)PATH_SLICE_US_MIN) {
     return false;
@@ -124,7 +135,36 @@ uint32_t motion_path_get_slice_us(void) { return (uint32_t)session_get()->path_s
 
 bool motion_path_is_active(void) { return g_path_active; }
 
-int32_t motion_path_diffuse_steps(int16_t distance_um, float steps_per_unit, double *step_err) {
+static bool path_go_common(uint32_t start_index, uint32_t end_index) {
+  if (g_path_active || g_path_count == 0) {
+    return false;
+  }
+  if (start_index >= g_path_count || end_index >= g_path_count) {
+    return false;
+  }
+  McStatus st;
+  motion_get_status(&st);
+  if (!st.enabled) {
+    return false;
+  }
+  g_path_play_index = start_index;
+  g_path_play_last = end_index;
+  g_path_dir = (start_index <= end_index) ? 1 : -1;
+  g_path_range_done = false;
+  return true;
+}
+
+#ifndef HOST_TEST
+static int32_t path_sample_um(int axis, uint32_t index) {
+  int32_t um = (int32_t)path_col(axis)[index];
+  if (g_path_dir < 0) {
+    um = -um;
+  }
+  return um;
+}
+#endif
+
+static int32_t diffuse_steps_i32(int32_t distance_um, float steps_per_unit, double *step_err) {
   if (distance_um == 0) {
     return 0;
   }
@@ -133,6 +173,10 @@ int32_t motion_path_diffuse_steps(int16_t distance_um, float steps_per_unit, dou
   int32_t steps_i = (int32_t)llround(steps_f);
   *step_err = steps_f - (double)steps_i;
   return steps_i;
+}
+
+int32_t motion_path_diffuse_steps(int16_t distance_um, float steps_per_unit, double *step_err) {
+  return diffuse_steps_i32((int32_t)distance_um, steps_per_unit, step_err);
 }
 
 uint32_t motion_path_diffuse_cycles(uint32_t slice_us, uint32_t sysclk_hz, double *time_err) {
@@ -178,15 +222,19 @@ void motion_path_get_status(McStatus *out) {
 #ifndef HOST_TEST
 
 bool motion_path_go(void) {
-  if (g_path_active || g_path_count == 0) {
+  if (g_path_count == 0) {
     return false;
   }
-  McStatus st;
-  motion_get_status(&st);
-  if (!st.enabled) {
+  return motion_path_go_range(0, g_path_count - 1);
+}
+
+bool motion_path_go_range(uint32_t start_index, uint32_t end_index) {
+  if (!path_go_common(start_index, end_index)) {
     return false;
   }
   motion_end_joy();
+  McStatus st;
+  motion_get_status(&st);
   int n = path_naxes();
   int nm = config_motor_count();
   for (int a = 0; a < PATH_AXES; ++a) {
@@ -204,7 +252,6 @@ bool motion_path_go(void) {
     g_slice_has_steps[a] = false;
     g_slice_had_steps[a] = false;
   }
-  g_path_play_index = 0;
   g_time_err = 0.0;
   g_gap_cycles = 0.0;
   g_slice_in_progress = false;
@@ -237,6 +284,7 @@ void motion_path_abort_to_planner(void) {
   g_path_active = false;
   g_slice_in_progress = false;
   g_slice_drain_wait = false;
+  g_path_range_done = false;
 }
 
 int motion_path_fill_fifo(void) {
@@ -269,19 +317,18 @@ int motion_path_fill_fifo(void) {
     }
 
     if (!g_slice_in_progress) {
-      if (g_path_play_index >= g_path_count) {
+      if (g_path_range_done) {
         motion_path_abort_to_planner();
         planner_request_stop();
         break;
       }
-      int16_t d[PATH_AXES];
       int32_t steps[PATH_AXES];
       bool any_steps = false;
       bool any_servo = false;
       const int ns = config_servo_count();
       for (int a = 0; a < n; ++a) {
-        d[a] = path_col(a)[g_path_play_index];
-        steps[a] = motion_path_diffuse_steps(d[a], spmm[a], &g_step_err[a]);
+        int32_t um = path_sample_um(a, g_path_play_index);
+        steps[a] = diffuse_steps_i32(um, spmm[a], &g_step_err[a]);
         if (steps[a] != 0) {
           any_steps = true;
         }
@@ -289,13 +336,19 @@ int motion_path_fill_fifo(void) {
       int32_t servo_steps[SERVO_MAX];
       for (int s = 0; s < ns; ++s) {
         int a = n + s;
-        d[a] = path_col(a)[g_path_play_index];
-        servo_steps[s] = motion_path_diffuse_steps(d[a], 1000.0f, &g_step_err[a]);
+        int32_t um = path_sample_um(a, g_path_play_index);
+        servo_steps[s] = diffuse_steps_i32(um, 1000.0f, &g_step_err[a]);
         if (servo_steps[s] != 0) {
           any_servo = true;
         }
       }
-      ++g_path_play_index;
+      if (g_path_play_index == g_path_play_last) {
+        g_path_range_done = true;
+      } else if (g_path_dir > 0) {
+        ++g_path_play_index;
+      } else {
+        --g_path_play_index;
+      }
       uint32_t cycles = motion_path_diffuse_cycles(g_path_slice_us_active, sysclk, &g_time_err);
 
       if (!any_steps && !any_servo) {
@@ -402,16 +455,17 @@ int motion_path_fill_fifo(void) {
 #else /* HOST_TEST */
 
 bool motion_path_go(void) {
-  if (g_path_active || g_path_count == 0) {
+  if (g_path_count == 0) {
     return false;
   }
-  McStatus st;
-  motion_get_status(&st);
-  if (!st.enabled) {
+  return motion_path_go_range(0, g_path_count - 1);
+}
+
+bool motion_path_go_range(uint32_t start_index, uint32_t end_index) {
+  if (!path_go_common(start_index, end_index)) {
     return false;
   }
   motion_end_joy();
-  g_path_play_index = 0;
   g_path_active = true;
   return true;
 }
@@ -420,6 +474,7 @@ void motion_path_abort_to_planner(void) {
   g_path_active = false;
   g_slice_in_progress = false;
   g_slice_drain_wait = false;
+  g_path_range_done = false;
 }
 
 int motion_path_fill_fifo(void) { return 0; }

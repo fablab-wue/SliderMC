@@ -109,11 +109,26 @@ int main(void) {
     motion_enable(true);
     expect_true("go accepted", motion_path_go());
     expect_true("is_active true after go", motion_path_is_active());
+    expect_true("play index starts at 0", motion_path_play_index() == 0);
     expect_true("go rejected while already active", !motion_path_go());
     expect_true("add allowed while active (live-move streaming)", motion_path_add(10));
     expect_true("count reflects live-streamed add", motion_path_count() == 2);
     motion_path_abort_to_planner();
     expect_true("is_active false after abort", !motion_path_is_active());
+  }
+
+  {
+    motion_path_clear();
+    motion_path_add(10);
+    motion_path_add(20);
+    motion_path_add(30);
+    expect_true("range rejected past count", !motion_path_go_range(0, 3));
+    expect_true("range accepted inclusive", motion_path_go_range(1, 2));
+    expect_true("play index at range start", motion_path_play_index() == 1);
+    motion_path_abort_to_planner();
+    expect_true("reverse range accepted", motion_path_go_range(2, 0));
+    expect_true("play index at reverse start", motion_path_play_index() == 2);
+    motion_path_abort_to_planner();
   }
 
   if (g_fail) {
