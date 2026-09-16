@@ -66,6 +66,9 @@ void board_uart_init(void);
  */
 void board_wait_unlock_newline(void);
 
+/** True if unlock '\\n' came from UIC UART, or any UART RX since then. */
+bool board_uic_linked(void);
+
 /** Non-blocking: pull RX bytes from UIC UART into protocol_feed_uart_byte. */
 void board_uart_poll_rx(void);
 

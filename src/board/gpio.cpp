@@ -370,5 +370,6 @@ void board_camera_ctrl_tick(unsigned dt_ms) {
 void board_buzzer_pulse(unsigned ms) { (void)ms; }
 void board_buzzer_tick(unsigned dt_ms) { (void)dt_ms; }
 void board_buzzer_reconfigure(void) {}
+bool board_uic_linked(void) { return false; }
 
 #endif

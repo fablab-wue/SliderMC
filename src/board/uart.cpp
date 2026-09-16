@@ -20,6 +20,7 @@
 #include "hardware/gpio.h"
 
 static SerialUART &UIC = PIN_UART_SERIAL;
+static bool g_uic_linked;
 
 void board_uart_init(void) {
   UIC.setTX(PIN_UART_TX);
@@ -32,11 +33,13 @@ void board_wait_unlock_newline(void) {
   for (;;) {
     while (UIC.available() > 0) {
       if ((uint8_t)UIC.read() == (uint8_t)'\n') {
+        g_uic_linked = true;
         return;
       }
     }
     while (Serial.available() > 0) {
       if ((uint8_t)Serial.read() == (uint8_t)'\n') {
+        g_uic_linked = false;
         return;
       }
     }
@@ -45,8 +48,11 @@ void board_wait_unlock_newline(void) {
   }
 }
 
+bool board_uic_linked(void) { return g_uic_linked; }
+
 void board_uart_poll_rx(void) {
   while (UIC.available() > 0) {
+    g_uic_linked = true;
     protocol_feed_uart_byte((uint8_t)UIC.read());
   }
 }

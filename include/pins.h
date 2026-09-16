@@ -81,7 +81,10 @@
 #define PIN_UART_TX 12
 #define PIN_UART_RX 13
 
-#define PIN_LED 29 /* external status LED; onboard WS2812 on GP16 unused */
+#ifndef PIN_NEOPIXEL
+#define PIN_NEOPIXEL 16 /* onboard WS2812 status */
+#endif
+#define PIN_LED 29 /* external status LED (blinks in parallel with NeoPixel) */
 #define PIN_BUZZER 28
 
 #ifdef DEBUG_HW
@@ -160,6 +163,7 @@
 #define PIN_LED LED_BUILTIN
 #endif
 #endif
+/* PIN_NEOPIXEL defaults to PIN_LED (GPIO LED only) unless overridden below. */
 
 #ifdef DEBUG_HW
 #define PIN_DBG_FIFO 10
@@ -189,4 +193,7 @@
 #endif
 #ifndef PIN_DBG_OVERLAPS_DRV
 #define PIN_DBG_OVERLAPS_DRV 0
+#endif
+#ifndef PIN_NEOPIXEL
+#define PIN_NEOPIXEL PIN_LED /* Pico: GPIO LED only unless overridden to a free GPIO */
 #endif

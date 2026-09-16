@@ -25,6 +25,8 @@ bool motion_diag_restored_after_reset(void);
 void motion_diag_get(MotionDiag *out);
 
 void motion_diag_note_underrun(int axis);
+/** True for ~1.5 s after the last FIFO underrun (status LED latch). */
+bool motion_diag_underrun_latched(void);
 void motion_diag_note_hz(float step_hz);
 void motion_diag_note_overshoot(int steps);
 void motion_diag_note_fifo_level(int axis, unsigned level);

@@ -754,6 +754,7 @@ static void cmd_pinout_index(void) {
   PIN_IX_ADD(PIN_UART_TX, "UART_TX", "UART TX to UIC (115200 baud)");
   PIN_IX_ADD(PIN_UART_RX, "UART_RX", "UART RX from UIC (115200 baud)");
   PIN_IX_ADD(PIN_LED, "LED", "Status / heartbeat LED");
+  PIN_IX_ADD(PIN_NEOPIXEL, "NEOPIXEL", "Status WS2812 (skipped if same GPIO as LED)");
   if (config_get()->buzzer_use && PIN_BUZZER != PIN_LED) {
     PIN_IX_ADD(PIN_BUZZER, "BUZZER", "Piezo pulse (BE)");
   }
@@ -1569,6 +1570,10 @@ bool protocol_exec_command(const char *cmd) {
       snprintf(line, sizeof(line), "VG:PIN_BUZZER=%d", PIN_BUZZER);
       protocol_writeln(line);
     }
+    snprintf(line, sizeof(line), "VG:PIN_LED=%d", PIN_LED);
+    protocol_writeln(line);
+    snprintf(line, sizeof(line), "VG:PIN_NEOPIXEL=%d", PIN_NEOPIXEL);
+    protocol_writeln(line);
     snprintf(line, sizeof(line), "VG:PIN_UART_TX=%d", PIN_UART_TX);
     protocol_writeln(line);
     snprintf(line, sizeof(line), "VG:PIN_UART_RX=%d", PIN_UART_RX);

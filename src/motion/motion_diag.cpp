@@ -18,6 +18,10 @@ static MotionDiag g_diag_noinit __attribute__((section(".noinit")));
 static uint32_t g_diag_magic __attribute__((section(".noinit")));
 #endif
 static uint8_t g_restored_from_noinit;
+#if !defined(HOST_TEST)
+static uint32_t g_underrun_at_ms;
+static uint8_t g_underrun_latched;
+#endif
 
 static void fifo_min_clear(void) {
   g_diag.fifo_min_level = 0xFFFFFFFFu;
@@ -37,6 +41,10 @@ void motion_diag_reset(void) {
   memset(&g_diag, 0, sizeof(g_diag));
   fifo_min_clear();
   g_restored_from_noinit = 0;
+#if !defined(HOST_TEST)
+  g_underrun_latched = 0;
+  g_underrun_at_ms = 0;
+#endif
   diag_persist();
 }
 
@@ -66,7 +74,19 @@ void motion_diag_note_underrun(int axis) {
   if (axis >= 0 && axis < MOTION_DIAG_AXES) {
     ++g_diag.underrun_axis[axis];
   }
+#if !defined(HOST_TEST)
+  g_underrun_latched = 1;
+  g_underrun_at_ms = millis();
+#endif
   diag_persist();
+}
+
+bool motion_diag_underrun_latched(void) {
+#if !defined(HOST_TEST)
+  return g_underrun_latched != 0 && (millis() - g_underrun_at_ms) < 1500u;
+#else
+  return false;
+#endif
 }
 
 void motion_diag_note_hz(float step_hz) {
