@@ -23,7 +23,7 @@ Docs and manuals: **[SliderDoc](https://github.com/fablab-wue/SliderDoc)**.
 ### Motion quality
 
 - **Live retarget** during movement — change target or speed without stopping the shoot  
-- **Sine ramp** acceleration and deceleration — smooth starts and stops  
+- **Sine ramp** acceleration and deceleration — smooth starts and stops; `SA` can set a different stop ramp (`SA <accel> [decel]`) 
 - **Homing**, soft travel limits, hard-limit alarms, **`DRV_ERROR` / EMO** interlock  
 - **1–3 STEP/DIR motors** (`CS motors`) plus **0–3 RC servos** (`CS servos`); banner `{motors}+{servos} axis`; `IA` / `CG axis` = packed sum. **`CS axis` is rejected** — do not send it  
 - **Path playback** — host-authored motion paths for advanced moves  

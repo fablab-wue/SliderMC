@@ -607,7 +607,7 @@ typedef struct {
 /* Two columns. Group order: S → G → I → M → P → W → E → Special → C → V → now. */
 static const HelpRow k_help_rows[] = {
     {"SS", "Set Speed, cruise mm/s"},
-    {"SA", "Set Accel, mm/s2"},
+    {"SA", "Set Accel [, Decel], mm/s2"},
     {"SE", "Set Enable, 0|1; bare toggles"},
     {"ST", "Set Terminal, 0|1; bare toggles"},
     {"SV", "Set Verbose, 0|1; bare toggles"},
@@ -616,7 +616,7 @@ static const HelpRow k_help_rows[] = {
     {"SR", "Set Right, session window max"},
     {"SP", "Set Position, bare/0 = here is 0"},
     {"GS", "Get Speed, session cruise mm/s"},
-    {"GA", "Get Accel, session mm/s2"},
+    {"GA", "Get Accel Decel, session mm/s2"},
     {"GE", "Get Enable, driver state 0|1"},
     {"GT", "Get Terminal, 0|1"},
     {"GV", "Get Verbose, 0|1"},
@@ -1196,19 +1196,34 @@ bool protocol_exec_command(const char *cmd) {
   if (match_any(cmd, &rest, "SA", "SetAccel", nullptr)) {
     if (!*rest) {
       session_reset_accel();
-      motion_set_accel(sess->accel_mm_s2);
+      motion_set_accel(sess->accel_mm_s2, sess->decel_mm_s2);
       return false;
     }
+    skip_ws(&rest);
     float a;
-    if (!parse_float_arg(rest, &a) || a <= 0.0f) {
+    if (!take_float(&rest, &a) || a <= 0.0f) {
       protocol_error("parse", "SA args");
       return false;
     }
-    if (a > config_get()->max_accel_mm_s2) {
+    skip_ws(&rest);
+    float d = a;
+    if (*rest) {
+      if (!take_float(&rest, &d) || d <= 0.0f) {
+        protocol_error("parse", "SA args");
+        return false;
+      }
+      skip_ws(&rest);
+      if (*rest) {
+        protocol_error("parse", "SA args");
+        return false;
+      }
+    }
+    float mx = config_get()->max_accel_mm_s2;
+    if (a > mx || d > mx) {
       protocol_error("limit", "SA > max_accel");
       return false;
     }
-    motion_set_accel(a);
+    motion_set_accel(a, d);
     return false;
   }
 
@@ -1320,7 +1335,10 @@ bool protocol_exec_command(const char *cmd) {
     return false;
   }
   if (match_any(cmd, &rest, "GA", "GetAccel", nullptr)) {
-    reply_query_float("GA", sess->accel_mm_s2);
+    char buf[48];
+    snprintf(buf, sizeof(buf), "GA:%.2f %.2f\n", (double)sess->accel_mm_s2,
+             (double)sess->decel_mm_s2);
+    protocol_write(buf);
     return false;
   }
   if (match_any(cmd, &rest, "GE", "GetEnable", nullptr)) {
@@ -1635,7 +1653,7 @@ bool protocol_exec_command(const char *cmd) {
     }
     /* CS updates session for init_speed/init_accel/init_terminal/init_verbose; refresh motion. */
     motion_set_speed(sess->speed_mm_s);
-    motion_set_accel(sess->accel_mm_s2);
+    motion_set_accel(sess->accel_mm_s2, sess->decel_mm_s2);
     if (!board_config_save_to_fs()) {
       /* RAM already updated; report flash failure. */
       protocol_error("cfg", "save failed");
@@ -1649,7 +1667,7 @@ bool protocol_exec_command(const char *cmd) {
     board_buzzer_reconfigure();
     servo_pwm_refresh();
     motion_set_speed(sess->speed_mm_s);
-    motion_set_accel(sess->accel_mm_s2);
+    motion_set_accel(sess->accel_mm_s2, sess->decel_mm_s2);
     if (!board_config_save_to_fs()) {
       protocol_error("cfg", "save failed");
       return false;

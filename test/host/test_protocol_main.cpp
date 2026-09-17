@@ -277,7 +277,32 @@ int main(void) {
   expect_contains("SA over max_accel", "!E:limit SA > max_accel");
   reset_out();
   feed("GA\n");
-  expect_contains("GA unchanged after SA reject", "GA:200.00");
+  expect_contains("GA unchanged after SA reject", "GA:200.00 200.00");
+
+  reset_out();
+  feed("SA 200 50\n");
+  expect_empty("SA two-arg silent");
+  reset_out();
+  feed("GA\n");
+  expect_contains("GA accel decel", "GA:200.00 50.00");
+  reset_out();
+  feed("SA 200 _\n");
+  expect_contains("SA skip rejected", "!E:parse SA args");
+  reset_out();
+  feed("GA\n");
+  expect_contains("GA after skip reject", "GA:200.00 50.00");
+  reset_out();
+  feed("SA 200 999\n");
+  expect_contains("SA 2nd over max", "!E:limit SA > max_accel");
+  reset_out();
+  feed("GA\n");
+  expect_contains("GA after 2nd reject", "GA:200.00 50.00");
+  reset_out();
+  feed("SA 200\n");
+  expect_empty("SA one-arg sets both");
+  reset_out();
+  feed("GA\n");
+  expect_contains("GA after one-arg both", "GA:200.00 200.00");
 
   reset_out();
   feed("SD 4\n");
@@ -882,6 +907,8 @@ int main(void) {
   feed("SA 150\n");
   expect_empty("SA during MJ silent");
   expect_true("SA during MJ", std::fabs(motion_host_axis_accel(0) - 150.0f) < 0.01f);
+  expect_true("SA during MJ sets decel too",
+              std::fabs(motion_host_axis_decel(0) - 150.0f) < 0.01f);
   reset_out();
   feed("GS\n");
   expect_contains("SS still 60 in joy", "GS:60.00");
@@ -1129,8 +1156,11 @@ int main(void) {
     float v1 = motion_host_axis_cruise(1);
     float a0 = motion_host_axis_accel(0);
     float a1 = motion_host_axis_accel(1);
+    float d0 = motion_host_axis_decel(0);
+    float d1 = motion_host_axis_decel(1);
     expect_true("dual MT cruise ratio ~0.5", std::fabs(v1 - v0 * 0.5f) < 0.01f);
     expect_true("dual MT accel ratio ~0.5", std::fabs(a1 - a0 * 0.5f) < 0.01f);
+    expect_true("dual MT decel ratio ~0.5", std::fabs(d1 - d0 * 0.5f) < 0.01f);
   }
   reset_out();
   feed("SS 40\n");
@@ -1147,8 +1177,25 @@ int main(void) {
   {
     float a0 = motion_host_axis_accel(0);
     float a1 = motion_host_axis_accel(1);
+    float d0 = motion_host_axis_decel(0);
+    float d1 = motion_host_axis_decel(1);
     expect_true("SA mid-move axis1=100", std::fabs(a0 - 100.0f) < 0.01f);
     expect_true("SA mid-move axis2 keeps ratio", std::fabs(a1 - 50.0f) < 0.01f);
+    expect_true("SA mid-move decel axis1=100", std::fabs(d0 - 100.0f) < 0.01f);
+    expect_true("SA mid-move decel axis2 keeps ratio", std::fabs(d1 - 50.0f) < 0.01f);
+  }
+  reset_out();
+  feed("SA 80 40\n");
+  expect_empty("SA split mid dual move");
+  {
+    float a0 = motion_host_axis_accel(0);
+    float a1 = motion_host_axis_accel(1);
+    float d0 = motion_host_axis_decel(0);
+    float d1 = motion_host_axis_decel(1);
+    expect_true("SA split mid-move accel1=80", std::fabs(a0 - 80.0f) < 0.01f);
+    expect_true("SA split mid-move accel2 ratio", std::fabs(a1 - 40.0f) < 0.01f);
+    expect_true("SA split mid-move decel1=40", std::fabs(d0 - 40.0f) < 0.01f);
+    expect_true("SA split mid-move decel2 ratio", std::fabs(d1 - 20.0f) < 0.01f);
   }
   reset_out();
   feed("IP\n");
@@ -1557,6 +1604,11 @@ int main(void) {
     expect_true("triple MT cruise ratio 0.25", std::fabs(v2 - v0 * 0.25f) < 0.01f);
     expect_true("triple MT accel ratio 0.5", std::fabs(a1 - a0 * 0.5f) < 0.01f);
     expect_true("triple MT accel ratio 0.25", std::fabs(a2 - a0 * 0.25f) < 0.01f);
+    float d0 = motion_host_axis_decel(0);
+    float d1 = motion_host_axis_decel(1);
+    float d2 = motion_host_axis_decel(2);
+    expect_true("triple MT decel ratio 0.5", std::fabs(d1 - d0 * 0.5f) < 0.01f);
+    expect_true("triple MT decel ratio 0.25", std::fabs(d2 - d0 * 0.25f) < 0.01f);
   }
   reset_out();
   feed("MS\n");

@@ -31,6 +31,19 @@ int main(void) {
   expect_near("vmax_for_distance roundtrip", vmax, v, 0.05f);
   expect_near("vmax zero dist", planner_vmax_for_distance(0.0f, a), 0.0f, 1e-6f);
 
+  /* Asymmetric triangle: D = π v²/4 · (1/aa + 1/ad) */
+  float aa = 200.0f;
+  float ad = 50.0f;
+  float D = 20.0f;
+  float v_tri = planner_vmax_triangle(D, aa, ad);
+  float D_back = (float)M_PI * v_tri * v_tri / 4.0f * (1.0f / aa + 1.0f / ad);
+  expect_near("vmax_triangle distance roundtrip", D_back, D, 0.05f);
+  expect_near("vmax_triangle swapped ramps same peak", planner_vmax_triangle(D, ad, aa), v_tri,
+              0.05f);
+  expect_near("vmax_triangle equal ramps is half-stop", planner_vmax_triangle(D, a, a),
+              planner_vmax_for_distance(D * 0.5f, a), 0.05f);
+  expect_near("vmax_triangle zero dist", planner_vmax_triangle(0.0f, aa, ad), 0.0f, 1e-6f);
+
   /* pack_n pendeln guard */
   expect_true("pack rem 0", planner_pack_n(100.0f, 0, 0) == 0);
   expect_true("pack rem neg", planner_pack_n(100.0f, -3, 0) == 0);

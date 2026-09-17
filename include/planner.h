@@ -28,8 +28,9 @@ void planner_request_halt(void);  /* hard halt all axes */
 void planner_request_home(int axis);
 void planner_soft_reset(void);
 
-/** Override cruise/accel for one axis (coordinated MT). */
-void planner_set_cruise_accel(int axis, float cruise_mm_s, float accel_mm_s2);
+/** Override cruise/accel/decel for one axis (coordinated MT). */
+void planner_set_cruise_accel(int axis, float cruise_mm_s, float accel_mm_s2,
+                              float decel_mm_s2);
 
 /**
  * Seed position/velocity from motion_path (2nd planner) before a following

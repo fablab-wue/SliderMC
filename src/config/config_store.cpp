@@ -46,6 +46,7 @@ float config_channel_max(int ch);
 void session_sync_from_config(void) {
   g_session.speed_mm_s = g_cfg.init_speed_mm_s;
   g_session.accel_mm_s2 = g_cfg.init_accel_mm_s2;
+  g_session.decel_mm_s2 = g_cfg.init_accel_mm_s2;
   g_session.terminal = g_cfg.init_terminal;
   g_session.verbose = g_cfg.init_verbose;
   g_session.path_slice_us = g_cfg.init_path_slice_us;
@@ -56,7 +57,10 @@ void session_sync_from_config(void) {
 }
 
 void session_reset_speed(void) { g_session.speed_mm_s = g_cfg.init_speed_mm_s; }
-void session_reset_accel(void) { g_session.accel_mm_s2 = g_cfg.init_accel_mm_s2; }
+void session_reset_accel(void) {
+  g_session.accel_mm_s2 = g_cfg.init_accel_mm_s2;
+  g_session.decel_mm_s2 = g_cfg.init_accel_mm_s2;
+}
 void session_reset_terminal(void) { g_session.terminal = g_cfg.init_terminal; }
 void session_reset_verbose(void) { g_session.verbose = g_cfg.init_verbose; }
 void session_reset_path_slice(void) { g_session.path_slice_us = g_cfg.init_path_slice_us; }
@@ -627,6 +631,7 @@ bool config_set_key(const char *key, const char *value) {
     }
     g_cfg.init_accel_mm_s2 = f;
     g_session.accel_mm_s2 = f;
+    g_session.decel_mm_s2 = f;
     return true;
   }
   if (icmp(key, "max_speed_1") == 0) {

@@ -43,6 +43,7 @@ typedef struct {
   McStatus st;
   float cruise_mm_s;
   float accel_mm_s2;
+  float decel_mm_s2;
   int64_t pos_steps;
   int64_t target_steps;
   float vel_mm_s;
@@ -82,6 +83,7 @@ typedef struct {
   int64_t home_max_travel_steps;
   float home_saved_cruise;
   float home_saved_accel;
+  float home_saved_decel;
   bool home_speeds_saved;
   float home_stall_timer_s;
   float home_stall_ignore_s;
@@ -105,6 +107,7 @@ typedef struct {
   float target;
   float cruise;
   float accel;
+  float decel;
   bool moving;
   bool has_target;
   bool stopping;
@@ -177,15 +180,17 @@ static float ch_pos(int ch) {
   return g_sv[s].pos;
 }
 
-static void ch_set_cruise_accel(int ch, float v, float a) {
+static void ch_set_cruise_accel(int ch, float v, float a, float d) {
   if (ch_is_motor(ch)) {
     g_ax[ch].cruise_mm_s = v;
     g_ax[ch].accel_mm_s2 = a;
+    g_ax[ch].decel_mm_s2 = d;
     return;
   }
   int s = ch - axis_count();
   g_sv[s].cruise = v;
   g_sv[s].accel = a;
+  g_sv[s].decel = d;
 }
 
 static float servo_boot_deg(int s) {
@@ -209,6 +214,7 @@ static void servo_boot_all(void) {
     g_sv[s].vel = 0.0f;
     g_sv[s].cruise = c->servo_max_speed[s];
     g_sv[s].accel = c->servo_max_accel[s];
+    g_sv[s].decel = c->servo_max_accel[s];
     g_sv[s].moving = false;
     g_sv[s].has_target = false;
     g_sv[s].stopping = false;
@@ -259,6 +265,10 @@ static void servo_integrate(int s, float dt) {
   if (a < 0.001f) {
     a = 0.001f;
   }
+  float dcl = sv->decel;
+  if (dcl < 0.001f) {
+    dcl = 0.001f;
+  }
   float vmax = sv->cruise;
   if (vmax < 0.001f) {
     vmax = 0.001f;
@@ -273,7 +283,7 @@ static void servo_integrate(int s, float dt) {
       return;
     }
     float sign = (v >= 0.0f) ? 1.0f : -1.0f;
-    v -= sign * a * dt;
+    v -= sign * dcl * dt;
     if (v * sign <= 0.0f) {
       v = 0.0f;
       sv->moving = false;
@@ -300,10 +310,10 @@ static void servo_integrate(int s, float dt) {
     sv->has_target = false;
     return;
   }
-  float stop_d = (v * v) / (2.0f * a);
+  float stop_d = (v * v) / (2.0f * dcl);
   bool toward = (fabsf(v) < 1e-4f) || ((v >= 0.0f) == (sign > 0));
   if (toward && fabsf(err) <= stop_d + 1e-6f) {
-    v -= (float)sign * a * dt;
+    v -= (float)sign * dcl * dt;
     if (v * (float)sign <= 0.0f) {
       v = 0.0f;
     }
@@ -330,9 +340,14 @@ static void servo_request_joy(int s, float signed_v) {
   }
   PlannerServo *sv = &g_sv[s];
   sv->accel = ch_max_accel(axis_count() + s);
+  sv->decel = sv->accel;
   float a0 = session_get()->accel_mm_s2;
+  float d0 = session_get()->decel_mm_s2;
   if (a0 < sv->accel) {
     sv->accel = a0 < 0.001f ? 0.001f : a0;
+  }
+  if (d0 < sv->decel) {
+    sv->decel = d0 < 0.001f ? 0.001f : d0;
   }
   if (fabsf(signed_v) < 1e-4f) {
     servo_request_stop(s);
@@ -382,10 +397,11 @@ static void coord_clear_if_idle(void) {
   coord_clear();
 }
 
-static void scale_cruise_accel(int ch, float v0, float a0, float ratio, float *v_out,
-                               float *a_out) {
+static void scale_cruise_accel(int ch, float v0, float a0, float d0, float ratio, float *v_out,
+                               float *a_out, float *d_out) {
   float v1 = v0 * ratio;
   float a1 = a0 * ratio;
+  float d1 = d0 * ratio;
   float vmax = ch_max_speed(ch);
   float amax = ch_max_accel(ch);
   if (v1 > vmax) {
@@ -394,14 +410,21 @@ static void scale_cruise_accel(int ch, float v0, float a0, float ratio, float *v
   if (a1 > amax) {
     a1 = amax;
   }
+  if (d1 > amax) {
+    d1 = amax;
+  }
   if (v1 < 0.001f) {
     v1 = 0.001f;
   }
   if (a1 < 0.001f) {
     a1 = 0.001f;
   }
+  if (d1 < 0.001f) {
+    d1 = 0.001f;
+  }
   *v_out = v1;
   *a_out = a1;
+  *d_out = d1;
 }
 
 static float clamp_speed_axis(int axis, float v) {
@@ -448,32 +471,35 @@ static float clamp_accel_ch(int ch, float a) {
   return a;
 }
 
-/** Apply session cruise/accel; coordinated followers scale vs the master. */
-static void apply_cruise_accel(float v0, float a0) {
+/** Apply session cruise/accel/decel; coordinated followers scale vs the master. */
+static void apply_cruise_accel(float v0, float a0, float d0) {
   int n = ch_count();
   int master = g_coord_active ? g_coord_master : 0;
   if (master < 0 || master >= n) {
     master = 0;
   }
   if (g_coord_active) {
-    ch_set_cruise_accel(master, clamp_speed_ch(master, v0), clamp_accel_ch(master, a0));
+    ch_set_cruise_accel(master, clamp_speed_ch(master, v0), clamp_accel_ch(master, a0),
+                        clamp_accel_ch(master, d0));
     for (int ch = 0; ch < n; ++ch) {
       if (ch == master) {
         continue;
       }
-      float v, a;
-      scale_cruise_accel(ch, v0, a0, g_coord_ratio[ch], &v, &a);
-      ch_set_cruise_accel(ch, v, a);
+      float v, a, d;
+      scale_cruise_accel(ch, v0, a0, d0, g_coord_ratio[ch], &v, &a, &d);
+      ch_set_cruise_accel(ch, v, a, d);
     }
     return;
   }
   for (int ch = 0; ch < n; ++ch) {
-    ch_set_cruise_accel(ch, clamp_speed_ch(ch, v0), clamp_accel_ch(ch, a0));
+    ch_set_cruise_accel(ch, clamp_speed_ch(ch, v0), clamp_accel_ch(ch, a0),
+                        clamp_accel_ch(ch, d0));
   }
 }
 
 static void apply_session_cruise_accel(void) {
-  apply_cruise_accel(session_get()->speed_mm_s, session_get()->accel_mm_s2);
+  apply_cruise_accel(session_get()->speed_mm_s, session_get()->accel_mm_s2,
+                     session_get()->decel_mm_s2);
 }
 
 static bool read_limit_raw(int axis, bool left) {
@@ -766,6 +792,7 @@ static void home_restore_speeds(int axis) {
   }
   AX.cruise_mm_s = AX.home_saved_cruise;
   AX.accel_mm_s2 = AX.home_saved_accel;
+  AX.decel_mm_s2 = AX.home_saved_decel;
   AX.home_speeds_saved = false;
 }
 
@@ -1140,6 +1167,7 @@ static void apply_joy_cruise_accel(void) {
     if (ch < nm) {
       int axis = ch;
       AX.accel_mm_s2 = clamp_accel_axis(axis, session_get()->accel_mm_s2);
+      AX.decel_mm_s2 = clamp_accel_axis(axis, session_get()->decel_mm_s2);
       AX.cruise_mm_s = fabsf(signed_v);
       if (AX.st.moving && !AX.stopping) {
         int sign = (signed_v >= 0.0f) ? 1 : -1;
@@ -1148,6 +1176,7 @@ static void apply_joy_cruise_accel(void) {
     } else {
       int s = ch - nm;
       g_sv[s].accel = clamp_accel_ch(ch, session_get()->accel_mm_s2);
+      g_sv[s].decel = clamp_accel_ch(ch, session_get()->decel_mm_s2);
       g_sv[s].cruise = fabsf(signed_v);
     }
   }
@@ -1224,6 +1253,7 @@ void planner_init(void) {
     }
     AX.cruise_mm_s = session_get()->speed_mm_s;
     AX.accel_mm_s2 = session_get()->accel_mm_s2;
+    AX.decel_mm_s2 = session_get()->decel_mm_s2;
     reset_ramp(axis);
     refresh_state(axis);
   }
@@ -1233,12 +1263,14 @@ void planner_init(void) {
   servo_pwm_init();
 }
 
-void planner_set_cruise_accel(int axis, float cruise_mm_s, float accel_mm_s2) {
+void planner_set_cruise_accel(int axis, float cruise_mm_s, float accel_mm_s2,
+                              float decel_mm_s2) {
   if (axis < 0 || axis >= AXIS_MAX) {
     return;
   }
   AX.cruise_mm_s = cruise_mm_s;
   AX.accel_mm_s2 = accel_mm_s2;
+  AX.decel_mm_s2 = decel_mm_s2;
 }
 
 int planner_fill_fifo(int axis) {
@@ -1281,7 +1313,7 @@ int planner_fill_fifo(int axis) {
       int stop_app_hz = config_get()->stop_approach_hz;
       float v_stop = (stop_app_hz > 0) ? (float)stop_app_hz / AX.spmm : 0.0f;
       if (fabsf(AX.vel_mm_s) <= v_stop + 1e-3f ||
-          planner_stop_rem_steps(AX.vel_mm_s, AX.accel_mm_s2, AX.spmm) <= 4) {
+          planner_stop_rem_steps(AX.vel_mm_s, AX.decel_mm_s2, AX.spmm) <= 4) {
         AX.vel_mm_s = 0.0f;
         AX.fill_wants_more = false;
         break;
@@ -1300,7 +1332,7 @@ int planner_fill_fifo(int axis) {
 
     int rem;
     if (AX.stopping || err == 0 || reverse_decel) {
-      rem = planner_stop_rem_steps(AX.vel_mm_s, AX.accel_mm_s2, AX.spmm);
+      rem = planner_stop_rem_steps(AX.vel_mm_s, AX.decel_mm_s2, AX.spmm);
     } else {
       rem = remaining_steps_for_sign(axis, sign);
     }
@@ -1323,12 +1355,12 @@ int planner_fill_fifo(int axis) {
     }
 
     float rem_mm = (float)rem / AX.spmm;
-    float vmax = planner_vmax_for_distance(rem_mm, AX.accel_mm_s2);
+    float vmax = planner_vmax_for_distance(rem_mm, AX.decel_mm_s2);
     /* vel≈0 is a launch/crawl, not a brake. Stopping-distance + 4 with v=0 is
      * rem<=4, which aborted 1–4 step MT (FRAME_NEXT) with fill_wants_more=false
      * and left the axis in M at v=0 with the target still ahead. */
     bool need_brake = !AX.stopping && !reverse_decel && fabsf(AX.vel_mm_s) > 0.01f &&
-                      rem <= planner_stop_rem_steps(fabsf(AX.vel_mm_s), AX.accel_mm_s2, AX.spmm) + 4;
+                      rem <= planner_stop_rem_steps(fabsf(AX.vel_mm_s), AX.decel_mm_s2, AX.spmm) + 4;
     /*
      * Ramp target is either cruise or 0. Feeding it min(cruise, vmax) would
      * move the target every word as rem shrinks, restart the sine phase, and
@@ -1795,6 +1827,7 @@ static void planner_request_joy(int axis, float signed_v) {
     AX.spmm = 1.0f;
   }
   AX.accel_mm_s2 = clamp_accel_axis(axis, session_get()->accel_mm_s2);
+  AX.decel_mm_s2 = clamp_accel_axis(axis, session_get()->decel_mm_s2);
 
   if (fabsf(signed_v) < 1e-4f) {
     if (AX.st.moving && !AX.stopping) {
@@ -1935,15 +1968,20 @@ void planner_request_home(int axis) {
   if (!AX.home_speeds_saved) {
     AX.home_saved_cruise = AX.cruise_mm_s;
     AX.home_saved_accel = AX.accel_mm_s2;
+    AX.home_saved_decel = AX.decel_mm_s2;
     AX.home_speeds_saved = true;
   }
   AX.cruise_mm_s = axis_hw_home_speed(axis);
   AX.accel_mm_s2 = axis_hw_home_accel(axis);
+  AX.decel_mm_s2 = AX.accel_mm_s2;
   if (AX.cruise_mm_s < 0.001f) {
     AX.cruise_mm_s = 0.001f;
   }
   if (AX.accel_mm_s2 < 0.001f) {
     AX.accel_mm_s2 = 0.001f;
+  }
+  if (AX.decel_mm_s2 < 0.001f) {
+    AX.decel_mm_s2 = 0.001f;
   }
 
   AX.stopping = false;
@@ -2259,7 +2297,8 @@ bool motion_move_to_n(const float dest_in[MC_CH_MAX]) {
     g_coord_active = false;
     g_coord_master = master;
     ch_set_cruise_accel(master, clamp_speed_ch(master, session_get()->speed_mm_s),
-                        clamp_accel_ch(master, session_get()->accel_mm_s2));
+                        clamp_accel_ch(master, session_get()->accel_mm_s2),
+                        clamp_accel_ch(master, session_get()->decel_mm_s2));
   }
 
   for (int ch = 0; ch < n; ++ch) {
@@ -2403,8 +2442,9 @@ bool motion_set_speed(float mm_s) {
   return true;
 }
 
-bool motion_set_accel(float mm_s2) {
-  session_get()->accel_mm_s2 = mm_s2;
+bool motion_set_accel(float accel_mm_s2, float decel_mm_s2) {
+  session_get()->accel_mm_s2 = accel_mm_s2;
+  session_get()->decel_mm_s2 = decel_mm_s2;
   if (g_joy_active) {
     apply_joy_cruise_accel();
   } else {

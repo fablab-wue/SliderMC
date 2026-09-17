@@ -63,7 +63,7 @@ bool motion_soft_reset(void); /* clear alarm / reset hold */
 bool motion_set_position(const float mm[MC_CH_MAX]);
 
 bool motion_set_speed(float mm_s);
-bool motion_set_accel(float mm_s2);
+bool motion_set_accel(float accel_mm_s2, float decel_mm_s2);
 bool motion_set_max_speed(float mm_s);
 /** Session working window (SL/SR). set[i]=false skips; set+NAN stores None. false = !E:limit. */
 bool motion_set_window_left(const bool set[MC_CH_MAX], const float mm[MC_CH_MAX]);
@@ -80,9 +80,10 @@ int motion_master_channel(void);
 void motion_stub_tick_ms(unsigned ms);
 
 #ifdef HOST_TEST
-/** Per-axis cruise/accel after dual-MT ratio (for host tests). */
+/** Per-axis cruise/accel/decel after dual-MT ratio (for host tests). */
 float motion_host_axis_cruise(int axis);
 float motion_host_axis_accel(int axis);
+float motion_host_axis_decel(int axis);
 #endif
 
 #ifdef __cplusplus

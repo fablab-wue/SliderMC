@@ -24,6 +24,7 @@ static float g_move_start[MC_CH_MAX];
 static McState g_move_phase;
 static float g_cruise[MC_CH_MAX];
 static float g_accel[MC_CH_MAX];
+static float g_decel[MC_CH_MAX];
 static bool g_coord_active;
 static int g_coord_master;
 static float g_coord_ratio[MC_CH_MAX];
@@ -93,10 +94,11 @@ static void coord_clear_if_idle(void) {
   coord_clear();
 }
 
-static void scale_cruise_accel(int ch, float v0, float a0, float ratio, float *v_out,
-                               float *a_out) {
+static void scale_cruise_accel(int ch, float v0, float a0, float d0, float ratio, float *v_out,
+                               float *a_out, float *d_out) {
   float v1 = v0 * ratio;
   float a1 = a0 * ratio;
+  float d1 = d0 * ratio;
   float vmax = ch_max_speed(ch);
   float amax = ch_max_accel(ch);
   if (v1 > vmax) {
@@ -105,14 +107,21 @@ static void scale_cruise_accel(int ch, float v0, float a0, float ratio, float *v
   if (a1 > amax) {
     a1 = amax;
   }
+  if (d1 > amax) {
+    d1 = amax;
+  }
   if (v1 < 0.001f) {
     v1 = 0.001f;
   }
   if (a1 < 0.001f) {
     a1 = 0.001f;
   }
+  if (d1 < 0.001f) {
+    d1 = 0.001f;
+  }
   *v_out = v1;
   *a_out = a1;
+  *d_out = d1;
 }
 
 static float clamp_speed_ch(int ch, float v) {
@@ -137,7 +146,7 @@ static float clamp_accel_ch(int ch, float a) {
   return a;
 }
 
-static void apply_cruise_accel(float v0, float a0) {
+static void apply_cruise_accel(float v0, float a0, float d0) {
   int n = stub_nch();
   int master = g_coord_active ? g_coord_master : 0;
   if (master < 0 || master >= n) {
@@ -146,16 +155,19 @@ static void apply_cruise_accel(float v0, float a0) {
   if (g_coord_active) {
     g_cruise[master] = clamp_speed_ch(master, v0);
     g_accel[master] = clamp_accel_ch(master, a0);
+    g_decel[master] = clamp_accel_ch(master, d0);
     for (int ch = 0; ch < n; ++ch) {
       if (ch == master) {
         continue;
       }
-      scale_cruise_accel(ch, v0, a0, g_coord_ratio[ch], &g_cruise[ch], &g_accel[ch]);
+      scale_cruise_accel(ch, v0, a0, d0, g_coord_ratio[ch], &g_cruise[ch], &g_accel[ch],
+                         &g_decel[ch]);
     }
   } else {
     for (int ch = 0; ch < MC_CH_MAX; ++ch) {
       g_cruise[ch] = clamp_speed_ch(ch, v0);
       g_accel[ch] = clamp_accel_ch(ch, a0);
+      g_decel[ch] = clamp_accel_ch(ch, d0);
     }
   }
   for (int ch = 0; ch < n; ++ch) {
@@ -167,7 +179,8 @@ static void apply_cruise_accel(float v0, float a0) {
 }
 
 static void apply_session_cruise_accel(void) {
-  apply_cruise_accel(session_get()->speed_mm_s, session_get()->accel_mm_s2);
+  apply_cruise_accel(session_get()->speed_mm_s, session_get()->accel_mm_s2,
+                     session_get()->decel_mm_s2);
 }
 
 static float signed_cruise_from_pct(int ch, float pct) {
@@ -182,6 +195,7 @@ static float signed_cruise_from_pct(int ch, float pct) {
 static void apply_joy_cruise_accel(void) {
   for (int ch = 0; ch < stub_nch(); ++ch) {
     g_accel[ch] = clamp_accel_ch(ch, session_get()->accel_mm_s2);
+    g_decel[ch] = clamp_accel_ch(ch, session_get()->decel_mm_s2);
     float pct = g_joy_pct[ch];
     if (fabsf(pct) < 1e-3f) {
       continue;
@@ -385,6 +399,7 @@ bool motion_move_to_n(const float dest_in[MC_CH_MAX]) {
     apply_session_cruise_accel();
     g_cruise[master] = clamp_speed_ch(master, session_get()->speed_mm_s);
     g_accel[master] = clamp_accel_ch(master, session_get()->accel_mm_s2);
+    g_decel[master] = clamp_accel_ch(master, session_get()->decel_mm_s2);
   }
   for (int ch = 0; ch < n; ++ch) {
     if (want[ch]) {
@@ -435,6 +450,7 @@ static void stop_ch_stub(int ch) {
 
 static void request_joy_ch(int ch, float signed_v) {
   g_accel[ch] = clamp_accel_ch(ch, session_get()->accel_mm_s2);
+  g_decel[ch] = clamp_accel_ch(ch, session_get()->decel_mm_s2);
   if (fabsf(signed_v) < 1e-4f) {
     stop_ch_stub(ch);
     return;
@@ -621,8 +637,9 @@ bool motion_set_speed(float mm_s) {
   return true;
 }
 
-bool motion_set_accel(float mm_s2) {
-  session_get()->accel_mm_s2 = mm_s2;
+bool motion_set_accel(float accel_mm_s2, float decel_mm_s2) {
+  session_get()->accel_mm_s2 = accel_mm_s2;
+  session_get()->decel_mm_s2 = decel_mm_s2;
   if (g_joy_active) {
     apply_joy_cruise_accel();
   } else {
@@ -754,5 +771,12 @@ float motion_host_axis_accel(int axis) {
     return 0.0f;
   }
   return g_accel[axis];
+}
+
+float motion_host_axis_decel(int axis) {
+  if (axis < 0 || axis >= MC_CH_MAX) {
+    return 0.0f;
+  }
+  return g_decel[axis];
 }
 #endif

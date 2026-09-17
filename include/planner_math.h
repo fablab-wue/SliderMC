@@ -25,6 +25,9 @@ extern "C" {
 /** Max |v| (mm/s) that can stop within dist_mm: d = π v² / (4 a). */
 float planner_vmax_for_distance(float dist_mm, float accel_mm_s2);
 
+/** Triangle (no-cruise) peak |v|: D = π v²/4 · (1/a_accel + 1/a_decel). */
+float planner_vmax_triangle(float dist_mm, float accel_mm_s2, float decel_mm_s2);
+
 /**
  * Pack size 0..64. remaining_steps <= 0 → 0 (pendeln guard) before any shortcut.
  * pending_steps = steps already in TX shadow for budget accounting.

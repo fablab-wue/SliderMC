@@ -14,6 +14,15 @@ float planner_vmax_for_distance(float dist_mm, float accel_mm_s2) {
   return sqrtf(4.0f * a * dist_mm / (float)M_PI);
 }
 
+float planner_vmax_triangle(float dist_mm, float accel_mm_s2, float decel_mm_s2) {
+  if (dist_mm <= 0.0f) {
+    return 0.0f;
+  }
+  float aa = accel_mm_s2 < 1e-3f ? 1e-3f : accel_mm_s2;
+  float ad = decel_mm_s2 < 1e-3f ? 1e-3f : decel_mm_s2;
+  return sqrtf(4.0f * dist_mm / ((float)M_PI * (1.0f / aa + 1.0f / ad)));
+}
+
 int planner_pack_n_min(float step_hz, int remaining_steps, int pending_steps,
                        int pack_min_hz) {
   if (remaining_steps <= 0) {

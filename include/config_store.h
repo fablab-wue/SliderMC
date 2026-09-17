@@ -96,6 +96,7 @@ typedef struct {
 typedef struct {
   float speed_mm_s;
   float accel_mm_s2;
+  float decel_mm_s2;
   int terminal;
   int verbose;
   int path_slice_us;

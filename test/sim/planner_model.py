@@ -31,18 +31,31 @@ def vmax_for_distance(d: float, a: float) -> float:
     return math.sqrt(4.0 * a * d / math.pi)
 
 
-def expected_triangle_time(dist_mm: float, cruise: float, accel: float) -> float:
+def vmax_triangle(dist_mm: float, accel: float, decel: float) -> float:
+    if dist_mm <= 0.0:
+        return 0.0
+    aa = max(accel, 1e-3)
+    ad = max(decel, 1e-3)
+    return math.sqrt(4.0 * dist_mm / (math.pi * (1.0 / aa + 1.0 / ad)))
+
+
+def expected_triangle_time(dist_mm: float, cruise: float, accel: float,
+                           decel: Optional[float] = None) -> float:
     """Rough duration for a sine accel+decel (+cruise) over dist_mm."""
-    if dist_mm <= 0.0 or cruise < 1e-3 or accel < 1e-3:
+    if decel is None:
+        decel = accel
+    if dist_mm <= 0.0 or cruise < 1e-3 or accel < 1e-3 or decel < 1e-3:
         return 1.0
-    v_peak = min(cruise, vmax_for_distance(dist_mm * 0.5, accel))
+    v_peak = min(cruise, vmax_triangle(dist_mm, accel, decel))
     if v_peak < 1e-3:
         return 1.0
-    t_ramp = math.pi * v_peak / (2.0 * accel)  # one half-sine
-    d_ramp = math.pi * v_peak * v_peak / (4.0 * accel)
-    if 2.0 * d_ramp >= dist_mm:
-        return 2.0 * t_ramp
-    return 2.0 * t_ramp + (dist_mm - 2.0 * d_ramp) / v_peak
+    t_a = math.pi * v_peak / (2.0 * accel)
+    t_d = math.pi * v_peak / (2.0 * decel)
+    d_a = math.pi * v_peak * v_peak / (4.0 * accel)
+    d_d = math.pi * v_peak * v_peak / (4.0 * decel)
+    if d_a + d_d >= dist_mm:
+        return t_a + t_d
+    return t_a + t_d + (dist_mm - d_a - d_d) / v_peak
 
 
 def halfway_time(cruise: float, accel: float, dist_mm: float = 100.0) -> float:
@@ -62,6 +75,8 @@ class ScenarioResult:
     pos_mm: float
     target_mm: float
     pos_err: float
+    peak_pos_mm: float = 0.0
+    cruise_dwell_s: float = 0.0
     events: List[Tuple[float, float, float, str]] = field(default_factory=list)
     detail: str = ""
     retarget_v: float = 0.0
@@ -69,9 +84,10 @@ class ScenarioResult:
 
 
 class Sim:
-    def __init__(self, cruise: float = 20.0, accel: float = 10.0):
+    def __init__(self, cruise: float = 20.0, accel: float = 10.0, decel: Optional[float] = None):
         self.cruise = cruise
         self.accel = accel
+        self.decel = accel if decel is None else decel
         self.pos = 0
         self.target = 0
         self.vel = 0.0
@@ -206,7 +222,7 @@ class Sim:
             else:
                 v_stop = STOP_APPROACH_HZ / SPMM if STOP_APPROACH_HZ > 0 else 0.0
                 if (abs(self.vel) <= v_stop + 1e-3
-                        or self.stop_rem_steps(self.vel, self.accel, SPMM) <= 4):
+                        or self.stop_rem_steps(self.vel, self.decel, SPMM) <= 4):
                     self.vel = 0.0
                     break
                 sign = 1 if self.vel >= 0 else -1
@@ -218,7 +234,7 @@ class Sim:
                 reverse_decel = True
 
             if self.stopping or err == 0 or reverse_decel:
-                rem = self.stop_rem_steps(self.vel, self.accel, SPMM)
+                rem = self.stop_rem_steps(self.vel, self.decel, SPMM)
             else:
                 rem = self.remaining_steps_for_sign(sign)
 
@@ -231,11 +247,11 @@ class Sim:
                 break
 
             rem_mm = rem / SPMM
-            vmax = vmax_for_distance(rem_mm, self.accel)
+            vmax = vmax_for_distance(rem_mm, self.decel)
             cruise_cap = min(self.cruise, MAX_SPEED_MM_S)
             need_brake = (not self.stopping and not reverse_decel
                           and abs(self.vel) > 0.01
-                          and rem <= self.stop_rem_steps(abs(self.vel), self.accel, SPMM) + 4)
+                          and rem <= self.stop_rem_steps(abs(self.vel), self.decel, SPMM) + 4)
             if (self.stopping or reverse_decel):
                 v_cmd = 0.0
             elif BRAKE_SCURVE and (self.braking or need_brake):
@@ -454,12 +470,15 @@ def run_scenario(
     actions: Sequence[Action],
     verbose: bool = False,
     t_end: float = 120.0,
+    decel: Optional[float] = None,
 ) -> ScenarioResult:
     """Run scheduled actions. Returns ScenarioResult (ok flag for asserts)."""
-    s = Sim(cruise=cruise, accel=accel)
+    s = Sim(cruise=cruise, accel=accel, decel=decel)
     next_tick = 0.0
     next_verbose = 0.0
     peak_v = 0.0
+    peak_pos = 0
+    cruise_dwell = 0.0
     pending = list(actions)
     step = 0.0001
     retarget_v = 0.0
@@ -467,7 +486,7 @@ def run_scenario(
 
     if verbose:
         print("\n=== %s ===" % name)
-        print("  start: ss%g sa%g" % (cruise, accel))
+        print("  start: ss%g sa%g sd%g" % (cruise, accel, s.decel))
 
     while s.t < t_end:
         while pending and s.t + 1e-9 >= pending[0][0]:
@@ -487,7 +506,12 @@ def run_scenario(
         if s.t >= next_tick:
             s.tick(0.005)
             next_tick += 0.005
-        peak_v = max(peak_v, abs(s.vel))
+        av = abs(s.vel)
+        if av > peak_v:
+            peak_v = av
+            peak_pos = s.pos
+        if av >= cruise * 0.98:
+            cruise_dwell += step
         if s.t >= next_verbose:
             if verbose:
                 state = "M" if s.moving else "I"
@@ -507,7 +531,7 @@ def run_scenario(
     if verbose:
         print("  -> %s %s" % ("PASS" if ok else "FAIL", detail))
         for t, p, v, m in s.events:
-            print("      t=%7.4f pos=%8.3f v=%6.2f  %s" % (t, p, v, m))
+            print("     event t=%.3f pos=%.3f v=%.3f %s" % (t, p, v, m))
 
     return ScenarioResult(
         name=name,
@@ -520,4 +544,6 @@ def run_scenario(
         events=list(s.events),
         detail=detail,
         retarget_v=retarget_v,
+        peak_pos_mm=peak_pos / SPMM,
+        cruise_dwell_s=cruise_dwell,
     )

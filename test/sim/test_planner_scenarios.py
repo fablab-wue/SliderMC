@@ -17,6 +17,7 @@ from test.sim.planner_model import (  # noqa: E402
     halfway_time,
     run_scenario,
     vmax_for_distance,
+    vmax_triangle,
 )
 
 SPEEDS = (5.0, 20.0, 50.0, 100.0)
@@ -231,6 +232,49 @@ class PlannerScenarioMatrix(unittest.TestCase):
         print("passed=%d skipped=%d failed=%d" % (passed, skipped, len(fails)))
         if fails:
             self.fail("%d scenario(s) failed:\n  %s" % (len(fails), "\n  ".join(fails[:20])))
+
+
+class AsymmetricTriangleMove(unittest.TestCase):
+    """No-cruise moves with independent accel/decel must meet at the stop-distance peak."""
+
+    def test_asymmetric_no_cruise(self):
+        dist = 20.0
+        cruise = 100.0
+        cases = ((200.0, 50.0), (50.0, 200.0))
+        peaks = []
+        for accel, decel in cases:
+            name = "triangle a%g/d%g" % (accel, decel)
+            res = run_scenario(
+                name, cruise, accel,
+                [(0.0, lambda s, dest=dist: s.move_to(dest))],
+                decel=decel)
+            _assert_common(self, res, cruise, min(accel, decel), dist_for_peak=dist)
+            v_exp = vmax_triangle(dist, accel, decel)
+            self.assertLess(v_exp, cruise * 0.9, "%s: not a triangle" % name)
+            self.assertLess(res.cruise_dwell_s, 0.05, "%s: cruise dwell %.3f" %
+                            (name, res.cruise_dwell_s))
+            self.assertAlmostEqual(res.peak_v, v_exp, delta=max(2.0, 0.15 * v_exp),
+                                   msg="%s peak_v=%.2f exp=%.2f %s" %
+                                   (name, res.peak_v, v_exp, res.detail))
+            d_peak = dist * decel / (accel + decel)
+            self.assertAlmostEqual(res.peak_pos_mm, d_peak, delta=max(1.5, 0.2 * dist),
+                                   msg="%s peak_pos=%.2f exp=%.2f" %
+                                   (name, res.peak_pos_mm, d_peak))
+            peaks.append(res.peak_v)
+        self.assertAlmostEqual(peaks[0], peaks[1], delta=2.0,
+                               msg="swapped ramps should share v_peak")
+        # Fast start / slow stop peaks earlier than the swapped pair.
+        res_fast = run_scenario(
+            "early peak", cruise, 200.0,
+            [(0.0, lambda s: s.move_to(dist))],
+            decel=50.0)
+        res_slow = run_scenario(
+            "late peak", cruise, 50.0,
+            [(0.0, lambda s: s.move_to(dist))],
+            decel=200.0)
+        self.assertLess(res_fast.peak_pos_mm, res_slow.peak_pos_mm,
+                        "fast accel should peak earlier (%.2f vs %.2f)" %
+                        (res_fast.peak_pos_mm, res_slow.peak_pos_mm))
 
 
 class ZeroStepMoveTo(unittest.TestCase):
