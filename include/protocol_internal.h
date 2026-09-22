@@ -53,6 +53,13 @@ void protocol_verbose_reset_dedupe(void);
 /** USB-only debug line if config init_debug_level >= min_level. Never goes to UIC UART. */
 void protocol_debug(int min_level, const char *fmt, ...);
 
+/**
+ * Format a float for UIC (verbose/`?`, float GET replies, CG).
+ * At least 3 significant digits, 2 fraction digits when |v| >= 1, round half
+ * away from zero, strip trailing zeros. NaN prints "-", 0 prints "0".
+ */
+void protocol_format_num(char *dst, size_t n, float v);
+
 #ifdef __cplusplus
 }
 #endif

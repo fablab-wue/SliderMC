@@ -423,17 +423,15 @@ static void reply_query_int(const char *tag, int v) {
 }
 
 static void reply_query_float(const char *tag, float v) {
-  char buf[40];
-  snprintf(buf, sizeof(buf), "%s:%.2f\n", tag, (double)v);
+  char num[32];
+  protocol_format_num(num, sizeof(num), v);
+  char buf[48];
+  snprintf(buf, sizeof(buf), "%s:%s\n", tag, num);
   protocol_write(buf);
 }
 
 static void fmt_window_field(char *out, size_t n, float v) {
-  if (isnan(v)) {
-    snprintf(out, n, "-");
-  } else {
-    snprintf(out, n, "%.2f", (double)v);
-  }
+  protocol_format_num(out, n, v);
 }
 
 static void reply_pipe_floats(const char *tag, const float *v, int n, bool window) {
@@ -451,11 +449,11 @@ static void reply_pipe_floats(const char *tag, const float *v, int n, bool windo
       buf[used++] = ' ';
       buf[used] = 0;
     }
-    char f[16];
+    char f[32];
     if (window) {
       fmt_window_field(f, sizeof(f), v[i]);
     } else {
-      snprintf(f, sizeof(f), "%.2f", (double)v[i]);
+      protocol_format_num(f, sizeof(f), v[i]);
     }
     size_t fl = strlen(f);
     if (used + fl + 1 >= sizeof(buf)) {
@@ -1335,9 +1333,10 @@ bool protocol_exec_command(const char *cmd) {
     return false;
   }
   if (match_any(cmd, &rest, "GA", "GetAccel", nullptr)) {
-    char buf[48];
-    snprintf(buf, sizeof(buf), "GA:%.2f %.2f\n", (double)sess->accel_mm_s2,
-             (double)sess->decel_mm_s2);
+    char accel[32], decel[32], buf[72];
+    protocol_format_num(accel, sizeof(accel), sess->accel_mm_s2);
+    protocol_format_num(decel, sizeof(decel), sess->decel_mm_s2);
+    snprintf(buf, sizeof(buf), "GA:%s %s\n", accel, decel);
     protocol_write(buf);
     return false;
   }
@@ -1632,10 +1631,11 @@ bool protocol_exec_command(const char *cmd) {
     }
     {
       const char *krest = key;
-      if (starts_cmd(key, "BUZZER_use", &krest)) {
+      if (starts_cmd(key, "BUZZER_use", &krest) || starts_cmd(key, "buzzer", &krest)) {
         board_buzzer_reconfigure();
       }
-      if (starts_cmd(key, "motors", &krest) || starts_cmd(key, "servos", &krest)) {
+      if (starts_cmd(key, "motors", &krest) || starts_cmd(key, "servos", &krest) ||
+          starts_cmd(key, "motor_count", &krest) || starts_cmd(key, "servo_count", &krest)) {
         board_gpio_init();
 #ifndef HOST_TEST
         if (!pio_step_reconfigure()) {

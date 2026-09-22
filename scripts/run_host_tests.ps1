@@ -45,6 +45,7 @@ Invoke-HostTest "protocol" "test/host/test_protocol.exe" @(
   "src/protocol/parser.cpp",
   "src/protocol/commands.cpp",
   "src/protocol/verbose.cpp",
+  "src/protocol/format_num.cpp",
   "src/config/config_store.cpp",
   "src/board/littlefs_port.cpp",
   "src/board/gpio.cpp",
@@ -65,6 +66,7 @@ Invoke-HostTest "motion_path" "test/host/test_motion_path.exe" @(
   "src/motion/motion_stub.cpp",
   "src/motion/servo_pwm.cpp",
   "src/config/config_store.cpp",
+  "src/protocol/format_num.cpp",
   "test/host/test_motion_path.cpp"
 )
 

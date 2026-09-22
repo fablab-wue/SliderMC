@@ -33,7 +33,8 @@ typedef struct {
   int motors; /* 1|2|3 live STEP/DIR axes (clamped to board support) */
   int servos; /* 0..3 RC servo PWM channels */
   char name[CFG_NAME_MAX]; /* optional device name for welcome banner; empty = omit */
-  char unit_name[CFG_UNIT_NAME_MAX]; /* UIC label for user units; default "mm" */
+  char motor_unit[MOTOR_MAX][CFG_UNIT_NAME_MAX]; /* UIC label; default "mm" */
+  char servo_unit[SERVO_MAX][CFG_UNIT_NAME_MAX]; /* UIC label; default "deg" */
 
   /* Pin active level: 0 = low-active / asserted at 0, 1 = high-active */
   int drv_step_active;

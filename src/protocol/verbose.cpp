@@ -46,39 +46,6 @@ char protocol_state_letter(void) {
   }
 }
 
-/** Format with at most 2 decimals (truncate, not round); strip trailing zeros. */
-static void format_num(char *dst, size_t n, float v) {
-  if (n == 0) {
-    return;
-  }
-  if (v != v) {
-    snprintf(dst, n, "0");
-    return;
-  }
-  float scaled = v * 100.0f;
-  float trunc_scaled = (scaled >= 0.0f) ? floorf(scaled) : ceilf(scaled);
-  float t = trunc_scaled / 100.0f;
-  if (fabsf(t) < 0.005f) {
-    snprintf(dst, n, "0");
-    return;
-  }
-  char tmp[32];
-  snprintf(tmp, sizeof(tmp), "%.2f", (double)t);
-  size_t len = strlen(tmp);
-  while (len > 0 && tmp[len - 1] == '0') {
-    tmp[--len] = 0;
-  }
-  if (len > 0 && tmp[len - 1] == '.') {
-    tmp[--len] = 0;
-  }
-  if (len == 0 || (len == 1 && tmp[0] == '-')) {
-    snprintf(dst, n, "0");
-    return;
-  }
-
-  snprintf(dst, n, "%s", tmp);
-}
-
 static void append_str(char *buf, size_t buflen, const char *s) {
   size_t used = strlen(buf);
   size_t sl = strlen(s);
@@ -93,17 +60,17 @@ static bool format_axis_group(char *tmp, size_t n, float pos, float vel, float a
                               bool moving, bool homing, bool emit_dest) {
   char num[32];
   tmp[0] = 0;
-  format_num(num, sizeof(num), pos);
+  protocol_format_num(num, sizeof(num), pos);
   snprintf(tmp, n, "%s", num);
   if (moving || homing) {
-    format_num(num, sizeof(num), fabsf(vel));
+    protocol_format_num(num, sizeof(num), fabsf(vel));
     size_t used = strlen(tmp);
     snprintf(tmp + used, n - used, " %s", num);
-    format_num(num, sizeof(num), fabsf(acc));
+    protocol_format_num(num, sizeof(num), fabsf(acc));
     used = strlen(tmp);
     snprintf(tmp + used, n - used, " %s", num);
     if (moving && !homing && emit_dest) {
-      format_num(num, sizeof(num), dest);
+      protocol_format_num(num, sizeof(num), dest);
       used = strlen(tmp);
       snprintf(tmp + used, n - used, " %s", num);
     }

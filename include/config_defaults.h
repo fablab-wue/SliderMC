@@ -30,7 +30,8 @@
 #define MC_CH_MAX 6 /* packed motors then servos */
 #define CFG_NAME_MAX 32 /* device name for welcome banner (incl. NUL) */
 #define CFG_UNIT_NAME_MAX 8 /* unit label for UIC, e.g. "mm" / "deg" (incl. NUL) */
-#define CFG_DEFAULT_UNIT_NAME "mm"
+#define CFG_DEFAULT_MOTOR_UNIT "mm"
+#define CFG_DEFAULT_SERVO_UNIT "deg"
 
 /* Pin active level: 0 = low-active, 1 = high-active */
 #define CFG_DEFAULT_DRV_STEP_ACTIVE 1

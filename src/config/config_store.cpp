@@ -2,6 +2,7 @@
 #include "config_defaults.h"
 #include "pins.h"
 #include "motion_path.h"
+#include "protocol_internal.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -170,6 +171,8 @@ static void config_apply_defaults(void) {
   for (int i = 0; i < MOTOR_MAX; ++i) {
     g_cfg.motor_min[i] = CFG_DEFAULT_MOTOR_MIN;
     g_cfg.motor_max[i] = CFG_DEFAULT_MOTOR_MAX;
+    strncpy(g_cfg.motor_unit[i], CFG_DEFAULT_MOTOR_UNIT, CFG_UNIT_NAME_MAX - 1);
+    g_cfg.motor_unit[i][CFG_UNIT_NAME_MAX - 1] = 0;
   }
   for (int i = 0; i < SERVO_MAX; ++i) {
     g_cfg.servo_min[i] = CFG_DEFAULT_SERVO_MIN;
@@ -180,6 +183,8 @@ static void config_apply_defaults(void) {
     g_cfg.servo_min_pulse[i] = CFG_DEFAULT_SERVO_MIN_PULSE;
     g_cfg.servo_max_pulse[i] = CFG_DEFAULT_SERVO_MAX_PULSE;
     g_cfg.servo_swap[i] = CFG_DEFAULT_SERVO_SWAP;
+    strncpy(g_cfg.servo_unit[i], CFG_DEFAULT_SERVO_UNIT, CFG_UNIT_NAME_MAX - 1);
+    g_cfg.servo_unit[i][CFG_UNIT_NAME_MAX - 1] = 0;
   }
   g_cfg.init_verbose = CFG_DEFAULT_INIT_VERBOSE;
   g_cfg.verbose_rate_hz = CFG_DEFAULT_VERBOSE_RATE_HZ;
@@ -189,8 +194,6 @@ static void config_apply_defaults(void) {
   g_cfg.motors = CFG_DEFAULT_MOTORS;
   g_cfg.servos = CFG_DEFAULT_SERVOS;
   g_cfg.name[0] = 0;
-  strncpy(g_cfg.unit_name, CFG_DEFAULT_UNIT_NAME, sizeof(g_cfg.unit_name) - 1);
-  g_cfg.unit_name[sizeof(g_cfg.unit_name) - 1] = 0;
   g_cfg.drv_step_active = CFG_DEFAULT_DRV_STEP_ACTIVE;
   g_cfg.drv_dir_active = CFG_DEFAULT_DRV_DIR_ACTIVE;
   g_cfg.drv_enable_active = CFG_DEFAULT_DRV_ENABLE_ACTIVE;
@@ -542,6 +545,71 @@ static bool match_kind_n_field(const char *key, const char *kind, const char *fi
   return true;
 }
 
+/* Printable ASCII label (e.g. mm, deg); non-empty; max CFG_UNIT_NAME_MAX-1; no '#'. */
+static bool set_unit_label(const char *value, char *dst, size_t dst_len) {
+  size_t n = 0;
+  if (!value || !value[0] || dst_len < 2) {
+    return false;
+  }
+  while (value[n] && n + 1 < dst_len) {
+    unsigned char ch = (unsigned char)value[n];
+    if (ch < 0x20 || ch > 0x7e || ch == '#') {
+      return false;
+    }
+    ++n;
+  }
+  if (value[n] != 0) {
+    return false; /* too long */
+  }
+  memcpy(dst, value, n);
+  dst[n] = 0;
+  return true;
+}
+
+/* axis_N_unit, N=1..6. Packed channel; read-only. */
+static bool match_axis_n_unit(const char *key, int *idx0) {
+  size_t i = 0;
+  static const char prefix[] = "axis_";
+  for (; prefix[i]; ++i) {
+    char ca = key[i];
+    if (ca >= 'A' && ca <= 'Z') {
+      ca = (char)(ca - 'A' + 'a');
+    }
+    if (!key[i] || ca != prefix[i]) {
+      return false;
+    }
+  }
+  if (key[i] < '1' || key[i] > '6') {
+    return false;
+  }
+  int n = key[i] - '1';
+  ++i;
+  if (icmp(key + i, "_unit") != 0) {
+    return false;
+  }
+  *idx0 = n;
+  return true;
+}
+
+/* Packed channel unit: motors, then servos. Same index as config_channel_min. */
+static const char *config_channel_unit(int ch) {
+  int nm = g_cfg.motors;
+  if (nm < 1) {
+    nm = 1;
+  }
+  if (ch < 0 || ch >= MC_CH_MAX) {
+    return nullptr;
+  }
+  if (ch < nm) {
+    return g_cfg.motor_unit[ch];
+  }
+  int s = ch - nm;
+  if (s < 0 || s >= SERVO_MAX) {
+    return nullptr;
+  }
+  return g_cfg.servo_unit[s];
+}
+
 /* axis_min_N / axis_max_N / soft_min_N / soft_max_N, N=1..6 */
 static bool match_synth_env(const char *key, bool *is_min, int *idx0) {
   const char *p = key;
@@ -601,16 +669,85 @@ static bool counts_change_ok(void) {
   return true;
 }
 
-static bool fmt_env(char *out, size_t out_len, float v) {
-  if (isnan(v)) {
-    snprintf(out, out_len, "none");
-  } else {
-    snprintf(out, out_len, "%.3g", (double)v);
-  }
+static bool fmt_float(char *out, size_t out_len, float v) {
+  protocol_format_num(out, out_len, v);
   return true;
 }
 
+/* Factory / saved spelling → matcher still used by older CS lines. */
+static const char *config_legacy_key(const char *key, char *buf, size_t buflen) {
+  if (!key || !buf || buflen < 8) {
+    return key;
+  }
+  if (icmp(key, "motor_count") == 0) {
+    return "motors";
+  }
+  if (icmp(key, "servo_count") == 0) {
+    return "servos";
+  }
+  if (icmp(key, "wdt") == 0) {
+    return "WDT_use";
+  }
+  if (icmp(key, "buzzer") == 0) {
+    return "BUZZER_use";
+  }
+  if (icmp(key, "motor_enable_active") == 0) {
+    return "DRV_ENABLE_active";
+  }
+  char fold[CFG_KEY_MAX];
+  size_t n = 0;
+  for (; key[n] && n + 1 < sizeof(fold); ++n) {
+    char c = key[n];
+    if (c >= 'A' && c <= 'Z') {
+      c = (char)(c - 'A' + 'a');
+    }
+    fold[n] = c;
+  }
+  fold[n] = 0;
+  if (strncmp(fold, "motor_", 6) != 0 || fold[6] < '1' || fold[6] > '3' || fold[7] != '_') {
+    return key;
+  }
+  const char nd = fold[6];
+  const char *field = fold + 8;
+  const char *fmt = nullptr;
+  if (strcmp(field, "max_speed") == 0) {
+    fmt = "max_speed_%c";
+  } else if (strcmp(field, "max_accel") == 0) {
+    fmt = "max_accel_%c";
+  } else if (strcmp(field, "steps_per_unit") == 0) {
+    fmt = "steps_per_unit_%c";
+  } else if (strcmp(field, "step_active") == 0) {
+    fmt = "DRV_STEP_%c_active";
+  } else if (strcmp(field, "dir_active") == 0) {
+    fmt = "DRV_DIR_%c_active";
+  } else if (strcmp(field, "error_active") == 0) {
+    fmt = "DRV_ERROR_%c_active";
+  } else if (strcmp(field, "limit_l_active") == 0) {
+    fmt = "SW_LIMIT_L_%c_active";
+  } else if (strcmp(field, "limit_l_use") == 0) {
+    fmt = "SW_LIMIT_L_%c_use";
+  } else if (strcmp(field, "limit_r_active") == 0) {
+    fmt = "SW_LIMIT_R_%c_active";
+  } else if (strcmp(field, "limit_r_use") == 0) {
+    fmt = "SW_LIMIT_R_%c_use";
+  } else if (strcmp(field, "home_mode") == 0) {
+    fmt = "home_mode_%c";
+  } else if (strcmp(field, "home_backoff") == 0) {
+    fmt = "home_move_out_%c";
+  } else if (strcmp(field, "home_speed") == 0) {
+    fmt = "home_speed_%c";
+  } else if (strcmp(field, "home_accel") == 0) {
+    fmt = "home_accel_%c";
+  } else {
+    return key;
+  }
+  snprintf(buf, buflen, fmt, nd);
+  return buf;
+}
+
 bool config_set_key(const char *key, const char *value) {
+  char renamed[CFG_KEY_MAX];
+  key = config_legacy_key(key, renamed, sizeof(renamed));
   if (!key || !value) {
     return false;
   }
@@ -684,6 +821,9 @@ bool config_set_key(const char *key, const char *value) {
     if (match_kind_n_field(key, "MOTOR", "max", &idx)) {
       return set_env_none_or_float(value, &g_cfg.motor_max[idx]);
     }
+    if (match_kind_n_field(key, "MOTOR", "unit", &idx)) {
+      return set_unit_label(value, g_cfg.motor_unit[idx], sizeof(g_cfg.motor_unit[idx]));
+    }
     if (match_kind_n_field(key, "SERVO", "min_pulse", &idx)) {
       return set_servo_pulse(value, &g_cfg.servo_min_pulse[idx], g_cfg.servo_max_pulse[idx],
                              true);
@@ -717,6 +857,9 @@ bool config_set_key(const char *key, const char *value) {
     }
     if (match_kind_n_field(key, "SERVO", "active", &idx)) {
       return set_01(value, &g_cfg.servo_active[idx]);
+    }
+    if (match_kind_n_field(key, "SERVO", "unit", &idx)) {
+      return set_unit_label(value, g_cfg.servo_unit[idx], sizeof(g_cfg.servo_unit[idx]));
     }
   }
   {
@@ -828,26 +971,6 @@ bool config_set_key(const char *key, const char *value) {
     }
     memcpy(g_cfg.name, value, n);
     g_cfg.name[n] = 0;
-    return true;
-  }
-  if (icmp(key, "unit_name") == 0) {
-    /* Printable ASCII label for UIC (e.g. mm, deg); non-empty. */
-    size_t n = 0;
-    if (!value || !value[0]) {
-      return false;
-    }
-    while (value[n] && n + 1 < sizeof(g_cfg.unit_name)) {
-      unsigned char ch = (unsigned char)value[n];
-      if (ch < 0x20 || ch > 0x7e || ch == '#') {
-        return false;
-      }
-      ++n;
-    }
-    if (value[n] != 0) {
-      return false; /* too long */
-    }
-    memcpy(g_cfg.unit_name, value, n);
-    g_cfg.unit_name[n] = 0;
     return true;
   }
   if (icmp(key, "DRV_STEP_1_active") == 0) {
@@ -1071,46 +1194,52 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
   if (!key || !out || out_len < 2) {
     return false;
   }
+  char renamed[CFG_KEY_MAX];
+  key = config_legacy_key(key, renamed, sizeof(renamed));
   const McConfig *c = &g_cfg;
   if (key_is(key, "init_speed", "speed")) {
-    snprintf(out, out_len, "%.3g", (double)c->init_speed_mm_s);
+    protocol_format_num(out, out_len, c->init_speed_mm_s);
     return true;
   }
   if (key_is(key, "init_accel", "accel")) {
-    snprintf(out, out_len, "%.3g", (double)c->init_accel_mm_s2);
+    protocol_format_num(out, out_len, c->init_accel_mm_s2);
     return true;
   }
   if (icmp(key, "max_speed_1") == 0) {
-    snprintf(out, out_len, "%.3g", (double)c->max_speed_mm_s);
+    protocol_format_num(out, out_len, c->max_speed_mm_s);
     return true;
   }
   if (icmp(key, "max_accel_1") == 0) {
-    snprintf(out, out_len, "%.3g", (double)c->max_accel_mm_s2);
+    protocol_format_num(out, out_len, c->max_accel_mm_s2);
     return true;
   }
   if (icmp(key, "max_speed_2") == 0) {
-    snprintf(out, out_len, "%.3g", (double)c->max_speed_mm_s_2);
+    protocol_format_num(out, out_len, c->max_speed_mm_s_2);
     return true;
   }
   if (icmp(key, "max_accel_2") == 0) {
-    snprintf(out, out_len, "%.3g", (double)c->max_accel_mm_s2_2);
+    protocol_format_num(out, out_len, c->max_accel_mm_s2_2);
     return true;
   }
   if (key_is(key, "steps_per_unit_1", "steps_per_mm_1")) {
-    snprintf(out, out_len, "%.6g", (double)c->steps_per_unit);
+    protocol_format_num(out, out_len, c->steps_per_unit);
     return true;
   }
   if (key_is(key, "steps_per_unit_2", "steps_per_mm_2")) {
-    snprintf(out, out_len, "%.6g", (double)c->steps_per_unit_2);
+    protocol_format_num(out, out_len, c->steps_per_unit_2);
     return true;
   }
   {
     int idx = 0;
     if (match_kind_n_field(key, "MOTOR", "min", &idx)) {
-      return fmt_env(out, out_len, c->motor_min[idx]);
+      return fmt_float(out, out_len, c->motor_min[idx]);
     }
     if (match_kind_n_field(key, "MOTOR", "max", &idx)) {
-      return fmt_env(out, out_len, c->motor_max[idx]);
+      return fmt_float(out, out_len, c->motor_max[idx]);
+    }
+    if (match_kind_n_field(key, "MOTOR", "unit", &idx)) {
+      snprintf(out, out_len, "%s", c->motor_unit[idx]);
+      return true;
     }
     if (match_kind_n_field(key, "SERVO", "min_pulse", &idx)) {
       snprintf(out, out_len, "%d", c->servo_min_pulse[idx]);
@@ -1125,21 +1254,36 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
       return true;
     }
     if (match_kind_n_field(key, "SERVO", "min", &idx)) {
-      return fmt_env(out, out_len, c->servo_min[idx]);
+      return fmt_float(out, out_len, c->servo_min[idx]);
     }
     if (match_kind_n_field(key, "SERVO", "max", &idx)) {
-      return fmt_env(out, out_len, c->servo_max[idx]);
+      return fmt_float(out, out_len, c->servo_max[idx]);
     }
     if (match_kind_n_field(key, "SERVO", "max_speed", &idx)) {
-      snprintf(out, out_len, "%.3g", (double)c->servo_max_speed[idx]);
+      protocol_format_num(out, out_len, c->servo_max_speed[idx]);
       return true;
     }
     if (match_kind_n_field(key, "SERVO", "max_accel", &idx)) {
-      snprintf(out, out_len, "%.3g", (double)c->servo_max_accel[idx]);
+      protocol_format_num(out, out_len, c->servo_max_accel[idx]);
       return true;
     }
     if (match_kind_n_field(key, "SERVO", "active", &idx)) {
       snprintf(out, out_len, "%d", c->servo_active[idx]);
+      return true;
+    }
+    if (match_kind_n_field(key, "SERVO", "unit", &idx)) {
+      snprintf(out, out_len, "%s", c->servo_unit[idx]);
+      return true;
+    }
+  }
+  {
+    int idx = 0;
+    if (match_axis_n_unit(key, &idx)) {
+      const char *unit = config_channel_unit(idx);
+      if (!unit) {
+        return false;
+      }
+      snprintf(out, out_len, "%s", unit);
       return true;
     }
   }
@@ -1147,7 +1291,7 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     bool is_min = false;
     int idx = 0;
     if (match_synth_env(key, &is_min, &idx)) {
-      return fmt_env(out, out_len, is_min ? config_channel_min(idx) : config_channel_max(idx));
+      return fmt_float(out, out_len, is_min ? config_channel_min(idx) : config_channel_max(idx));
     }
   }
   if (key_is(key, "init_verbose", "verbose")) {
@@ -1184,10 +1328,6 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
   }
   if (icmp(key, "name") == 0) {
     snprintf(out, out_len, "%s", c->name);
-    return true;
-  }
-  if (icmp(key, "unit_name") == 0) {
-    snprintf(out, out_len, "%s", c->unit_name);
     return true;
   }
   if (icmp(key, "DRV_STEP_1_active") == 0) {
@@ -1265,15 +1405,15 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     return true;
   }
   if (icmp(key, "home_move_out_1") == 0) {
-    snprintf(out, out_len, "%.3g", (double)c->home_move_out_mm);
+    protocol_format_num(out, out_len, c->home_move_out_mm);
     return true;
   }
   if (icmp(key, "home_speed_1") == 0) {
-    snprintf(out, out_len, "%.3g", (double)c->home_speed_mm_s);
+    protocol_format_num(out, out_len, c->home_speed_mm_s);
     return true;
   }
   if (icmp(key, "home_accel_1") == 0) {
-    snprintf(out, out_len, "%.3g", (double)c->home_accel_mm_s2);
+    protocol_format_num(out, out_len, c->home_accel_mm_s2);
     return true;
   }
   if (icmp(key, "home_mode_2") == 0) {
@@ -1281,15 +1421,15 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     return true;
   }
   if (icmp(key, "home_move_out_2") == 0) {
-    snprintf(out, out_len, "%.3g", (double)c->home_move_out_mm_2);
+    protocol_format_num(out, out_len, c->home_move_out_mm_2);
     return true;
   }
   if (icmp(key, "home_speed_2") == 0) {
-    snprintf(out, out_len, "%.3g", (double)c->home_speed_mm_s_2);
+    protocol_format_num(out, out_len, c->home_speed_mm_s_2);
     return true;
   }
   if (icmp(key, "home_accel_2") == 0) {
-    snprintf(out, out_len, "%.3g", (double)c->home_accel_mm_s2_2);
+    protocol_format_num(out, out_len, c->home_accel_mm_s2_2);
     return true;
   }
   if (icmp(key, "ramp_start_hz") == 0) {
@@ -1301,7 +1441,7 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     return true;
   }
   if (icmp(key, "dir_change_pause_s") == 0) {
-    snprintf(out, out_len, "%.3g", (double)c->dir_change_pause_s);
+    protocol_format_num(out, out_len, c->dir_change_pause_s);
     return true;
   }
   if (icmp(key, "path_buffer_size") == 0) {
@@ -1313,15 +1453,15 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     return true;
   }
   if (icmp(key, "max_speed_3") == 0) {
-    snprintf(out, out_len, "%.3g", (double)c->max_speed_mm_s_3);
+    protocol_format_num(out, out_len, c->max_speed_mm_s_3);
     return true;
   }
   if (icmp(key, "max_accel_3") == 0) {
-    snprintf(out, out_len, "%.3g", (double)c->max_accel_mm_s2_3);
+    protocol_format_num(out, out_len, c->max_accel_mm_s2_3);
     return true;
   }
   if (key_is(key, "steps_per_unit_3", "steps_per_mm_3")) {
-    snprintf(out, out_len, "%.6g", (double)c->steps_per_unit_3);
+    protocol_format_num(out, out_len, c->steps_per_unit_3);
     return true;
   }
   if (icmp(key, "DRV_DIR_3_active") == 0) {
@@ -1353,15 +1493,15 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     return true;
   }
   if (icmp(key, "home_move_out_3") == 0) {
-    snprintf(out, out_len, "%.3g", (double)c->home_move_out_mm_3);
+    protocol_format_num(out, out_len, c->home_move_out_mm_3);
     return true;
   }
   if (icmp(key, "home_speed_3") == 0) {
-    snprintf(out, out_len, "%.3g", (double)c->home_speed_mm_s_3);
+    protocol_format_num(out, out_len, c->home_speed_mm_s_3);
     return true;
   }
   if (icmp(key, "home_accel_3") == 0) {
-    snprintf(out, out_len, "%.3g", (double)c->home_accel_mm_s2_3);
+    protocol_format_num(out, out_len, c->home_accel_mm_s2_3);
     return true;
   }
   return false;
@@ -1369,100 +1509,105 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
 
 void config_foreach(config_foreach_fn fn, void *ctx) {
   static const char *keys[] = {
-      "max_speed_1",
-      "max_accel_1",
-      "max_speed_2",
-      "max_accel_2",
-      "init_speed",
-      "init_accel",
-      "steps_per_unit_1",
-      "unit_name",
-      "MOTOR_1_min",
-      "MOTOR_1_max",
-      "init_verbose",
-      "verbose_rate_hz",
-      "init_terminal",
-      "init_debug_level",
-      "WDT_use",
-      "motors",
-      "servos",
       "axis",
-      "name",
-      "DRV_STEP_1_active",
-      "DRV_DIR_1_active",
-      "DRV_ENABLE_active",
-      "DRV_ERROR_1_active",
-      "SW_LIMIT_L_1_active",
-      "SW_LIMIT_R_1_active",
-      "SW_LIMIT_L_1_use",
-      "SW_LIMIT_R_1_use",
-      "BUZZER_use",
-      "EXT_1_active",
-      "EXT_2_active",
-      "EXT_3_active",
-      "EXT_4_active",
-      "home_mode_1",
-      "home_move_out_1",
-      "home_speed_1",
-      "home_accel_1",
-      "steps_per_unit_2",
-      "MOTOR_2_min",
-      "MOTOR_2_max",
-      "DRV_STEP_2_active",
-      "DRV_DIR_2_active",
-      "DRV_ERROR_2_active",
-      "SW_LIMIT_L_2_active",
-      "SW_LIMIT_R_2_active",
-      "SW_LIMIT_L_2_use",
-      "SW_LIMIT_R_2_use",
-      "home_mode_2",
-      "home_move_out_2",
-      "home_speed_2",
-      "home_accel_2",
-      "max_speed_3",
-      "max_accel_3",
-      "steps_per_unit_3",
-      "MOTOR_3_min",
-      "MOTOR_3_max",
-      "DRV_DIR_3_active",
-      "DRV_ERROR_3_active",
-      "SW_LIMIT_L_3_active",
-      "SW_LIMIT_R_3_active",
-      "SW_LIMIT_L_3_use",
-      "SW_LIMIT_R_3_use",
-      "home_mode_3",
-      "home_move_out_3",
-      "home_speed_3",
-      "home_accel_3",
-      "SERVO_1_min",
-      "SERVO_1_max",
-      "SERVO_1_max_speed",
-      "SERVO_1_max_accel",
-      "SERVO_1_active",
-      "SERVO_1_min_pulse",
-      "SERVO_1_max_pulse",
-      "SERVO_1_swap",
-      "SERVO_2_min",
-      "SERVO_2_max",
-      "SERVO_2_max_speed",
-      "SERVO_2_max_accel",
-      "SERVO_2_active",
-      "SERVO_2_min_pulse",
-      "SERVO_2_max_pulse",
-      "SERVO_2_swap",
-      "SERVO_3_min",
-      "SERVO_3_max",
-      "SERVO_3_max_speed",
-      "SERVO_3_max_accel",
-      "SERVO_3_active",
-      "SERVO_3_min_pulse",
-      "SERVO_3_max_pulse",
-      "SERVO_3_swap",
-      "ramp_start_hz",
-      "stop_approach_hz",
+      "buzzer",
       "dir_change_pause_s",
-      "path_buffer_size",
+      "ext_1_active",
+      "ext_2_active",
+      "ext_3_active",
+      "ext_4_active",
+      "init_accel",
+      "init_debug_level",
       "init_path_slice_us",
+      "init_speed",
+      "init_terminal",
+      "init_verbose",
+      "motor_1_dir_active",
+      "motor_1_error_active",
+      "motor_1_home_accel",
+      "motor_1_home_backoff",
+      "motor_1_home_mode",
+      "motor_1_home_speed",
+      "motor_1_limit_l_active",
+      "motor_1_limit_l_use",
+      "motor_1_limit_r_active",
+      "motor_1_limit_r_use",
+      "motor_1_max",
+      "motor_1_max_accel",
+      "motor_1_max_speed",
+      "motor_1_min",
+      "motor_1_step_active",
+      "motor_1_steps_per_unit",
+      "motor_1_unit",
+      "motor_2_dir_active",
+      "motor_2_error_active",
+      "motor_2_home_accel",
+      "motor_2_home_backoff",
+      "motor_2_home_mode",
+      "motor_2_home_speed",
+      "motor_2_limit_l_active",
+      "motor_2_limit_l_use",
+      "motor_2_limit_r_active",
+      "motor_2_limit_r_use",
+      "motor_2_max",
+      "motor_2_max_accel",
+      "motor_2_max_speed",
+      "motor_2_min",
+      "motor_2_step_active",
+      "motor_2_steps_per_unit",
+      "motor_2_unit",
+      "motor_3_dir_active",
+      "motor_3_error_active",
+      "motor_3_home_accel",
+      "motor_3_home_backoff",
+      "motor_3_home_mode",
+      "motor_3_home_speed",
+      "motor_3_limit_l_active",
+      "motor_3_limit_l_use",
+      "motor_3_limit_r_active",
+      "motor_3_limit_r_use",
+      "motor_3_max",
+      "motor_3_max_accel",
+      "motor_3_max_speed",
+      "motor_3_min",
+      "motor_3_steps_per_unit",
+      "motor_3_unit",
+      "motor_count",
+      "motor_enable_active",
+      "name",
+      "path_buffer_size",
+      "ramp_start_hz",
+      "servo_1_active",
+      "servo_1_max",
+      "servo_1_max_accel",
+      "servo_1_max_pulse",
+      "servo_1_max_speed",
+      "servo_1_min",
+      "servo_1_min_pulse",
+      "servo_1_swap",
+      "servo_1_unit",
+      "servo_2_active",
+      "servo_2_max",
+      "servo_2_max_accel",
+      "servo_2_max_pulse",
+      "servo_2_max_speed",
+      "servo_2_min",
+      "servo_2_min_pulse",
+      "servo_2_swap",
+      "servo_2_unit",
+      "servo_3_active",
+      "servo_3_max",
+      "servo_3_max_accel",
+      "servo_3_max_pulse",
+      "servo_3_max_speed",
+      "servo_3_min",
+      "servo_3_min_pulse",
+      "servo_3_swap",
+      "servo_3_unit",
+      "servo_count",
+      "stop_approach_hz",
+      "verbose_rate_hz",
+      "wdt",
   };
   char val[CFG_VAL_MAX];
   for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
@@ -1478,6 +1623,10 @@ void config_foreach(config_foreach_fn fn, void *ctx) {
       fn(k, val, ctx);
     }
     snprintf(k, sizeof(k), "axis_max_%d", i);
+    if (config_get_key(k, val, sizeof(val))) {
+      fn(k, val, ctx);
+    }
+    snprintf(k, sizeof(k), "axis_%d_unit", i);
     if (config_get_key(k, val, sizeof(val))) {
       fn(k, val, ctx);
     }

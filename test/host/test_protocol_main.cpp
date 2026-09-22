@@ -1,4 +1,5 @@
 #include "protocol.h"
+#include "protocol_internal.h"
 #include "config_store.h"
 #include "motion_api.h"
 #include "board.h"
@@ -97,7 +98,37 @@ static void reset_out(void) {
   g_dbg.clear();
 }
 
+static void expect_format(const char *name, float v, const char *want) {
+  char got[32];
+  protocol_format_num(got, sizeof(got), v);
+  if (std::strcmp(got, want) != 0) {
+    std::fprintf(stderr, "FAIL %s: format %s, got '%s' want '%s'\n", name, name, got, want);
+    ++g_fail;
+  } else {
+    std::printf("OK   %s\n", name);
+  }
+}
+
 int main(void) {
+  expect_format("fmt 1.2345", 1.2345f, "1.23");
+  expect_format("fmt 123.45", 123.45f, "123.45");
+  expect_format("fmt 12345", 12345.f, "12345");
+  expect_format("fmt 1234500", 1234500.f, "1234500");
+  expect_format("fmt 0.12345", 0.12345f, "0.123");
+  expect_format("fmt 0.0012345", 0.0012345f, "0.00123");
+  expect_format("fmt 0.000012345", 0.000012345f, "0.0000123");
+  expect_format("fmt 1000", 1000.f, "1000");
+  expect_format("fmt 1", 1.f, "1");
+  expect_format("fmt 0.1", 0.1f, "0.1");
+  expect_format("fmt 0.001", 0.001f, "0.001");
+  expect_format("fmt 0.1239", 0.1239f, "0.124");
+  expect_format("fmt -0.1239", -0.1239f, "-0.124");
+  expect_format("fmt 9.996", 9.996f, "10");
+  expect_format("fmt 9.9999999999", 9.9999999999f, "10");
+  expect_format("fmt -1.2345", -1.2345f, "-1.23");
+  expect_format("fmt 0", 0.f, "0");
+  expect_format("fmt nan", NAN, "-");
+
   ProtocolIo io = {io_write, io_debug, nullptr};
   protocol_init(io);
   protocol_send_banner();
@@ -182,7 +213,7 @@ int main(void) {
   expect_contains("CG init_speed", "CG:init_speed=25");
   reset_out();
   feed("GS\n");
-  expect_contains("GS after CS", "GS:25.00");
+  expect_contains("GS after CS", "GS:25");
 
   reset_out();
   feed("CR\n");
@@ -198,7 +229,7 @@ int main(void) {
   expect_contains("CG max_accel_2 default", "CG:max_accel_2=300");
   reset_out();
   feed("GS\n");
-  expect_contains("GS after CR default", "GS:50.00");
+  expect_contains("GS after CR default", "GS:50");
   reset_out();
   feed("ConfigReset\n");
   expect_contains("ConfigReset long gone", "!E:parse");
@@ -267,7 +298,7 @@ int main(void) {
   expect_contains("SS over max_speed", "!E:limit SS > max_speed");
   reset_out();
   feed("GS\n");
-  expect_contains("GS unchanged after SS reject", "GS:50.00");
+  expect_contains("GS unchanged after SS reject", "GS:50");
 
   reset_out();
   feed("SA 200\n");
@@ -277,32 +308,32 @@ int main(void) {
   expect_contains("SA over max_accel", "!E:limit SA > max_accel");
   reset_out();
   feed("GA\n");
-  expect_contains("GA unchanged after SA reject", "GA:200.00 200.00");
+  expect_contains("GA unchanged after SA reject", "GA:200 200");
 
   reset_out();
   feed("SA 200 50\n");
   expect_empty("SA two-arg silent");
   reset_out();
   feed("GA\n");
-  expect_contains("GA accel decel", "GA:200.00 50.00");
+  expect_contains("GA accel decel", "GA:200 50");
   reset_out();
   feed("SA 200 _\n");
   expect_contains("SA skip rejected", "!E:parse SA args");
   reset_out();
   feed("GA\n");
-  expect_contains("GA after skip reject", "GA:200.00 50.00");
+  expect_contains("GA after skip reject", "GA:200 50");
   reset_out();
   feed("SA 200 999\n");
   expect_contains("SA 2nd over max", "!E:limit SA > max_accel");
   reset_out();
   feed("GA\n");
-  expect_contains("GA after 2nd reject", "GA:200.00 50.00");
+  expect_contains("GA after 2nd reject", "GA:200 50");
   reset_out();
   feed("SA 200\n");
   expect_empty("SA one-arg sets both");
   reset_out();
   feed("GA\n");
-  expect_contains("GA after one-arg both", "GA:200.00 200.00");
+  expect_contains("GA after one-arg both", "GA:200 200");
 
   reset_out();
   feed("SD 4\n");
@@ -343,7 +374,7 @@ int main(void) {
 
   reset_out();
   feed("IP\n");
-  expect_contains("IP after move", "IP:100.00");
+  expect_contains("IP after move", "IP:100");
 
   reset_out();
   feed("VA\n");
@@ -365,7 +396,7 @@ int main(void) {
   reset_out();
   feed("GS\n");
   /* SS 12 must not have run — still prior session speed (50 from SS50, or 25 from CS) */
-  expect_not_contains("timeout canceled SS", "GS:12.00");
+  expect_not_contains("timeout canceled SS", "GS:12");
 
   /* Halt cancels wait + following chain commands */
   reset_out();
@@ -382,8 +413,8 @@ int main(void) {
   }
   reset_out();
   feed("GS\n");
-  expect_not_contains("HT canceled SS", "GS:12.00");
-  expect_contains("HT kept prior SS", "GS:50.00");
+  expect_not_contains("HT canceled SS", "GS:12");
+  expect_contains("HT kept prior SS", "GS:50");
   reset_out();
   feed("IW\n");
   expect_contains("IW after HT", "IW:0");
@@ -400,7 +431,7 @@ int main(void) {
   }
   reset_out();
   feed("GS\n");
-  expect_contains("WT then SS ran", "GS:33.00");
+  expect_contains("WT then SS ran", "GS:33");
 
   /* WP / WC / WN / BE */
   reset_out();
@@ -421,7 +452,7 @@ int main(void) {
   expect_contains("IW idle after WP", "IW:0");
   reset_out();
   feed("GS\n");
-  expect_contains("idle WP then SS immediately", "GS:12.00");
+  expect_contains("idle WP then SS immediately", "GS:12");
 
   reset_out();
   feed("SS 50\nSA 200\n");
@@ -443,7 +474,7 @@ int main(void) {
       protocol_poll(20);
       reset_out();
       feed("GS\n");
-      if (g_out.find("GS:8.00") != std::string::npos) {
+      if (g_out.find("GS:8") != std::string::npos) {
         ran = true;
         break;
       }
@@ -466,7 +497,7 @@ int main(void) {
   expect_contains("WP timeout", "!E:timeout");
   reset_out();
   feed("GS\n");
-  expect_not_contains("WP timeout canceled SS", "GS:9.00");
+  expect_not_contains("WP timeout canceled SS", "GS:9");
 
   reset_out();
   feed("ME\nSE 1\nSS 50\nSA 200\n");
@@ -488,7 +519,7 @@ int main(void) {
       protocol_poll(20);
       reset_out();
       feed("GA\n");
-      if (g_out.find("GA:5.00") != std::string::npos) {
+      if (g_out.find("GA:5") != std::string::npos) {
         ran = true;
         break;
       }
@@ -507,7 +538,7 @@ int main(void) {
   expect_contains("IW idle after WN", "IW:0");
   reset_out();
   feed("GS\n");
-  expect_contains("idle WN then SS immediately", "GS:44.00");
+  expect_contains("idle WN then SS immediately", "GS:44");
 
   reset_out();
   feed("SS 50\nSA 200\nMT 0; WM\n");
@@ -522,7 +553,7 @@ int main(void) {
       protocol_poll(20);
       reset_out();
       feed("GS\n");
-      if (g_out.find("GS:6.00") != std::string::npos) {
+      if (g_out.find("GS:6") != std::string::npos) {
         ran = true;
         break;
       }
@@ -544,7 +575,7 @@ int main(void) {
   }
   reset_out();
   feed("GS\n");
-  expect_not_contains("HT canceled WP SS", "GS:11.00");
+  expect_not_contains("HT canceled WP SS", "GS:11");
   reset_out();
   feed("IW\n");
   expect_contains("IW after HT WP", "IW:0");
@@ -557,7 +588,7 @@ int main(void) {
   expect_contains("IW after BE", "IW:0");
   reset_out();
   feed("GS\n");
-  expect_contains("BE then SS immediately", "GS:13.00");
+  expect_contains("BE then SS immediately", "GS:13");
   reset_out();
   feed("BE foo\n");
   expect_contains("BE junk arg parse", "!E:parse");
@@ -637,8 +668,8 @@ int main(void) {
   expect_empty("comment cuts rest of line");
   reset_out();
   feed("GS\n");
-  expect_contains("SS with comment ran", "GS:41.00");
-  expect_not_contains("comment dropped SS 99", "GS:99.00");
+  expect_contains("SS with comment ran", "GS:41");
+  expect_not_contains("comment dropped SS 99", "GS:99");
   reset_out();
   feed("/ only comment\n");
   expect_empty("comment-only no banner");
@@ -766,7 +797,7 @@ int main(void) {
   expect_dbg_contains("UART sniff SS", "SS 44\n");
   reset_out();
   feed("GS\n");
-  expect_contains("UART cmd executed after sniff", "GS:44.00");
+  expect_contains("UART cmd executed after sniff", "GS:44");
   expect_dbg_empty("USB feed not sniffed");
 
   reset_out();
@@ -775,7 +806,7 @@ int main(void) {
   expect_dbg_empty("no sniff when terminal off");
   reset_out();
   feed("GS\n");
-  expect_contains("UART cmd still runs without terminal", "GS:55.00");
+  expect_contains("UART cmd still runs without terminal", "GS:55");
 
   /* --- Path (PC/PD/PG/PN/PS) --- */
   reset_out();
@@ -897,7 +928,7 @@ int main(void) {
   expect_contains("IM during MJ", "IM:1");
   reset_out();
   feed("GS\n");
-  expect_contains("MJ does not change SS", "GS:80.00");
+  expect_contains("MJ does not change SS", "GS:80");
 
   reset_out();
   feed("SS 60\n");
@@ -911,7 +942,7 @@ int main(void) {
               std::fabs(motion_host_axis_decel(0) - 150.0f) < 0.01f);
   reset_out();
   feed("GS\n");
-  expect_contains("SS still 60 in joy", "GS:60.00");
+  expect_contains("SS still 60 in joy", "GS:60");
 
   reset_out();
   feed("MJ 500\n");
@@ -938,7 +969,7 @@ int main(void) {
   expect_empty("MS exits joy");
   reset_out();
   feed("GS\n");
-  expect_contains("SS unchanged after MS", "GS:60.00");
+  expect_contains("SS unchanged after MS", "GS:60");
 
   reset_out();
   feed("MS\n");
@@ -978,16 +1009,16 @@ int main(void) {
   expect_empty("SL/SR bare to envelope");
   reset_out();
   feed("GL\n");
-  expect_contains("GL boot envelope", "GL:0.00");
+  expect_contains("GL boot envelope", "GL:0");
   reset_out();
   feed("GR\n");
-  expect_contains("GR boot envelope", "GR:600.00");
+  expect_contains("GR boot envelope", "GR:600");
   reset_out();
   feed("SL 120\n");
   expect_empty("SL 120 silent");
   reset_out();
   feed("GL\n");
-  expect_contains("GL after SL", "GL:120.00");
+  expect_contains("GL after SL", "GL:120");
   reset_out();
   feed("CG MOTOR_1_min\n");
   expect_contains("envelope unchanged by SL", "CG:MOTOR_1_min=0");
@@ -996,7 +1027,7 @@ int main(void) {
   expect_empty("SL bare reset");
   reset_out();
   feed("GL\n");
-  expect_contains("GL after bare SL", "GL:0.00");
+  expect_contains("GL after bare SL", "GL:0");
   reset_out();
   feed("SL 700\n");
   expect_contains("SL past envelope", "!E:limit");
@@ -1008,7 +1039,7 @@ int main(void) {
   expect_contains("SR left of SL rejected", "!E:limit");
   reset_out();
   feed("GR\n");
-  expect_contains("GR unchanged after reject", "GR:600.00");
+  expect_contains("GR unchanged after reject", "GR:600");
   reset_out();
   feed("SL 80\n");
   expect_empty("SL 80 before CS clamp");
@@ -1017,19 +1048,19 @@ int main(void) {
   expect_empty("CS MOTOR_1_min 150");
   reset_out();
   feed("GL\n");
-  expect_contains("CS clamps session left", "GL:150.00");
+  expect_contains("CS clamps session left", "GL:150");
   reset_out();
   feed("CS MOTOR_1_min 0\n");
   expect_empty("CS MOTOR_1_min restore 0");
   reset_out();
   feed("GL\n");
-  expect_contains("CS widen envelope keeps window", "GL:150.00");
+  expect_contains("CS widen envelope keeps window", "GL:150");
   reset_out();
   feed("SL\n");
   expect_empty("SL bare after CS clamp test");
   reset_out();
   feed("GL\n");
-  expect_contains("GL full rail again", "GL:0.00");
+  expect_contains("GL full rail again", "GL:0");
 
   /* SL none: session cleared; GL/clip fall back to envelope when set */
   reset_out();
@@ -1040,10 +1071,13 @@ int main(void) {
   expect_empty("SL none with envelope");
   reset_out();
   feed("GL\n");
-  expect_contains("GL after SL none uses envelope", "GL:0.00");
+  expect_contains("GL after SL none uses envelope", "GL:0");
   reset_out();
   feed("CS MOTOR_1_min none\n");
   expect_empty("CS MOTOR_1_min none");
+  reset_out();
+  feed("CG MOTOR_1_min\n");
+  expect_contains("CG unset envelope is dash", "CG:MOTOR_1_min=-");
   reset_out();
   feed("SL none\n");
   expect_empty("SL none with open envelope");
@@ -1076,7 +1110,7 @@ int main(void) {
   motion_stub_tick_ms(800);
   reset_out();
   feed("IP\n");
-  expect_contains("MJ out clamped inward to left wall", "IP:100.00");
+  expect_contains("MJ out clamped inward to left wall", "IP:100");
   reset_out();
   feed("SL\n");
   feed("MS\n");
@@ -1113,14 +1147,29 @@ int main(void) {
   feed("CG name\n");
   expect_contains("CG name", "CG:name=Foo");
   reset_out();
-  feed("CG unit_name\n");
-  expect_contains("CG unit_name default", "CG:unit_name=mm");
+  feed("CG motor_1_unit\n");
+  expect_contains("CG motor_1_unit default", "CG:motor_1_unit=mm");
   reset_out();
-  feed("CS unit_name deg\n");
-  expect_empty("CS unit_name deg");
+  feed("CS motor_1_unit deg\n");
+  expect_empty("CS motor_1_unit deg");
   reset_out();
-  feed("CG unit_name\n");
-  expect_contains("CG unit_name deg", "CG:unit_name=deg");
+  feed("CG motor_1_unit\n");
+  expect_contains("CG motor_1_unit deg", "CG:motor_1_unit=deg");
+  reset_out();
+  feed("CG servo_1_unit\n");
+  expect_contains("CG servo_1_unit default", "CG:servo_1_unit=deg");
+  reset_out();
+  feed("CS servo_1_unit rad\n");
+  expect_empty("CS servo_1_unit rad");
+  reset_out();
+  feed("CG servo_1_unit\n");
+  expect_contains("CG servo_1_unit rad", "CG:servo_1_unit=rad");
+  reset_out();
+  feed("CG axis_1_unit\n");
+  expect_contains("CG axis_1_unit matches motor 1", "CG:axis_1_unit=deg");
+  reset_out();
+  feed("CS axis_1_unit mm\n");
+  expect_contains("CS axis_1_unit rejected", "!E:cfg bad key/value");
   reset_out();
   feed("CS steps_per_unit_1 200\n");
   expect_empty("CS steps_per_unit_1");
@@ -1216,7 +1265,7 @@ int main(void) {
       protocol_poll(20);
       reset_out();
       feed("GS\n");
-      if (g_out.find("GS:4.00") != std::string::npos) {
+      if (g_out.find("GS:4") != std::string::npos) {
         ran = true;
         break;
       }
@@ -1291,7 +1340,7 @@ int main(void) {
   expect_empty("SP glued named");
   reset_out();
   feed("IP\n");
-  expect_contains("IP after glued XYZ", "IP:20.00 | 50.00 | 100.00");
+  expect_contains("IP after glued XYZ", "IP:20 | 50 | 100");
   reset_out();
   feed("MJ Y50\n");
   expect_empty("MJ Y50 named");
@@ -1365,7 +1414,7 @@ int main(void) {
   expect_empty("MS exits dual MJ");
   reset_out();
   feed("GS\n");
-  expect_contains("GS after dual MJ MS", "GS:50.00");
+  expect_contains("GS after dual MJ MS", "GS:50");
 
   reset_out();
   feed("PC\n");
@@ -1387,26 +1436,26 @@ int main(void) {
   expect_empty("SL skip axis1");
   reset_out();
   feed("GL\n");
-  expect_contains("GL dual skip axis2", "GL:0.00 | 40.00");
+  expect_contains("GL dual skip axis2", "GL:0 | 40");
   reset_out();
   feed("SL none 50\n");
   expect_empty("SL none axis1 set axis2");
   reset_out();
   feed("GL\n");
-  expect_contains("GL after SL none 50", "GL:0.00 | 50.00");
+  expect_contains("GL after SL none 50", "GL:0 | 50");
   reset_out();
   feed("SR 200\n");
   feed("SL _ none\n");
   expect_empty("SL clear axis2 only");
   reset_out();
   feed("GL\n");
-  expect_contains("GL after SL _ none", "GL:0.00 | 0.00");
+  expect_contains("GL after SL _ none", "GL:0 | 0");
   reset_out();
   feed("SL\n");
   expect_empty("SL bare resets both axes");
   reset_out();
   feed("GL\n");
-  expect_contains("GL dual after bare SL", "GL:0.00 | 0.00");
+  expect_contains("GL dual after bare SL", "GL:0 | 0");
 
   reset_out();
   feed("EO4 1\n");
@@ -1472,7 +1521,7 @@ int main(void) {
   reset_out();
   feed("IP\n");
   expect_contains("IP single-field 1-axis", "IP:");
-  expect_not_contains("IP no second field when 1-axis", "IP:0.00 0.00");
+  expect_not_contains("IP no second field when 1-axis", "IP:0 0");
   {
     size_t ip = g_out.find("IP:");
     if (ip != std::string::npos) {
@@ -1513,19 +1562,19 @@ int main(void) {
   expect_empty("bare SP silent");
   reset_out();
   feed("IP\n");
-  expect_contains("bare SP zeros pose", "IP:0.00");
+  expect_contains("bare SP zeros pose", "IP:0");
   reset_out();
   feed("SP 100\n");
   expect_empty("SP 100 silent");
   reset_out();
   feed("IP\n");
-  expect_contains("SP 100 pose", "IP:100.00");
+  expect_contains("SP 100 pose", "IP:100");
   reset_out();
   feed("SP 0\n");
   expect_empty("SP 0 silent");
   reset_out();
   feed("IP\n");
-  expect_contains("SP 0 pose", "IP:0.00");
+  expect_contains("SP 0 pose", "IP:0");
   reset_out();
   feed("CS home_mode_1 3\n");
   expect_empty("CS home_mode_1 3 stall");
@@ -1541,13 +1590,13 @@ int main(void) {
   expect_empty("SP dual silent");
   reset_out();
   feed("IP\n");
-  expect_contains("SP dual pose", "IP:10.00 | 20.00");
+  expect_contains("SP dual pose", "IP:10 | 20");
   reset_out();
   feed("SP _ 0\n");
   expect_empty("SP skip axis1");
   reset_out();
   feed("IP\n");
-  expect_contains("SP skip keeps axis1", "IP:10.00 | 0.00");
+  expect_contains("SP skip keeps axis1", "IP:10 | 0");
   reset_out();
   feed("MT 50\n");
   reset_out();
@@ -1588,7 +1637,7 @@ int main(void) {
   expect_empty("SP triple origin");
   reset_out();
   feed("IP\n");
-  expect_contains("IP triple origin", "IP:0.00 | 0.00 | 0.00");
+  expect_contains("IP triple origin", "IP:0 | 0 | 0");
 
   reset_out();
   feed("MT 100 50 25\n");
@@ -1617,7 +1666,7 @@ int main(void) {
   expect_empty("SP skip first two");
   reset_out();
   feed("IP\n");
-  expect_contains("SP skip keeps 1+2 zeros axis3", "IP:0.00 | 0.00 | 40.00");
+  expect_contains("SP skip keeps 1+2 zeros axis3", "IP:0 | 0 | 40");
 
   reset_out();
   feed("PC\n");
@@ -1683,7 +1732,7 @@ int main(void) {
   expect_empty("SL triple");
   reset_out();
   feed("GL\n");
-  expect_contains("GL triple", "GL:10.00 | 20.00 | 30.00");
+  expect_contains("GL triple", "GL:10 | 20 | 30");
   reset_out();
   feed("SL\n");
   expect_empty("SL bare after triple");
@@ -1832,7 +1881,7 @@ int main(void) {
   motion_stub_tick_ms(2000);
   reset_out();
   feed("IP\n");
-  expect_contains("IP motor|servo after named MT", "IP:10.00 | -45.00");
+  expect_contains("IP motor|servo after named MT", "IP:10 | -45");
   reset_out();
   feed("MS\n");
   feed("SP 10 -45\n");
@@ -1843,7 +1892,7 @@ int main(void) {
   motion_stub_tick_ms(2000);
   reset_out();
   feed("IP\n");
-  expect_contains("IP after positional MT", "IP:20.00 | -90.00");
+  expect_contains("IP after positional MT", "IP:20 | -90");
 
   reset_out();
   feed("MS\n");
@@ -1856,7 +1905,7 @@ int main(void) {
   expect_contains("verbose middle-zero elide", "#I 10 || -45");
   reset_out();
   feed("IP\n");
-  expect_contains("IP keeps explicit 0", "IP:10.00 | 0.00 | -45.00");
+  expect_contains("IP keeps explicit 0", "IP:10 | 0 | -45");
   reset_out();
   feed("GL\n");
   expect_contains("GL pipes with zeros", "GL:");
