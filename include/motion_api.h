@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "config_defaults.h"
 
@@ -46,6 +47,12 @@ bool motion_move_to(float mm); /* packed channel 0 only */
 /** Absolute move; NAN = skip that packed channel. Followers scale to the master duration. */
 bool motion_move_to2(float mm1_or_nan, float mm2_or_nan);
 bool motion_move_to_n(const float dest[MC_CH_MAX]);
+/**
+ * Absolute move that arrives in ms. NAN = skip that channel.
+ * Does not change session speed. false + *too_fast when the required cruise
+ * exceeds the axis max. Other false matches motion_move_to_n (limits, disabled).
+ */
+bool motion_move_duration_n(const float dest[MC_CH_MAX], uint32_t ms, uint32_t ramp_ms, bool *too_fast);
 bool motion_move_by(float mm); /* packed channel 0 only */
 /**
  * Signed joy percent of session SS per packed channel. NAN = 0 on that channel.

@@ -2314,6 +2314,127 @@ bool motion_move_to_n(const float dest_in[MC_CH_MAX]) {
   return true;
 }
 
+bool motion_move_duration_n(const float dest_in[MC_CH_MAX], uint32_t ms, uint32_t ramp_ms, bool *too_fast) {
+  if (too_fast) {
+    *too_fast = false;
+  }
+  if (!g_enabled || ms < 1) {
+    return false;
+  }
+  float dest[MC_CH_MAX];
+  bool want[MC_CH_MAX];
+  float dist[MC_CH_MAX];
+  int n = ch_count();
+  int nm = axis_count();
+  int movers = 0;
+  int master = -1;
+
+  for (int ch = 0; ch < MC_CH_MAX; ++ch) {
+    dest[ch] = dest_in[ch];
+    want[ch] = false;
+    dist[ch] = 0.0f;
+  }
+
+  for (int ch = 0; ch < n; ++ch) {
+    if (isnan(dest[ch])) {
+      continue;
+    }
+    float mn = session_effective_left(ch);
+    float mx = session_effective_right(ch);
+    if ((!isnan(mn) && dest[ch] < mn) || (!isnan(mx) && dest[ch] > mx)) {
+      if (ch < nm) {
+        g_ax[ch].st.at_soft_limit = true;
+      }
+      return false;
+    }
+    dist[ch] = dest[ch] - ch_pos(ch);
+    if (fabsf(dist[ch]) < 1e-6f) {
+      continue;
+    }
+    if (ch < nm && planner_hard_limit_blocks_sign(ch, dist[ch] > 0 ? 1 : -1)) {
+      return false;
+    }
+    want[ch] = true;
+    ++movers;
+  }
+  for (int ch = 0; ch < n; ++ch) {
+    if (want[ch]) {
+      master = ch;
+      break;
+    }
+  }
+  if (movers == 0) {
+    joy_clear();
+    coord_clear();
+    return true;
+  }
+
+  const float seconds = static_cast<float>(ms) / 1000.0f;
+  for (int ch = 0; ch < n; ++ch) {
+    if (!want[ch]) {
+      continue;
+    }
+    const float distAbs = fabsf(dist[ch]);
+    const float rampSec = static_cast<float>(ramp_ms) / 1000.0f;
+    float v = 0.0f;
+    float a = 0.0f;
+    if (rampSec > 0.0f && rampSec * 2.0f < seconds) {
+      v = distAbs / (seconds - rampSec);
+      a = v / rampSec;
+    } else if (seconds > 0.0f) {
+      v = 2.0f * distAbs / seconds;
+      a = v / (seconds * 0.5f);
+    }
+    if (v > ch_max_speed(ch) + 1e-3f || a > ch_max_accel(ch) + 1e-3f) {
+      if (too_fast) {
+        *too_fast = true;
+      }
+      return false;
+    }
+  }
+
+  joy_clear();
+  g_move_master = master;
+  if (movers >= 2) {
+    g_coord_active = true;
+    g_coord_master = master;
+    float dmaster = fabsf(dist[master]);
+    if (dmaster < 1e-6f) {
+      dmaster = 1e-6f;
+    }
+    for (int ch = 0; ch < n; ++ch) {
+      g_coord_ratio[ch] = want[ch] ? (fabsf(dist[ch]) / dmaster) : 0.0f;
+    }
+  } else {
+    g_coord_active = false;
+    g_coord_master = master;
+  }
+
+  for (int ch = 0; ch < n; ++ch) {
+    if (!want[ch]) {
+      continue;
+    }
+    const float distAbs = fabsf(dist[ch]);
+    const float rampSec = static_cast<float>(ramp_ms) / 1000.0f;
+    float v = 0.0f;
+    float a = 0.0f;
+    if (rampSec > 0.0f && rampSec * 2.0f < seconds) {
+      v = distAbs / (seconds - rampSec);
+      a = v / rampSec;
+    } else if (seconds > 0.0f) {
+      v = 2.0f * distAbs / seconds;
+      a = v / (seconds * 0.5f);
+    }
+    ch_set_cruise_accel(ch, v, a, a);
+    if (ch < nm) {
+      planner_request_move_to(ch, dest[ch]);
+    } else {
+      servo_request_move(ch - nm, dest[ch]);
+    }
+  }
+  return true;
+}
+
 bool motion_move_to(float mm) {
   float dest[MC_CH_MAX];
   for (int i = 0; i < MC_CH_MAX; ++i) {

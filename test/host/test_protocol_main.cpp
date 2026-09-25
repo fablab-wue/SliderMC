@@ -2059,6 +2059,31 @@ int main(void) {
   feed("CS servos 0\n");
   expect_empty("restore 1+0 after servo tests");
 
+  reset_out();
+  feed("SE 1\n");
+  feed("SP 0\n");
+  feed("SS 40\n");
+  feed("MD 2000 50\n");
+  expect_empty("MD 50mm in 2s accepted");
+  expect_true("MD cruise is 50 mm/s", fabsf(motion_host_axis_cruise(0) - 50.0f) < 0.2f);
+  reset_out();
+  feed("GS\n");
+  expect_contains("MD does not change SS", "GS:40");
+  reset_out();
+  feed("MS\n");
+  feed("SP 0\n");
+  feed("MD 10 80\n");
+  expect_contains("MD faster than max_speed", "!E:speed");
+  reset_out();
+  feed("MS\n");
+  feed("SP 0\n");
+  feed("MF 8000 1000 50\n");
+  expect_empty("MF 12.5 percent ramp accepted");
+  expect_true("MF cruise is 8/7 * distance / T", fabsf(motion_host_axis_cruise(0) - (50.0f / 7.0f)) < 0.2f);
+  reset_out();
+  feed("VP\n");
+  expect_contains("VP still 1 after MD", "VP:1");
+
   if (g_fail) {
     std::fprintf(stderr, "\n%d test(s) failed\n", g_fail);
     return 1;

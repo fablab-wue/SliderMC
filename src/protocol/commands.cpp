@@ -634,6 +634,8 @@ static const HelpRow k_help_rows[] = {
     {"IC", "Is Cause, last reset reason"},
     {"IG", "Is GPIO, pin name / desc table"},
     {"MT", "Move To, absolute mm"},
+    {"MD", "Move Duration, ms then absolute"},
+    {"MF", "Move For, ms ramp_ms then absolute"},
     {"MB", "Move By, relative mm"},
     {"MJ", "Move Joy, % of SS signed"},
     {"MH", "Move Home, cycle 1|2|3"},
@@ -958,6 +960,103 @@ bool protocol_exec_command(const char *cmd) {
   }
 
   /* --- M motion (longer prefixes before M) --- */
+  if (match_any(cmd, &rest, "MF", nullptr, nullptr)) {
+    const char *s = rest;
+    skip_ws(&s);
+    int ms = 0;
+    int ramp = 0;
+    if (!take_int(&s, &ms) || ms < 1 || ms > 60000 || !take_int(&s, &ramp) || ramp < 1 || ramp * 2 >= ms) {
+      protocol_error("parse", "MF ms");
+      return false;
+    }
+    skip_ws(&s);
+    AxisParsed p;
+    if (!parse_axis_args(s, AXIS_MOVE, &p)) {
+      protocol_error("parse", "MF args");
+      return false;
+    }
+    if (!st.enabled) {
+      protocol_error("disabled", "enable first");
+      return false;
+    }
+    float dest[MC_CH_MAX];
+    parsed_to_dest(&p, dest);
+    McStatus cur;
+    motion_get_status(&cur);
+    int n = config_axis_count();
+    for (int i = 0; i < n; ++i) {
+      if (!isnan(dest[i]) && fabsf(dest[i] - cur.pos[i]) < 1e-4f) {
+        dest[i] = NAN;
+      }
+    }
+    bool too_fast = false;
+    bool ok = motion_move_duration_n(dest, (uint32_t)ms, (uint32_t)ramp, &too_fast);
+    if (!ok) {
+      if (too_fast) {
+        protocol_error("speed", "move rejected");
+        return false;
+      }
+      motion_get_status(&st);
+      const char *code = "soft";
+      if (st.drv_error) {
+        code = "emo";
+      } else if (st.hard_limit) {
+        code = "hard";
+      }
+      protocol_error(code, "move rejected");
+      return false;
+    }
+    return false;
+  }
+
+  if (match_any(cmd, &rest, "MD", nullptr, nullptr)) {
+    const char *s = rest;
+    skip_ws(&s);
+    int ms = 0;
+    if (!take_int(&s, &ms) || ms < 1 || ms > 60000) {
+      protocol_error("parse", "MD ms");
+      return false;
+    }
+    skip_ws(&s);
+    AxisParsed p;
+    if (!parse_axis_args(s, AXIS_MOVE, &p)) {
+      protocol_error("parse", "MD args");
+      return false;
+    }
+    if (!st.enabled) {
+      protocol_error("disabled", "enable first");
+      return false;
+    }
+    float dest[MC_CH_MAX];
+    parsed_to_dest(&p, dest);
+    McStatus cur;
+    motion_get_status(&cur);
+    int n = config_axis_count();
+    for (int i = 0; i < n; ++i) {
+      if (!isnan(dest[i]) && fabsf(dest[i] - cur.pos[i]) < 1e-4f) {
+        dest[i] = NAN;
+      }
+    }
+    bool too_fast = false;
+    bool ok = motion_move_duration_n(dest, (uint32_t)ms, 1000, &too_fast);
+    if (!ok) {
+      if (too_fast) {
+        protocol_error("speed", "move rejected");
+        return false;
+      }
+      motion_get_status(&st);
+      const char *code = "soft";
+      if (st.drv_error) {
+        code = "emo";
+      } else if (st.hard_limit) {
+        code = "hard";
+      }
+      protocol_error(code, "move rejected");
+      return false;
+    }
+    return false;
+  }
+
   if (match_any(cmd, &rest, "MT", "MoveTo", nullptr)) {
     AxisParsed p;
     if (!parse_axis_args(rest, AXIS_MOVE, &p)) {

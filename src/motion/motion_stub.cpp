@@ -409,6 +409,108 @@ bool motion_move_to_n(const float dest_in[MC_CH_MAX]) {
   return true;
 }
 
+bool motion_move_duration_n(const float dest_in[MC_CH_MAX], uint32_t ms, uint32_t ramp_ms, bool *too_fast) {
+  if (too_fast) {
+    *too_fast = false;
+  }
+  if (!g_st.enabled || g_st.drv_error || ms < 1) {
+    return false;
+  }
+  float dest[MC_CH_MAX];
+  bool want[MC_CH_MAX];
+  float dist[MC_CH_MAX];
+  int n = stub_nch();
+  int movers = 0;
+  int master = -1;
+  for (int ch = 0; ch < MC_CH_MAX; ++ch) {
+    dest[ch] = dest_in[ch];
+    want[ch] = false;
+    dist[ch] = 0.0f;
+  }
+  for (int ch = 0; ch < n; ++ch) {
+    if (isnan(dest[ch])) {
+      continue;
+    }
+    if (!soft_ok(dest[ch], ch)) {
+      return false;
+    }
+    dist[ch] = dest[ch] - g_st.pos[ch];
+    if (fabsf(dist[ch]) < 1e-6f) {
+      continue;
+    }
+    want[ch] = true;
+    if (master < 0) {
+      master = ch;
+    }
+    ++movers;
+  }
+  if (movers == 0) {
+    joy_clear();
+    coord_clear();
+    return true;
+  }
+  const float seconds = (float)ms / 1000.0f;
+  for (int ch = 0; ch < n; ++ch) {
+    if (!want[ch]) {
+      continue;
+    }
+    const float distAbs = fabsf(dist[ch]);
+    const float rampSec = (float)ramp_ms / 1000.0f;
+    float v = 0.0f;
+    float a = 0.0f;
+    if (rampSec > 0.0f && rampSec * 2.0f < seconds) {
+      v = distAbs / (seconds - rampSec);
+      a = v / rampSec;
+    } else if (seconds > 0.0f) {
+      v = 2.0f * distAbs / seconds;
+      a = v / (seconds * 0.5f);
+    }
+    if (v > ch_max_speed(ch) + 1e-3f || a > ch_max_accel(ch) + 1e-3f) {
+      if (too_fast) {
+        *too_fast = true;
+      }
+      return false;
+    }
+  }
+  joy_clear();
+  g_move_master = master;
+  if (movers >= 2) {
+    g_coord_active = true;
+    g_coord_master = master;
+    float dmaster = fabsf(dist[master]);
+    if (dmaster < 1e-6f) {
+      dmaster = 1e-6f;
+    }
+    for (int ch = 0; ch < n; ++ch) {
+      g_coord_ratio[ch] = want[ch] ? (fabsf(dist[ch]) / dmaster) : 0.0f;
+    }
+  } else {
+    g_coord_active = false;
+    g_coord_master = master;
+  }
+  for (int ch = 0; ch < n; ++ch) {
+    if (!want[ch]) {
+      continue;
+    }
+    const float distAbs = fabsf(dist[ch]);
+    const float rampSec = (float)ramp_ms / 1000.0f;
+    float v = 0.0f;
+    float a = 0.0f;
+    if (rampSec > 0.0f && rampSec * 2.0f < seconds) {
+      v = distAbs / (seconds - rampSec);
+      a = v / rampSec;
+    } else if (seconds > 0.0f) {
+      v = 2.0f * distAbs / seconds;
+      a = v / (seconds * 0.5f);
+    }
+    g_cruise[ch] = v;
+    g_accel[ch] = a;
+    g_decel[ch] = a;
+    start_move_ch(ch, dest[ch]);
+  }
+  return true;
+}
+
 bool motion_move_to2(float mm1_or_nan, float mm2_or_nan) {
   float dest[MC_CH_MAX];
   for (int i = 0; i < MC_CH_MAX; ++i) {
