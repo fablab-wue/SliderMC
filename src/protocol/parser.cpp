@@ -363,9 +363,6 @@ static void feed_byte(ProtocolSrc src, uint8_t b) {
         if (!line_is_blank(g_line)) {
           protocol_handle_line(g_line);
         }
-      } else {
-        /* Host handshake: empty line after unlock re-prints the welcome. */
-        protocol_send_banner();
       }
       g_len = 0;
       g_line[0] = 0;

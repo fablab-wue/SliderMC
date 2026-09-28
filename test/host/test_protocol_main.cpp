@@ -141,10 +141,10 @@ int main(void) {
 
   reset_out();
   feed("\n");
-  expect_contains("empty line re-banners", "# MC V1 -");
+  expect_empty("empty line re-banners");
   reset_out();
   feed("\r\n");
-  expect_contains("CRLF re-banners", "# MC V1 -");
+  expect_empty("CRLF re-banners");
 
   reset_out();
   feed("GE\n");

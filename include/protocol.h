@@ -22,7 +22,8 @@ void protocol_init(ProtocolIo io);
 
 /**
  * Send the ready banner (`# MC V1 - …`).
- * Call after unlock (`\n` on UIC UART or USB); host tests may call immediately after protocol_init.
+ * Sent once after unlock; a later lone newline does not reprint it.
+ * VH still calls this function. Host tests may call immediately after protocol_init.
  */
 void protocol_send_banner(void);
 
