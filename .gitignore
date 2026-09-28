@@ -11,3 +11,4 @@ test/host/test_protocol.exe
 __pycache__/
 .DS_Store
 /.vscode/
+.cursor/
