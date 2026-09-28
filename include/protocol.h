@@ -38,7 +38,8 @@ void protocol_feed_byte(uint8_t b);
 void protocol_feed_uart_byte(uint8_t b);
 
 /**
- * Periodic work: verbose push (~3 Hz), complete WT/WM/WH/WP/WC/WN waits.
+ * Periodic work: verbose push (~10 Hz; non-terminal idle/disabled is change-triggered
+ * plus a 1 s heartbeat), complete WT/WM/WH/WP/WC/WN waits.
  * Call from a FreeRTOS task or main loop; dt_ms is elapsed ms since last poll.
  */
 void protocol_poll(unsigned dt_ms);

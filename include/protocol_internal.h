@@ -50,6 +50,14 @@ void protocol_cancel_waits_and_chain(void);
 /** Clear verbose+terminal last-line dedupe cache. */
 void protocol_verbose_reset_dedupe(void);
 
+/**
+ * Non-terminal idle/disabled verbose step (one status build).
+ * Sends when the line differs from the last verbose send, or when heartbeat_due
+ * (an unchanged heartbeat is not dropped). Remembers the sent line.
+ * Returns true if a line was written.
+ */
+bool protocol_verbose_idle_step(bool heartbeat_due);
+
 /** USB-only debug line if config init_debug_level >= min_level. Never goes to UIC UART. */
 void protocol_debug(int min_level, const char *fmt, ...);
 

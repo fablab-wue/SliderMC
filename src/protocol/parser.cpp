@@ -268,14 +268,26 @@ void protocol_poll(unsigned dt_ms) {
 
   if (session_get()->verbose) {
     g_verbose_accum_ms += dt_ms;
-    int rate = config_get()->verbose_rate_hz;
-    if (rate < 1 || rate > 200) {
-      rate = CFG_DEFAULT_VERBOSE_RATE_HZ;
-    }
-    unsigned period = 1000u / (unsigned)rate;
-    if (g_verbose_accum_ms >= period) {
-      g_verbose_accum_ms = 0;
-      protocol_send_verbose();
+    McStatus vst;
+    motion_get_status(&vst);
+    /* Camera T overlays the letter only. Idle/disabled is the motion state. */
+    const bool idle_opt = !session_get()->terminal &&
+                          (vst.state == MC_STATE_IDLE || vst.state == MC_STATE_DISABLED);
+    if (idle_opt) {
+      const bool heartbeat = g_verbose_accum_ms >= 1000u;
+      if (protocol_verbose_idle_step(heartbeat)) {
+        g_verbose_accum_ms = 0;
+      }
+    } else {
+      int rate = config_get()->verbose_rate_hz;
+      if (rate < 1 || rate > 200) {
+        rate = CFG_DEFAULT_VERBOSE_RATE_HZ;
+      }
+      unsigned period = 1000u / (unsigned)rate;
+      if (g_verbose_accum_ms >= period) {
+        g_verbose_accum_ms = 0;
+        protocol_send_verbose();
+      }
     }
   } else {
     g_verbose_accum_ms = 0;

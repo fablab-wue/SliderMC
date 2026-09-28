@@ -518,7 +518,7 @@ def run_scenario(
                 print("  %6.2f #%s %8.2f %6.2f %6.2f  tgt=%.1f" %
                       (s.t, state, s.pos / SPMM, abs(s.vel), abs(s.acc_meas),
                        s.target / SPMM))
-            next_verbose += 0.333
+            next_verbose += 0.1
 
         if not pending and not s.moving and s.t > 0.05:
             break

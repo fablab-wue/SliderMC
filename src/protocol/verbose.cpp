@@ -8,15 +8,25 @@
 #include <string.h>
 
 /*
- * Verbose mode (~3 Hz): push compact `#…` status for the UIC to refresh a
- * display (e.g. OLED). Also acts as a heartbeat that the MC is alive.
- * Realtime `?` uses the same line format.
+ * Verbose `#…` status for the UIC display. Realtime `#` uses the same line
+ * and always sends (no dedupe, no rate).
+ *
+ * Terminal: retry at verbose_rate_hz, send only when the line changes.
+ * Non-terminal, not idle/disabled: send at verbose_rate_hz, no dedupe.
+ * Non-terminal idle (I) or disabled (D): on each poll, send immediately if
+ * the line changed, otherwise a 1 s heartbeat. Camera letter T is a line
+ * change on that path, not a different mode. Every send restarts the 1 s timer.
  *
  * Packed channels joined by `|`. A lone idle `0` group is omitted so
  * `| 0 |` becomes `||`.
  */
 
 static char g_last_verbose[512];
+
+static void remember_verbose(const char *buf) {
+  strncpy(g_last_verbose, buf, sizeof(g_last_verbose) - 1);
+  g_last_verbose[sizeof(g_last_verbose) - 1] = 0;
+}
 
 void protocol_verbose_reset_dedupe(void) { g_last_verbose[0] = 0; }
 
@@ -128,11 +138,22 @@ void protocol_send_verbose(void) {
     if (strcmp(buf, g_last_verbose) == 0) {
       return;
     }
-    strncpy(g_last_verbose, buf, sizeof(g_last_verbose) - 1);
-    g_last_verbose[sizeof(g_last_verbose) - 1] = 0;
   }
-
+  /* Remember every line actually sent so a later idle compare is against it.
+   * Terminal still returns above when the line is unchanged. */
+  remember_verbose(buf);
   protocol_write(buf);
+}
+
+bool protocol_verbose_idle_step(bool heartbeat_due) {
+  char buf[512];
+  build_status_line(buf, sizeof(buf));
+  if (!heartbeat_due && strcmp(buf, g_last_verbose) == 0) {
+    return false;
+  }
+  remember_verbose(buf);
+  protocol_write(buf);
+  return true;
 }
 
 void protocol_send_status(void) {

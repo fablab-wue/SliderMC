@@ -65,6 +65,34 @@ static void expect_true(const char *name, bool ok) {
   }
 }
 
+static int out_hash_count(void) {
+  int n = 0;
+  for (size_t i = 0; i < g_out.size(); ++i) {
+    if (g_out[i] == '#') {
+      ++n;
+    }
+  }
+  return n;
+}
+
+static void expect_eq_int(const char *name, int got, int want) {
+  if (got != want) {
+    std::fprintf(stderr, "FAIL %s: got %d want %d in:\n%s\n", name, got, want, g_out.c_str());
+    ++g_fail;
+  } else {
+    std::printf("OK   %s\n", name);
+  }
+}
+
+static void expect_exact(const char *name, const char *want) {
+  if (g_out != want) {
+    std::fprintf(stderr, "FAIL %s: want '%s' got:\n%s\n", name, want, g_out.c_str());
+    ++g_fail;
+  } else {
+    std::printf("OK   %s\n", name);
+  }
+}
+
 static void expect_not_contains(const char *name, const char *needle) {
   if (g_out.find(needle) != std::string::npos) {
     std::fprintf(stderr, "FAIL %s: unexpected '%s' in:\n%s\n", name, needle, g_out.c_str());
@@ -2083,6 +2111,126 @@ int main(void) {
   reset_out();
   feed("VP\n");
   expect_contains("VP still 1 after MD", "VP:1");
+
+  /* Non-terminal idle/disabled verbose: immediate on change, 1 s heartbeat.
+   * Moving stays at verbose_rate_hz. Terminal stays deduped with no heartbeat. */
+  reset_out();
+  feed("MS\nSE 1\nSL\nSR\nSP 0\nSS 20\nSA 100\nST 0\nSV 0\n");
+  feed("CS verbose_rate_hz 20\n");
+  protocol_poll(5); /* verbose off: clear accumulator and dedupe */
+  expect_empty("verbose opt setup silent");
+  reset_out();
+  feed("SV 1\nMT 200\n");
+  expect_empty("SV+MT silent before polls");
+  reset_out();
+  for (int i = 0; i < 10; ++i) {
+    protocol_poll(10); /* 100 ms at 20 Hz → two lines; a change-every-poll path would emit 10 */
+  }
+  expect_eq_int("moving verbose at configured 20 Hz", out_hash_count(), 2);
+  expect_contains("moving verbose is not idle", "#A ");
+  reset_out();
+  feed("MS\nSV 0\n");
+  protocol_poll(5);
+  expect_empty("stop move and verbose off");
+
+  reset_out();
+  feed("SE 1\nSP 0\nST 0\nSV 1\n");
+  expect_empty("idle verbose setup silent");
+  reset_out();
+  protocol_poll(5);
+  expect_exact("idle verbose first line", "#I 0\n");
+  reset_out();
+  for (int i = 0; i < 199; ++i) {
+    protocol_poll(5); /* 995 ms */
+  }
+  expect_exact("idle verbose quiet under 1s", "");
+  protocol_poll(5); /* 1000 ms */
+  expect_exact("idle verbose one heartbeat", "#I 0\n");
+  reset_out();
+  feed("SP 12\n");
+  expect_empty("SP while idle silent");
+  reset_out();
+  protocol_poll(5);
+  expect_exact("idle change sends at once", "#I 12\n");
+  reset_out();
+  protocol_poll(995);
+  expect_exact("idle change restarts 1s window", "");
+  protocol_poll(5);
+  expect_exact("idle heartbeat after restarted window", "#I 12\n");
+  reset_out();
+  protocol_poll(5);
+  expect_exact("no second heartbeat inside the window", "");
+
+  reset_out();
+  feed("SE 0\n");
+  expect_empty("SE 0 silent");
+  reset_out();
+  protocol_poll(5);
+  expect_exact("disabled change sends at once", "#D 12\n");
+  reset_out();
+  for (int i = 0; i < 199; ++i) {
+    protocol_poll(5);
+  }
+  expect_exact("disabled verbose quiet under 1s", "");
+  protocol_poll(5);
+  expect_exact("disabled verbose one heartbeat", "#D 12\n");
+
+  reset_out();
+  feed("SE 1\n");
+  expect_empty("SE 1 back to idle");
+  reset_out();
+  protocol_poll(5);
+  expect_exact("re-enable is an idle line change", "#I 12\n");
+  reset_out();
+  board_camera_ctrl_pulse(5000);
+  protocol_poll(5);
+  expect_exact("camera T while idle sends at once", "#T 12\n");
+  reset_out();
+  for (int i = 0; i < 20; ++i) {
+    protocol_poll(20); /* 400 ms: rate path would already have repeated */
+  }
+  expect_exact("camera T stays on idle optimizer", "");
+  protocol_poll(595); /* 400+595 = 995 ms since the T send */
+  expect_exact("camera T still inside heartbeat window", "");
+  protocol_poll(5);
+  expect_exact("camera T heartbeat", "#T 12\n");
+  reset_out();
+  board_camera_ctrl_pulse(30);
+  protocol_poll(20);
+  expect_exact("camera T unchanged inside window", "");
+  protocol_poll(20); /* pulse ends this poll; letter returns to I */
+  expect_exact("camera T end is a line change", "#I 12\n");
+
+  reset_out();
+  feed("SV 0\n");
+  protocol_poll(5); /* verbose off clears the dedupe cache and the accumulator */
+  feed("ST 1\n");
+  expect_empty("ST 1 silent before echo");
+  feed("SP 0\nSV 1\n"); /* terminal echoes these bytes */
+  reset_out();
+  protocol_poll(40);
+  expect_exact("terminal waits for rate", "");
+  protocol_poll(10); /* 50 ms at 20 Hz */
+  expect_exact("terminal sends changed line at rate", "#I 0\n");
+  reset_out();
+  for (int i = 0; i < 300; ++i) {
+    protocol_poll(5); /* 1.5 s of unchanged attempts */
+  }
+  expect_exact("terminal has no 1s heartbeat", "");
+  feed("SP 3\n");
+  reset_out();
+  protocol_poll(5);
+  expect_exact("terminal change does not skip the rate", "");
+  protocol_poll(45);
+  expect_exact("terminal change sends on the rate slot", "#I 3\n");
+
+  reset_out();
+  feed("ST 0\n"); /* echoed while terminal is still on */
+  reset_out();
+  feed("SV 0\nMS\nSP 0\n");
+  feed("CS verbose_rate_hz 10\n");
+  protocol_poll(5);
+  expect_empty("restore terminal verbose rate");
 
   if (g_fail) {
     std::fprintf(stderr, "\n%d test(s) failed\n", g_fail);
