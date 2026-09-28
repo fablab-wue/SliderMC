@@ -166,7 +166,7 @@ What it would actually buy SliderMC:
 
 What it would **not** buy:
 
-- GPIO. A **Pico 2** (40-pin) can reuse the Pico map. An **RP2350 Mini / Zero-class** board is as pin-starved as the RP2040-Zero — 3 full driver+limit sets still consume the header.
+- GPIO. A **Pico 2** (40-pin) can reuse the Pico map. An **RP2350 Zero** board is as pin-starved as the RP2040-Zero — 3 full driver+limit sets still consume the header.
 - Protocol or planner design. Independent fill and path idle-slice stay necessary.
 - Drop-in for existing wired Picos. New `BOARD_PICO2` env, PlatformIO/earlephilhower RP2350, and a pin map.
 

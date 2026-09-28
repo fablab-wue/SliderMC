@@ -13,7 +13,7 @@ Recommendations deferred from the experimental 3rd-axis plan. Stay on Pico / Zer
 
 - [x] **133 MHz in-spec clock.** `board_build.f_cpu` + `set_sys_clock_khz(133000)`. PIO clkdiv = `clk_sys / 50e6` (~2.66). `pio_step_sysclk_hz()` is SM clock from `clock_get_hz(clk_sys) / clkdiv`.
 - [ ] **Dual-core feed / DMA word queues / full DDA interpolator** (plan suggestion 8). Do not start these unless `ID` still underruns after fill/path and optional 133 MHz. Pairwise `|d_n|/|d0|` cruise scaling is enough for experimental MT; a follower `max_speed` clamp can still desync arrival. Path mode stays the true shared clock.
-- [x] **Pico 2 / Pico 2 W / RP2350 Mini PlatformIO envs** (`pico2`, `pico2w`, `rp2350mini`). 150 MHz CPU; PIO clkdiv from `clock_get_hz(clk_sys)`. Pico 2 reuses Pico pins; Mini reuses Zero pins. Bench 3-axis underruns on hardware still TBD.
+- [x] **Pico 2 / Pico 2 W / RP2350 Zero PlatformIO envs** (`pico2`, `pico2w`, `rp2350zero`). 150 MHz CPU; PIO clkdiv from `clock_get_hz(clk_sys)`. Pico 2 reuses Pico pins; RP2350 Zero reuses RP2040-Zero pins. Bench 3-axis underruns on hardware still TBD.
 
 ## Firmware cleanup
 

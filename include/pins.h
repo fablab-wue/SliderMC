@@ -2,7 +2,7 @@
 
 // Hardware pin map — compile-time only (not changeable by commands).
 // Pico 2 / Pico 2 W reuse the Pico / Pico W header map.
-// RP2350 Mini (Waveshare RP2350-Zero) reuses the RP2040-Zero map.
+// RP2350 Zero (Waveshare RP2350-Zero) reuses the RP2040-Zero map.
 
 #if defined(BOARD_PICO2) && !defined(BOARD_PICO)
 #define BOARD_PICO 1
@@ -10,7 +10,7 @@
 #if defined(BOARD_PICO2_W) && !defined(BOARD_PICO_W)
 #define BOARD_PICO_W 1
 #endif
-#if defined(BOARD_RP2350_MINI) && !defined(BOARD_RP2040_ZERO)
+#if defined(BOARD_RP2350_ZERO) && !defined(BOARD_RP2040_ZERO)
 #define BOARD_RP2040_ZERO 1
 #endif
 
@@ -18,7 +18,7 @@
 #define BOARD_PICO 1
 #endif
 #if (defined(BOARD_PICO) + defined(BOARD_PICO_W) + defined(BOARD_RP2040_ZERO)) > 1
-#error "pins.h: define exactly one board (Pico / Pico W / Pico2 / Pico2 W / RP2040-Zero / RP2350 Mini)"
+#error "pins.h: define exactly one board (Pico / Pico W / Pico2 / Pico2 W / RP2040-Zero / RP2350 Zero)"
 #endif
 
 /* Oscilloscope HW debug pins (compile-time). Define DEBUG_HW to enable.
