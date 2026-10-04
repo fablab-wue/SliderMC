@@ -49,6 +49,33 @@ Competitive context: [architecture/compare.md](https://github.com/fablab-wue/Sli
 
 ---
 
+## Flash a release
+
+No compiler and no PlatformIO. Download the UF2 for your board from the [Releases](https://github.com/fablab-wue/SliderMC/releases) page.
+
+| File | Board |
+|------|--------|
+| `SliderMC-<tag>-pico.uf2` | Raspberry Pi Pico (RP2040) |
+| `SliderMC-<tag>-picow.uf2` | Raspberry Pi Pico W |
+| `SliderMC-<tag>-rp2040zero.uf2` | Waveshare RP2040-Zero |
+| `SliderMC-<tag>-pico2.uf2` | Raspberry Pi Pico 2 (RP2350) |
+| `SliderMC-<tag>-pico2w.uf2` | Raspberry Pi Pico 2 W |
+| `SliderMC-<tag>-rp2350zero.uf2` | Waveshare RP2350-Zero |
+
+1. Hold **BOOTSEL**, plug in USB, then release BOOTSEL.
+2. Copy the UF2 onto the drive that appears. RP2040 boards show up as `RPI-RP2`. RP2350 boards (Pico 2, Pico 2 W, RP2350 Zero) show up as `RP2350`.
+3. The board reboots into the new firmware.
+
+Pico and Zero share a chip family. The bootloader accepts either file on that chip, and the wrong one uses the wrong pins. Match the file to the board.
+
+A release UF2 is the application only. A board with no `/mc.ini` yet boots with the compiled defaults. An existing `/mc.ini` on LittleFS survives a later UF2 update. Factory `data/mc.ini` still needs a filesystem upload from a source build.
+
+A new set of files is built when a `v*` tag is pushed (for example `v1.0`). That tag's commit must already contain this workflow. Rebuild an existing tag from the Actions page with **Run workflow**.
+
+Full notes, including the filesystem image: [mc/build.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/build.md).
+
+---
+
 ## Quick start (VS Code)
 
 1. Install [VS Code](https://code.visualstudio.com/) and the **PlatformIO IDE** extension.  
