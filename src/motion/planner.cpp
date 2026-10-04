@@ -1146,6 +1146,36 @@ static float cruise_cap(int axis) {
   return v;
 }
 
+/* Distance ratio for a coordinated move; 1 for a single axis or the time master. */
+static float axis_move_ratio(int axis) {
+  if (!g_coord_active || axis < 0 || axis >= MC_CH_MAX) {
+    return 1.0f;
+  }
+  float ratio = g_coord_ratio[axis];
+  return (ratio > 0.0f) ? ratio : 0.0f;
+}
+
+/* Launch or approach floor in this axis's user-units/s. Coordinated followers
+ * scale with the distance ratio so every axis shares the same profile in time. */
+static float axis_floor_speed(int axis, float config_speed) {
+  if (config_speed <= 0.0f) {
+    return 0.0f;
+  }
+  return config_speed * axis_move_ratio(axis);
+}
+
+/* Step rate for a speed floor. 0 when disabled, and when the floor is faster
+ * than commanded cruise — that clamp used to pin a slow axis for the whole move. */
+static float axis_floor_hz(float speed_per_s, float steps_per_unit, float cruise_per_s) {
+  if (speed_per_s <= 0.0f || steps_per_unit <= 0.0f) {
+    return 0.0f;
+  }
+  if (cruise_per_s > 0.0f && speed_per_s > cruise_per_s) {
+    return 0.0f;
+  }
+  return speed_per_s * steps_per_unit;
+}
+
 static float signed_cruise_from_pct(int ch, float pct) {
   if (fabsf(pct) < 1e-3f) {
     return 0.0f;
@@ -1295,6 +1325,11 @@ int planner_fill_fifo(int axis) {
   while (room_budget-- && pio_step_tx_room(axis) > 0) {
     int64_t err = AX.target_steps - AX.pos_steps;
     int sign;
+    float cruise = cruise_cap(axis);
+    float ramp_v = axis_floor_speed(axis, config_get()->ramp_start_speed);
+    float stop_v = axis_floor_speed(axis, config_get()->stop_approach_speed);
+    float ramp_hz = axis_floor_hz(ramp_v, AX.spmm, cruise);
+    float stop_hz = axis_floor_hz(stop_v, AX.spmm, cruise);
     if (AX.stopping) {
       if (fabsf(AX.vel_mm_s) < 0.01f) {
         AX.fill_wants_more = false;
@@ -1308,10 +1343,9 @@ int planner_fill_fifo(int axis) {
     } else {
       /* At target: finish deceleration, but stop rather than creep past it for
          a residue that is only worth a few steps. The approach floor leaves the
-         axis at stop_approach_hz, so that speed also counts as arrived —
+         axis at stop_approach_speed, so that speed also counts as arrived —
          otherwise the trailing decel would issue steps beyond the target. */
-      int stop_app_hz = config_get()->stop_approach_hz;
-      float v_stop = (stop_app_hz > 0) ? (float)stop_app_hz / AX.spmm : 0.0f;
+      float v_stop = stop_v;
       if (fabsf(AX.vel_mm_s) <= v_stop + 1e-3f ||
           planner_stop_rem_steps(AX.vel_mm_s, AX.decel_mm_s2, AX.spmm) <= 4) {
         AX.vel_mm_s = 0.0f;
@@ -1364,7 +1398,7 @@ int planner_fill_fifo(int axis) {
     /*
      * Ramp target is either cruise or 0. Feeding it min(cruise, vmax) would
      * move the target every word as rem shrinks, restart the sine phase, and
-     * leave the axis stuck near ramp_start_hz (seen as "higher ss → slower").
+     * leave the axis stuck near the launch floor (seen as "higher ss → slower").
      * When remaining distance cannot support the current speed, brake to 0;
      * the vmax clamp below is the hard safety net for the issued word.
      *
@@ -1381,7 +1415,7 @@ int planner_fill_fifo(int axis) {
       AX.braking = true;
       v_cmd = 0.0f;
     } else {
-      v_cmd = (float)sign * cruise_cap(axis);
+      v_cmd = (float)sign * cruise;
     }
 
     bool decel = AX.stopping || reverse_decel || AX.braking;
@@ -1408,7 +1442,7 @@ int planner_fill_fifo(int axis) {
         AX.braking = false;
         AX.brake_d = 0;
         decel = false;
-        v_cmd = (float)sign * cruise_cap(axis);
+        v_cmd = (float)sign * cruise;
       }
     } else {
       AX.brake_d = 0;
@@ -1430,18 +1464,15 @@ int planner_fill_fifo(int axis) {
       }
     }
 
-    int ramp_start = config_get()->ramp_start_hz;
-    int stop_app = config_get()->stop_approach_hz;
     /*
-     * Leave standstill at ramp_start_hz. A sine from v=0 has near-zero initial
-     * accel, and the old floor kept STEP stuck at ramp_start while phi crawled
+     * Leave standstill at ramp_start_speed. A sine from v=0 has near-zero initial
+     * accel, and the old floor kept STEP stuck at the launch rate while phi crawled
      * up — felt as a long constant low-speed creep (worse with small SA).
      * Seed vmin so the S-curve accelerates immediately toward cruise.
      */
-    if (ramp_start > 0 && !AX.stopping && !reverse_decel && !AX.braking) {
-      float vmin = (float)ramp_start / AX.spmm;
-      if (vmin > 0.0f && fabsf(AX.vel_mm_s) < vmin && fabsf(v_cmd) > vmin) {
-        AX.vel_mm_s = (float)sign * vmin;
+    if (ramp_v > 0.0f && !AX.stopping && !reverse_decel && !AX.braking) {
+      if (fabsf(AX.vel_mm_s) < ramp_v && fabsf(v_cmd) > ramp_v) {
+        AX.vel_mm_s = (float)sign * ramp_v;
         reset_ramp(axis);
       }
     }
@@ -1449,24 +1480,24 @@ int planner_fill_fifo(int axis) {
     begin_ramp(axis, v_cmd);
 
     /*
-     * ramp_start_hz is the *launch* floor only. Applying it while braking pinned
-     * STEP at ramp_start for the last d_stop(ramp_start) — the axis then halted
-     * from that rate instead of tapering (end-of-move snap). Approaching the
-     * target is bounded by stop_approach_hz instead.
+     * ramp_start_speed is the *launch* floor only. Applying it while braking pinned
+     * STEP at that rate for the last d_stop — the axis then halted from that rate
+     * instead of tapering (end-of-move snap). Approaching the target is bounded
+     * by stop_approach_speed instead. Both floors are user-unit speeds; the step
+     * rate is speed * steps_per_unit, and is skipped when it would exceed cruise.
      */
-    float min_hz = (decel && stop_app > 0) ? (float)stop_app : (float)ramp_start;
+    float min_hz = (decel && stop_hz > 0.0f) ? stop_hz : ramp_hz;
 
     float step_hz_est = fabsf(AX.vel_mm_s) * AX.spmm;
     if (step_hz_est < 1.0f) {
       step_hz_est = min_hz;
     }
-    if (!decel && rem > 1 && step_hz_est < (float)ramp_start) {
-      step_hz_est = (float)ramp_start;
+    if (!decel && rem > 1 && ramp_hz > 0.0f && step_hz_est < ramp_hz) {
+      step_hz_est = ramp_hz;
     }
-    /* Approach floor: avoid crawling below stop_approach_hz while braking in. */
-    if ((decel || rem <= 4) && stop_app > 0 && step_hz_est > 0.0f &&
-        step_hz_est < (float)stop_app) {
-      step_hz_est = (float)stop_app;
+    /* Approach floor: avoid crawling below stop_approach_speed while braking in. */
+    if ((decel || rem <= 4) && stop_hz > 0.0f && step_hz_est > 0.0f && step_hz_est < stop_hz) {
+      step_hz_est = stop_hz;
     }
 
     /* SM stopped: ignore time-budget pending so we can prefill 4+ words. */
@@ -1519,7 +1550,7 @@ int planner_fill_fifo(int axis) {
        from steady speed into deceleration ran a whole word too fast before
        snapping to the next word's slower rate. */
     if (n > 1 && decel && AX.brake_d > 0) {
-      float v_app_est = (stop_app > 0) ? (float)stop_app / AX.spmm : 0.0f;
+      float v_app_est = stop_v;
       float dv_est = AX.brake_v0 - v_app_est;
       if (dv_est < 0.0f) {
         dv_est = 0.0f;
@@ -1565,10 +1596,10 @@ int planner_fill_fifo(int axis) {
        * Integrating the ramp in time instead let it lag (dphi/ds = 1/(v*T) is
        * stiff as v -> 0); the v_cap clamp then took over and stopped the axis at
        * full accel — the end-of-move snap. Keyed on distance it cannot drift.
-       * Landing on v_app (stop_approach) instead of 0 keeps the arc finite: a
+       * Landing on v_app (stop_approach_speed) instead of 0 keeps the arc finite: a
        * tail decaying to zero takes exponentially long and crawls on the floor.
        */
-      float v_app = (stop_app > 0) ? (float)stop_app / AX.spmm : 0.0f;
+      float v_app = stop_v;
       float dv = AX.brake_v0 - v_app;
       if (dv < 0.0f) {
         dv = 0.0f;
@@ -1600,12 +1631,11 @@ int planner_fill_fifo(int axis) {
     }
 
     float step_hz = fabsf(AX.vel_mm_s) * AX.spmm;
-    if (!decel && rem > 1 && step_hz < (float)ramp_start) {
-      step_hz = (float)ramp_start;
+    if (!decel && rem > 1 && ramp_hz > 0.0f && step_hz < ramp_hz) {
+      step_hz = ramp_hz;
     }
-    if ((decel || rem <= 4) && stop_app > 0 && step_hz > 0.0f &&
-        step_hz < (float)stop_app) {
-      step_hz = (float)stop_app;
+    if ((decel || rem <= 4) && stop_hz > 0.0f && step_hz > 0.0f && step_hz < stop_hz) {
+      step_hz = stop_hz;
     }
     if (step_hz < 1.0f) {
       if (AX.stopping || reverse_decel || err == 0) {

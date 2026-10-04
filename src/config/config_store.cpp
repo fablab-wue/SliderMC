@@ -212,8 +212,8 @@ static void config_apply_defaults(void) {
   g_cfg.home_accel_mm_s2 = CFG_DEFAULT_HOME_ACCEL_MM_S2;
   init_axis2_defaults();
   init_axis3_defaults();
-  g_cfg.ramp_start_hz = CFG_DEFAULT_RAMP_START_HZ;
-  g_cfg.stop_approach_hz = CFG_DEFAULT_STOP_APPROACH_HZ;
+  g_cfg.ramp_start_speed = CFG_DEFAULT_RAMP_START_SPEED;
+  g_cfg.stop_approach_speed = CFG_DEFAULT_STOP_APPROACH_SPEED;
   g_cfg.dir_change_pause_s = CFG_DEFAULT_DIR_CHANGE_PAUSE_S;
   g_cfg.path_buffer_size = CFG_DEFAULT_PATH_BUFFER_SIZE;
   if (g_cfg.path_buffer_size > PATH_BUFFER_MAX) {
@@ -1150,18 +1150,34 @@ bool config_set_key(const char *key, const char *value) {
     g_cfg.home_accel_mm_s2_3 = f;
     return true;
   }
+  if (icmp(key, "ramp_start_speed") == 0) {
+    if (!parse_float(value, &f) || f < 0.0f) {
+      return false;
+    }
+    g_cfg.ramp_start_speed = f;
+    return true;
+  }
+  if (icmp(key, "stop_approach_speed") == 0) {
+    if (!parse_float(value, &f) || f < 0.0f) {
+      return false;
+    }
+    g_cfg.stop_approach_speed = f;
+    return true;
+  }
+  /* Old global step-rate floors. Tuned against 320 steps/unit, so hz/320 keeps
+   * that axis's user-unit speed. Last line wins if the new key is also present. */
   if (icmp(key, "ramp_start_hz") == 0) {
     if (!parse_int(value, &i) || i < 0) {
       return false;
     }
-    g_cfg.ramp_start_hz = i;
+    g_cfg.ramp_start_speed = (float)i / CFG_RAMP_HZ_REF_STEPS;
     return true;
   }
   if (icmp(key, "stop_approach_hz") == 0) {
     if (!parse_int(value, &i) || i < 0) {
       return false;
     }
-    g_cfg.stop_approach_hz = i;
+    g_cfg.stop_approach_speed = (float)i / CFG_RAMP_HZ_REF_STEPS;
     return true;
   }
   if (icmp(key, "dir_change_pause_s") == 0) {
@@ -1432,12 +1448,12 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     protocol_format_num(out, out_len, c->home_accel_mm_s2_2);
     return true;
   }
-  if (icmp(key, "ramp_start_hz") == 0) {
-    snprintf(out, out_len, "%d", c->ramp_start_hz);
+  if (icmp(key, "ramp_start_speed") == 0) {
+    protocol_format_num(out, out_len, c->ramp_start_speed);
     return true;
   }
-  if (icmp(key, "stop_approach_hz") == 0) {
-    snprintf(out, out_len, "%d", c->stop_approach_hz);
+  if (icmp(key, "stop_approach_speed") == 0) {
+    protocol_format_num(out, out_len, c->stop_approach_speed);
     return true;
   }
   if (icmp(key, "dir_change_pause_s") == 0) {
@@ -1576,7 +1592,7 @@ void config_foreach(config_foreach_fn fn, void *ctx) {
       "motor_enable_active",
       "name",
       "path_buffer_size",
-      "ramp_start_hz",
+      "ramp_start_speed",
       "servo_1_active",
       "servo_1_max",
       "servo_1_max_accel",
@@ -1605,7 +1621,7 @@ void config_foreach(config_foreach_fn fn, void *ctx) {
       "servo_3_swap",
       "servo_3_unit",
       "servo_count",
-      "stop_approach_hz",
+      "stop_approach_speed",
       "verbose_rate_hz",
       "wdt",
   };

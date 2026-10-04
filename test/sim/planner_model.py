@@ -9,8 +9,9 @@ from typing import Callable, List, Optional, Sequence, Tuple
 SPMM = 320.0
 SYSCLK = 125_000_000
 FIXED = 192
-RAMP_START_HZ = 1000
-STOP_APPROACH_HZ = 400
+RAMP_START_SPEED = 1.5
+STOP_APPROACH_SPEED = 0.75
+COORD_RATIO = 1.0
 DIR_PAUSE_S = 0.1
 PACK_MIN_HZ = 2500
 PACK_MAX = 64
@@ -22,6 +23,23 @@ MAX_SPEED_MM_S = 100.0
 BRAKE_SCURVE = True
 
 Action = Tuple[float, Callable[["Sim"], None]]
+
+
+def floor_speed(config_speed: float) -> float:
+    """User-units/s floor. Coordinated followers scale by COORD_RATIO (1 alone)."""
+    if config_speed <= 0.0:
+        return 0.0
+    ratio = COORD_RATIO if COORD_RATIO > 0.0 else 0.0
+    return config_speed * ratio
+
+
+def floor_hz(speed: float, cruise: float) -> float:
+    """Step rate for a speed floor. 0 if it would pulse faster than cruise."""
+    if speed <= 0.0 or SPMM <= 0.0:
+        return 0.0
+    if cruise > 0.0 and speed > cruise:
+        return 0.0
+    return speed * SPMM
 
 
 def vmax_for_distance(d: float, a: float) -> float:
@@ -210,6 +228,8 @@ class Sim:
         budget = 4
         while budget > 0 and self.tx_room() > 0:
             budget -= 1
+            ramp_v = floor_speed(RAMP_START_SPEED)
+            stop_v = floor_speed(STOP_APPROACH_SPEED)
             err = self.target - self.pos
             if self.stopping:
                 if abs(self.vel) < 0.01:
@@ -220,7 +240,7 @@ class Sim:
             elif err < 0:
                 sign = -1
             else:
-                v_stop = STOP_APPROACH_HZ / SPMM if STOP_APPROACH_HZ > 0 else 0.0
+                v_stop = stop_v
                 if (abs(self.vel) <= v_stop + 1e-3
                         or self.stop_rem_steps(self.vel, self.decel, SPMM) <= 4):
                     self.vel = 0.0
@@ -249,6 +269,8 @@ class Sim:
             rem_mm = rem / SPMM
             vmax = vmax_for_distance(rem_mm, self.decel)
             cruise_cap = min(self.cruise, MAX_SPEED_MM_S)
+            ramp_hz = floor_hz(ramp_v, cruise_cap)
+            stop_hz = floor_hz(stop_v, cruise_cap)
             need_brake = (not self.stopping and not reverse_decel
                           and abs(self.vel) > 0.01
                           and rem <= self.stop_rem_steps(abs(self.vel), self.decel, SPMM) + 4)
@@ -295,28 +317,26 @@ class Sim:
                     self.log("dir_pause")
                     break
 
-            # Seed ramp_start when leaving standstill (matches firmware).
-            if (RAMP_START_HZ > 0 and not self.stopping and not reverse_decel
+            # Seed ramp_start_speed when leaving standstill (matches firmware).
+            if (ramp_v > 0.0 and not self.stopping and not reverse_decel
                     and not self.braking):
-                vmin = RAMP_START_HZ / SPMM
-                if vmin > 0.0 and abs(self.vel) < vmin and abs(v_cmd) > vmin:
-                    self.vel = sign * vmin
+                if abs(self.vel) < ramp_v and abs(v_cmd) > ramp_v:
+                    self.vel = sign * ramp_v
                     self.reset_ramp()
 
             self.begin_ramp(v_cmd)
 
-            # ramp_start is the launch floor only; braking is bounded by
-            # stop_approach so the tail tapers instead of halting from ramp_start.
-            min_hz = float(STOP_APPROACH_HZ) if (decel and STOP_APPROACH_HZ > 0) \
-                else float(RAMP_START_HZ)
+            # ramp_start_speed is the launch floor only; braking is bounded by
+            # stop_approach_speed so the tail tapers instead of halting from the launch rate.
+            min_hz = stop_hz if (decel and stop_hz > 0.0) else ramp_hz
 
             hz_est = abs(self.vel) * SPMM
             if hz_est < 1.0:
                 hz_est = min_hz
-            if not decel and rem > 1 and hz_est < RAMP_START_HZ:
-                hz_est = float(RAMP_START_HZ)
-            if (decel or rem <= 4) and 0 < hz_est < STOP_APPROACH_HZ:
-                hz_est = float(STOP_APPROACH_HZ)
+            if not decel and rem > 1 and ramp_hz > 0.0 and hz_est < ramp_hz:
+                hz_est = ramp_hz
+            if (decel or rem <= 4) and stop_hz > 0.0 and 0 < hz_est < stop_hz:
+                hz_est = stop_hz
 
             n = self.pack_n(hz_est, rem, self.pending_steps())
             if n <= 0:
@@ -341,7 +361,7 @@ class Sim:
                 # drift. Landing on v_app rather than 0 keeps the arc finite --
                 # a tail that decays to zero takes exponentially long and ends
                 # up crawling on the floor anyway.
-                v_app = STOP_APPROACH_HZ / SPMM if STOP_APPROACH_HZ > 0 else 0.0
+                v_app = stop_v
                 dv = self.brake_v0 - v_app
                 if dv < 0.0:
                     dv = 0.0
@@ -367,10 +387,10 @@ class Sim:
                 self.acc_meas += 0.25 * ((self.vel - v_prev) / dt - self.acc_meas)
 
             step_hz = abs(self.vel) * SPMM
-            if not decel and rem > 1 and step_hz < RAMP_START_HZ:
-                step_hz = float(RAMP_START_HZ)
-            if (decel or rem <= 4) and 0 < step_hz < STOP_APPROACH_HZ:
-                step_hz = float(STOP_APPROACH_HZ)
+            if not decel and rem > 1 and ramp_hz > 0.0 and step_hz < ramp_hz:
+                step_hz = ramp_hz
+            if (decel or rem <= 4) and stop_hz > 0.0 and 0 < step_hz < stop_hz:
+                step_hz = stop_hz
             if step_hz < 1.0:
                 if self.stopping or reverse_decel or err == 0:
                     self.vel = 0.0

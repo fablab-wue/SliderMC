@@ -50,8 +50,11 @@
 #define CFG_DEFAULT_HOME_SPEED_MM_S 25.0f
 #define CFG_DEFAULT_HOME_ACCEL_MM_S2 20.0f
 
-#define CFG_DEFAULT_RAMP_START_HZ 1000
-#define CFG_DEFAULT_STOP_APPROACH_HZ 400
+/* Launch / approach floors in user-units/s (mm/s, deg/s, …). 1.5 and 0.75 match
+ * the old 480 Hz / 240 Hz tune at 320 steps/unit. Legacy *_hz keys load as hz/320. */
+#define CFG_DEFAULT_RAMP_START_SPEED 1.5f
+#define CFG_DEFAULT_STOP_APPROACH_SPEED 0.75f
+#define CFG_RAMP_HZ_REF_STEPS 320.0f
 #define CFG_DEFAULT_DIR_CHANGE_PAUSE_S 0.1f
 
 /* Path (PC/PD/PG/PN/PS): one int16 pool split by live axis count.

@@ -85,8 +85,8 @@ typedef struct {
   float max_speed_mm_s_3;
   float max_accel_mm_s2_3;
 
-  int ramp_start_hz;
-  int stop_approach_hz;
+  float ramp_start_speed;   /* user-units/s; 0 disables the launch floor */
+  float stop_approach_speed; /* user-units/s; 0 disables the approach floor */
   float dir_change_pause_s;
 
   int path_buffer_size;    /* PD sample capacity (1..PATH_BUFFER_MAX) */
