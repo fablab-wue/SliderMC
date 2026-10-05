@@ -152,9 +152,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --notes-file notes.md
-            gh release upload "$TAG" dist/*.uf2 --clobber
+          repo="$GITHUB_REPOSITORY"
+          if gh release view "$TAG" --repo "$repo" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$repo" --notes-file notes.md
+            gh release upload "$TAG" --repo "$repo" --clobber dist/*.uf2
           else
-            gh release create "$TAG" dist/*.uf2 --title "SliderMC ${TAG}" --notes-file notes.md
+            gh release create "$TAG" --repo "$repo" --verify-tag --title "SliderMC ${TAG}" --notes-file notes.md dist/*.uf2
           fi
