@@ -54,17 +54,18 @@ float planner_max_step_hz(uint32_t sysclk_hz, uint32_t fixed_cycles);
 float planner_sinf(float x);
 float planner_cosf(float x);
 
+/** sin(unit * π/2) for unit in [0, 1]. Brake arc indexes this by R/D. */
+float planner_sinf_unit_quarter(float unit);
+
 /** Raised-cosine blend of velocity from v0 toward v1 over phase phi in [0,1]. */
 float planner_sine_vel(float v0, float v1, float phi);
 
 /**
  * Advance phase for a sine ramp given peak accel a and |v1-v0|.
  * Returns new phi clamped to [0,1]. dt_s > 0.
- *
- * Use `double` for the phase accumulator to reduce single-precision
- * accumulation error over many small dt steps.
+ * Float matches the filler, which advances phi with a cached 1/T.
  */
-double planner_sine_advance_phi(double phi, float v0, float v1, float accel_mm_s2, double dt_s);
+float planner_sine_advance_phi(float phi, float v0, float v1, float accel_mm_s2, float dt_s);
 
 /** Steps to bleed |vel| via sine stop-distance law (ceil); 0 if already stopped. */
 int planner_stop_rem_steps(float vel_mm_s, float accel_mm_s2, float steps_per_unit);

@@ -34,15 +34,18 @@ int planner_pack_n_min(float step_hz, int remaining_steps, int pending_steps,
   if (step_hz < (float)pack_min_hz) {
     return 1;
   }
-  float word_ms = PLANNER_FIFO_WORD_MS;
-  float horizon_ms = PLANNER_FIFO_HORIZON_MS;
-  if (word_ms < 0.5f) {
-    word_ms = 0.5f;
+  /* Word and horizon are whole milliseconds (2 and 6). Integer Hz avoids a
+   * soft-float multiply on every one-pulse word. */
+  uint32_t hz = (step_hz >= 1.0f) ? (uint32_t)step_hz : 1u;
+  uint32_t word_ms = (uint32_t)PLANNER_FIFO_WORD_MS;
+  uint32_t horizon_ms = (uint32_t)PLANNER_FIFO_HORIZON_MS;
+  if (word_ms < 1u) {
+    word_ms = 1u;
   }
   if (horizon_ms < word_ms) {
     horizon_ms = word_ms;
   }
-  int horizon_steps = (int)(step_hz * horizon_ms / 1000.0f);
+  int horizon_steps = (int)(hz * horizon_ms / 1000u);
   if (horizon_steps < 1) {
     horizon_steps = 1;
   }
@@ -50,7 +53,7 @@ int planner_pack_n_min(float step_hz, int remaining_steps, int pending_steps,
   if (room < 1) {
     return 0;
   }
-  int n = (int)(step_hz * word_ms / 1000.0f);
+  int n = (int)(hz * word_ms / 1000u);
   if (n < 1) {
     n = 1;
   }
@@ -79,21 +82,24 @@ int planner_pack_n(float step_hz, int remaining_steps, int pending_steps) {
 }
 
 uint32_t planner_hz_to_delay(float step_hz, uint32_t sysclk_hz, uint32_t fixed_cycles) {
-  if (step_hz < 1.0f) {
-    step_hz = 1.0f;
-  }
   if (sysclk_hz == 0) {
     sysclk_hz = 50000000u; /* PIO STEP SM clock (clk_sys / clkdiv) */
   }
-  float period = (float)sysclk_hz / step_hz;
-  float delay_f = period - (float)fixed_cycles;
-  if (delay_f < 1.0f) {
-    delay_f = 1.0f;
+  /* Integer Hz is finer than the 2% refinement gate, and the divide is a
+   * machine instruction instead of a soft-float libcall on RP2040. */
+  uint32_t hz = (step_hz >= 1.0f) ? (uint32_t)step_hz : 1u;
+  uint32_t period = sysclk_hz / hz;
+  if (period <= fixed_cycles) {
+    return 1u;
   }
-  if (delay_f > (float)0x03FFFFFFu) {
-    delay_f = (float)0x03FFFFFFu;
+  uint32_t delay = period - fixed_cycles;
+  if (delay > 0x03FFFFFFu) {
+    delay = 0x03FFFFFFu;
   }
-  return (uint32_t)delay_f;
+  if (delay < 1u) {
+    delay = 1u;
+  }
+  return delay;
 }
 
 float planner_max_step_hz(uint32_t sysclk_hz, uint32_t fixed_cycles) {
@@ -129,10 +135,8 @@ static const float k_sin_lut[PLANNER_SIN_LUT_N + 1] = {
     1.000000000e+00f,
 };
 
-/* x in [0, π/2]. */
-static float planner_sin_quarter(float x) {
-  static const float scale = (float)PLANNER_SIN_LUT_N * (2.0f / (float)M_PI);
-  float t = x * scale;
+/* t is the table index in [0, N]. N maps to sin(π/2) = 1. */
+static float planner_sin_quarter_t(float t) {
   if (t <= 0.0f) {
     return 0.0f;
   }
@@ -142,6 +146,23 @@ static float planner_sin_quarter(float x) {
   int i = (int)t;
   float a = k_sin_lut[i];
   return a + (k_sin_lut[i + 1] - a) * (t - (float)i);
+}
+
+/* x in [0, π/2]. */
+static float planner_sin_quarter(float x) {
+  static const float scale = (float)PLANNER_SIN_LUT_N * (2.0f / (float)M_PI);
+  return planner_sin_quarter_t(x * scale);
+}
+
+float planner_sinf_unit_quarter(float unit) {
+  if (unit <= 0.0f) {
+    return 0.0f;
+  }
+  if (unit >= 1.0f) {
+    return 1.0f;
+  }
+  /* unit 0 → sin 0, unit 1 → sin(π/2). Same samples as the quarter LUT. */
+  return planner_sin_quarter_t(unit * (float)PLANNER_SIN_LUT_N);
 }
 
 float planner_sinf(float x) {
@@ -169,6 +190,43 @@ float planner_cosf(float x) {
   return planner_sinf((float)(0.5 * M_PI) - x);
 }
 
+/* 0.5 * (1 - cos(π * k/N)) for k = 0..N. phi is already in [0, 1]. */
+static const float k_raised_cos[PLANNER_SIN_LUT_N + 1] = {
+    0.000000000e+00f, 6.022718974e-04f, 2.407636664e-03f, 5.411745018e-03f,
+    9.607359798e-03f, 1.498437340e-02f, 2.152983213e-02f, 2.922796741e-02f,
+    3.806023374e-02f, 4.800535344e-02f, 5.903936783e-02f, 7.113569500e-02f,
+    8.426519385e-02f, 9.839623426e-02f, 1.134947733e-01f, 1.295244373e-01f,
+    1.464466094e-01f, 1.642205226e-01f, 1.828033579e-01f, 2.021503478e-01f,
+    2.222148835e-01f, 2.429486279e-01f, 2.643016316e-01f, 2.862224533e-01f,
+    3.086582838e-01f, 3.315550733e-01f, 3.548576614e-01f, 3.785099100e-01f,
+    4.024548390e-01f, 4.266347628e-01f, 4.509914298e-01f, 4.754661628e-01f,
+    5.000000000e-01f, 5.245338372e-01f, 5.490085702e-01f, 5.733652372e-01f,
+    5.975451610e-01f, 6.214900900e-01f, 6.451423386e-01f, 6.684449267e-01f,
+    6.913417162e-01f, 7.137775467e-01f, 7.356983684e-01f, 7.570513721e-01f,
+    7.777851165e-01f, 7.978496522e-01f, 8.171966421e-01f, 8.357794774e-01f,
+    8.535533906e-01f, 8.704755627e-01f, 8.865052267e-01f, 9.016037657e-01f,
+    9.157348062e-01f, 9.288643050e-01f, 9.409606322e-01f, 9.519946466e-01f,
+    9.619397663e-01f, 9.707720326e-01f, 9.784701679e-01f, 9.850156266e-01f,
+    9.903926402e-01f, 9.945882550e-01f, 9.975923633e-01f, 9.993977281e-01f,
+    1.000000000e+00f,
+};
+
+static float planner_raised_cosine(float phi) {
+  if (phi <= 0.0f) {
+    return 0.0f;
+  }
+  if (phi >= 1.0f) {
+    return 1.0f;
+  }
+  float t = phi * (float)PLANNER_SIN_LUT_N;
+  if (t >= (float)PLANNER_SIN_LUT_N) {
+    return 1.0f;
+  }
+  int i = (int)t;
+  float a = k_raised_cos[i];
+  return a + (k_raised_cos[i + 1] - a) * (t - (float)i);
+}
+
 float planner_sine_vel(float v0, float v1, float phi) {
   if (phi <= 0.0f) {
     return v0;
@@ -177,24 +235,22 @@ float planner_sine_vel(float v0, float v1, float phi) {
     return v1;
   }
   /* Raised cosine: v = v0 + (v1-v0) * 0.5 * (1 - cos(pi*phi)) */
-  float w = 0.5f * (1.0f - planner_cosf((float)M_PI * phi));
-  return v0 + (v1 - v0) * w;
+  return v0 + (v1 - v0) * planner_raised_cosine(phi);
 }
 
-double planner_sine_advance_phi(double phi, float v0, float v1, float accel_mm_s2,
-                               double dt_s) {
-  double dv = fabs((double)v1 - (double)v0);
-  if (dv < 1e-6 || accel_mm_s2 < 1e-6f || dt_s <= 0.0) {
-    return 1.0;
+float planner_sine_advance_phi(float phi, float v0, float v1, float accel_mm_s2, float dt_s) {
+  float dv = fabsf(v1 - v0);
+  if (dv < 1e-6f || accel_mm_s2 < 1e-6f || dt_s <= 0.0f) {
+    return 1.0f;
   }
   /* Duration of half-sine accel: T = pi * |dv| / (2 a) */
-  double T = (double)M_PI * dv / (2.0 * (double)accel_mm_s2);
-  if (T < 1e-6) {
-    return 1.0;
+  float T = (float)M_PI * dv / (2.0f * accel_mm_s2);
+  if (T < 1e-6f) {
+    return 1.0f;
   }
   phi += dt_s / T;
-  if (phi > 1.0) {
-    phi = 1.0;
+  if (phi > 1.0f) {
+    phi = 1.0f;
   }
   return phi;
 }
@@ -206,7 +262,8 @@ int planner_stop_rem_steps(float vel_mm_s, float accel_mm_s2, float steps_per_un
   float a = accel_mm_s2 > 1e-3f ? accel_mm_s2 : 1e-3f;
   float spu = steps_per_unit > 1e-3f ? steps_per_unit : 1.0f;
   float d_stop = (float)M_PI * vel_mm_s * vel_mm_s / (4.0f * a);
-  int rem = (int)ceilf(fabsf(d_stop) * spu);
+  float d_steps = fabsf(d_stop) * spu;
+  int rem = (int)(d_steps + 0.999f);
   if (rem < 1) {
     rem = 1;
   }

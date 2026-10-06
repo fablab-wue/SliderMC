@@ -90,6 +90,21 @@ int main(void) {
   expect_near("sine phi1", planner_sine_vel(0.0f, 10.0f, 1.0f), 10.0f, 1e-5f);
   float mid = planner_sine_vel(0.0f, 10.0f, 0.5f);
   expect_near("sine mid", mid, 5.0f, 0.05f);
+  expect_near("brake unit 0", planner_sinf_unit_quarter(0.0f), 0.0f, 1e-6f);
+  expect_near("brake unit 1", planner_sinf_unit_quarter(1.0f), 1.0f, 1e-6f);
+  expect_near("brake unit mid", planner_sinf_unit_quarter(0.5f), 0.707106781f, 1e-6f);
+  {
+    float max_err = 0.0f;
+    for (int i = 0; i <= 64; ++i) {
+      float phi = (float)i / 64.0f;
+      float w = 0.5f * (1.0f - std::cos((float)M_PI * phi));
+      float e = std::fabs(planner_sine_vel(0.0f, 1.0f, phi) - w);
+      if (e > max_err) {
+        max_err = e;
+      }
+    }
+    expect_true("raised cosine knots match libm", max_err < 1e-5f);
+  }
 
   /* LUT trig: endpoints exact, lerp stays within linear-interp bound vs libm */
   expect_near("lut sin 0", planner_sinf(0.0f), 0.0f, 1e-6f);
