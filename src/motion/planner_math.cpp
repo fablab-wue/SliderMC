@@ -34,19 +34,29 @@ int planner_pack_n_min(float step_hz, int remaining_steps, int pending_steps,
   if (step_hz < (float)pack_min_hz) {
     return 1;
   }
-  float budget_ms = PLANNER_FIFO_TIME_BUDGET_MS;
-  if (budget_ms < 0.5f) {
-    budget_ms = 0.5f;
+  float word_ms = PLANNER_FIFO_WORD_MS;
+  float horizon_ms = PLANNER_FIFO_HORIZON_MS;
+  if (word_ms < 0.5f) {
+    word_ms = 0.5f;
   }
-  int budget_steps = (int)(step_hz * budget_ms / 1000.0f);
-  if (budget_steps < 1) {
-    budget_steps = 1;
+  if (horizon_ms < word_ms) {
+    horizon_ms = word_ms;
   }
-  int room = budget_steps - pending_steps;
+  int horizon_steps = (int)(step_hz * horizon_ms / 1000.0f);
+  if (horizon_steps < 1) {
+    horizon_steps = 1;
+  }
+  int room = horizon_steps - pending_steps;
   if (room < 1) {
     return 0;
   }
-  int n = room;
+  int n = (int)(step_hz * word_ms / 1000.0f);
+  if (n < 1) {
+    n = 1;
+  }
+  if (n > room) {
+    n = room;
+  }
   if (n > PLANNER_PACK_MAX) {
     n = PLANNER_PACK_MAX;
   }

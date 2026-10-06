@@ -26,7 +26,7 @@
 #define HOME_EN_PULSE_S 0.20f
 #define HOME_STALL_CLEAR_S 2.0f
 #define HOME_STALL_IGNORE_S 0.05f
-#define AXIS_MAX 3
+#define AXIS_MAX 4
 
 typedef enum {
   HOME_IDLE = 0,
@@ -50,6 +50,7 @@ typedef struct {
   float ramp_v0;
   float ramp_v1;
   float ramp_phi;
+  float ramp_inv_t; /* 1/T for the current sine segment; 0 if the segment is flat */
   bool ramp_active;
   bool stopping;
   bool dir_pause;
@@ -524,6 +525,9 @@ static bool read_limit_raw(int axis, bool left) {
 }
 
 static bool read_drv_error_raw(int axis) {
+  if (!axis_hw_has_fault(axis)) {
+    return false;
+  }
 #ifndef HOST_TEST
   int level = digitalRead(axis_hw_error_pin(axis)) ? 1 : 0;
   return config_pin_asserted(level, axis_hw_error_active(axis));
@@ -726,6 +730,12 @@ static void debounce_side(int axis, bool left, float dt_s) {
 }
 
 static void debounce_drv_error(int axis, float dt_s) {
+  if (!axis_hw_has_fault(axis)) {
+    AX.drv_err_stable = false;
+    AX.drv_err_raw_prev = false;
+    AX.drv_err_timer_s = 0.0f;
+    return;
+  }
 #ifndef HOST_TEST
   pinMode(axis_hw_error_pin(axis), INPUT_PULLUP);
 #endif
@@ -1072,6 +1082,18 @@ static void reset_ramp(int axis) {
   AX.ramp_v0 = AX.vel_mm_s;
   AX.ramp_v1 = AX.vel_mm_s;
   AX.ramp_phi = 0.0f;
+  AX.ramp_inv_t = 0.0f;
+}
+
+static void refresh_ramp_inv_t(int axis) {
+  float dv = fabsf(AX.ramp_v1 - AX.ramp_v0);
+  float a = AX.accel_mm_s2;
+  if (!AX.ramp_active || dv < 1e-6f || a < 1e-6f) {
+    AX.ramp_inv_t = 0.0f;
+    return;
+  }
+  float T = (float)M_PI * dv / (2.0f * a);
+  AX.ramp_inv_t = (T > 1e-6f) ? (1.0f / T) : 0.0f;
 }
 
 static void begin_ramp(int axis, float v_cmd) {
@@ -1080,6 +1102,7 @@ static void begin_ramp(int axis, float v_cmd) {
     AX.ramp_v1 = v_cmd;
     AX.ramp_phi = 0.0f;
     AX.ramp_active = true;
+    refresh_ramp_inv_t(axis);
   }
 }
 
@@ -1315,6 +1338,25 @@ int planner_fill_fifo(int axis) {
   }
 
   int nax = axis_count();
+  /* One PIO lock for the whole burst. Early returns above this point do not touch the FIFO. */
+  struct FillBatch {
+    FillBatch() { pio_step_batch_begin(); }
+    ~FillBatch() { pio_step_batch_end(); }
+  } fill_batch;
+  refresh_ramp_inv_t(axis);
+  const McConfig *cfg = config_get();
+  float cruise = cruise_cap(axis);
+  float ramp_v = axis_floor_speed(axis, cfg->ramp_start_speed);
+  float stop_v = axis_floor_speed(axis, cfg->stop_approach_speed);
+  float ramp_hz = axis_floor_hz(ramp_v, AX.spmm, cruise);
+  float stop_hz = axis_floor_hz(stop_v, AX.spmm, cruise);
+  float dir_pause_s = cfg->dir_change_pause_s;
+  uint32_t sysclk = pio_step_sysclk_hz();
+  if (sysclk == 0u) {
+    sysclk = 50000000u; /* same stand-in as planner_hz_to_delay */
+  }
+  float inv_sysclk = 1.0f / (float)sysclk;
+  int pack_min = (nax >= 3) ? PLANNER_PACK_MIN_HZ_3AXIS : PLANNER_PACK_MIN_HZ;
   /* 3-axis moves are the tightest case: keep a slightly larger per-call burst so
    * we do not spend a full interrupt/service cycle on every 1-2 word refill.
    * The extra headroom is small, but it reduces the chance of a low-water stall
@@ -1325,11 +1367,6 @@ int planner_fill_fifo(int axis) {
   while (room_budget-- && pio_step_tx_room(axis) > 0) {
     int64_t err = AX.target_steps - AX.pos_steps;
     int sign;
-    float cruise = cruise_cap(axis);
-    float ramp_v = axis_floor_speed(axis, config_get()->ramp_start_speed);
-    float stop_v = axis_floor_speed(axis, config_get()->stop_approach_speed);
-    float ramp_hz = axis_floor_hz(ramp_v, AX.spmm, cruise);
-    float stop_hz = axis_floor_hz(stop_v, AX.spmm, cruise);
     if (AX.stopping) {
       if (fabsf(AX.vel_mm_s) < 0.01f) {
         AX.fill_wants_more = false;
@@ -1388,8 +1425,6 @@ int planner_fill_fifo(int axis) {
       break;
     }
 
-    float rem_mm = (float)rem / AX.spmm;
-    float vmax = planner_vmax_for_distance(rem_mm, AX.decel_mm_s2);
     /* vel≈0 is a launch/crawl, not a brake. Stopping-distance + 4 with v=0 is
      * rem<=4, which aborted 1–4 step MT (FRAME_NEXT) with fill_wants_more=false
      * and left the axis in M at v=0 with the target still ahead. */
@@ -1450,7 +1485,7 @@ int planner_fill_fifo(int axis) {
 
     /* Direction change at zero crossing */
     if (!AX.stopping && AX.last_sign != 0 && sign != AX.last_sign && fabsf(AX.vel_mm_s) < 0.05f) {
-      float pause = config_get()->dir_change_pause_s;
+      float pause = dir_pause_s;
       if (pause > 0.0f) {
         AX.dir_pause = true;
         AX.dir_pause_s = pause;
@@ -1502,7 +1537,6 @@ int planner_fill_fifo(int axis) {
 
     /* SM stopped: ignore time-budget pending so we can prefill 4+ words. */
     int pending = pio_step_is_running(axis) ? pio_step_pending_steps(axis) : 0;
-    int pack_min = (nax >= 3) ? PLANNER_PACK_MIN_HZ_3AXIS : PLANNER_PACK_MIN_HZ;
     int n = planner_pack_n_min(step_hz_est, rem, pending, pack_min);
     if (n <= 0) {
       /* Enough steps already queued for the time budget. */
@@ -1538,17 +1572,11 @@ int planner_fill_fifo(int axis) {
        pulses. Reuse that delay for the emitted word so phi advancement
        matches the issued timing. */
     uint32_t delay_cycles_for_word =
-        planner_hz_to_delay(step_hz_est, pio_step_sysclk_hz(), PIO_STEP_PERIOD_FIXED);
+        planner_hz_to_delay(step_hz_est, sysclk, PIO_STEP_PERIOD_FIXED);
     /* dt (seconds) = n * period; period = (fixed_overhead + delay_cycles)/sysclk */
-    double dt = (double)n * ((double)delay_cycles_for_word + (double)PIO_STEP_PERIOD_FIXED) /
-                (double)pio_step_sysclk_hz();
-    /* One refinement pass: estimate end-of-word velocity and recompute a
-       delay from the average rate, improving alignment between phi advance
-       and the issued PIO word without heavy iteration. Cover both the accel
-       ramp and the brake arc — omitting decel here left every braking word's
-       delay keyed on the start-of-word (pre-decel) rate, i.e. the corner
-       from steady speed into deceleration ran a whole word too fast before
-       snapping to the next word's slower rate. */
+    float dt = (float)n * ((float)delay_cycles_for_word + (float)PIO_STEP_PERIOD_FIXED) * inv_sysclk;
+    /* One refinement pass, and only when the end-of-word rate can move the
+       delay by more than 2%. Cover both the accel ramp and the brake arc. */
     if (n > 1 && decel && AX.brake_d > 0) {
       float v_app_est = stop_v;
       float dv_est = AX.brake_v0 - v_app_est;
@@ -1563,28 +1591,28 @@ int planner_fill_fifo(int axis) {
         float frac_est = (float)M_PI * (float)r_after_est / (2.0f * (float)AX.brake_d);
         v_end_est = v_app_est + dv_est * planner_sinf(frac_est);
       }
-      double step_hz_est2 = fabs((double)v_end_est) * (double)AX.spmm;
-      if (step_hz_est2 < 1.0) {
-        step_hz_est2 = (double)min_hz;
+      float step_hz_est2 = fabsf(v_end_est) * AX.spmm;
+      if (step_hz_est2 < 1.0f) {
+        step_hz_est2 = min_hz;
       }
-      uint32_t delay2 = planner_hz_to_delay((float)step_hz_est2, pio_step_sysclk_hz(), PIO_STEP_PERIOD_FIXED);
-      double dt2 = (double)n * ((double)delay2 + (double)PIO_STEP_PERIOD_FIXED) / (double)pio_step_sysclk_hz();
-      if (fabs(dt2 - dt) / (dt + 1e-12) > 0.02) {
-        dt = dt2;
+      if (step_hz_est > 1.0f && fabsf(step_hz_est2 - step_hz_est) / step_hz_est > 0.02f) {
+        uint32_t delay2 = planner_hz_to_delay(step_hz_est2, sysclk, PIO_STEP_PERIOD_FIXED);
+        dt = (float)n * ((float)delay2 + (float)PIO_STEP_PERIOD_FIXED) * inv_sysclk;
         delay_cycles_for_word = delay2;
       }
-    } else if (n > 1 && !decel && AX.ramp_active) {
-      double phi_est = planner_sine_advance_phi((double)AX.ramp_phi, AX.ramp_v0, AX.ramp_v1, AX.accel_mm_s2, dt);
-      double v_est = (double)planner_sine_vel(AX.ramp_v0, AX.ramp_v1, (float)phi_est);
-      double step_hz_est2 = fabs(v_est) * (double)AX.spmm;
-      if (step_hz_est2 < 1.0) {
-        step_hz_est2 = (double)min_hz;
+    } else if (n > 1 && !decel && AX.ramp_active && AX.ramp_inv_t > 0.0f) {
+      float phi_est = AX.ramp_phi + dt * AX.ramp_inv_t;
+      if (phi_est > 1.0f) {
+        phi_est = 1.0f;
       }
-      uint32_t delay2 = planner_hz_to_delay((float)step_hz_est2, pio_step_sysclk_hz(), PIO_STEP_PERIOD_FIXED);
-      double dt2 = (double)n * ((double)delay2 + (double)PIO_STEP_PERIOD_FIXED) / (double)pio_step_sysclk_hz();
-      /* Accept the refined dt if it differs noticeably. */
-      if (fabs(dt2 - dt) / (dt + 1e-12) > 0.02) {
-        dt = dt2;
+      float v_est = planner_sine_vel(AX.ramp_v0, AX.ramp_v1, phi_est);
+      float step_hz_est2 = fabsf(v_est) * AX.spmm;
+      if (step_hz_est2 < 1.0f) {
+        step_hz_est2 = min_hz;
+      }
+      if (step_hz_est > 1.0f && fabsf(step_hz_est2 - step_hz_est) / step_hz_est > 0.02f) {
+        uint32_t delay2 = planner_hz_to_delay(step_hz_est2, sysclk, PIO_STEP_PERIOD_FIXED);
+        dt = (float)n * ((float)delay2 + (float)PIO_STEP_PERIOD_FIXED) * inv_sysclk;
         delay_cycles_for_word = delay2;
       }
     }
@@ -1612,7 +1640,14 @@ int planner_fill_fifo(int axis) {
         AX.vel_mm_s = (float)sign * (v_app + dv * planner_sinf(frac));
       }
     } else {
-      AX.ramp_phi = (float)planner_sine_advance_phi((double)AX.ramp_phi, AX.ramp_v0, AX.ramp_v1, AX.accel_mm_s2, dt);
+      if (AX.ramp_inv_t <= 0.0f) {
+        AX.ramp_phi = 1.0f;
+      } else {
+        AX.ramp_phi += dt * AX.ramp_inv_t;
+        if (AX.ramp_phi > 1.0f) {
+          AX.ramp_phi = 1.0f;
+        }
+      }
       AX.vel_mm_s = planner_sine_vel(AX.ramp_v0, AX.ramp_v1, AX.ramp_phi);
       if (AX.ramp_phi >= 1.0f) {
         AX.vel_mm_s = AX.ramp_v1;
@@ -1621,9 +1656,15 @@ int planner_fill_fifo(int axis) {
     }
 
     /* Clamp to stop distance. While braking this is only an outer safety cap,
-       so the committed ramp is not torn down by it. */
-    float v_cap = AX.braking ? vmax * 1.25f : vmax;
-    if (fabsf(AX.vel_mm_s) > v_cap) {
+       so the committed ramp is not torn down by it. sqrt only when |v| is over.
+       Use rem after the brake commit; that is the distance this word still has. */
+    float rem_mm = (float)rem / AX.spmm;
+    float a_stop = AX.decel_mm_s2 < 1e-3f ? 1e-3f : AX.decel_mm_s2;
+    float v2_lim = (rem_mm > 0.0f) ? (4.0f * a_stop * rem_mm / (float)M_PI) : 0.0f;
+    float cap_mul = AX.braking ? 1.25f : 1.0f;
+    float v_abs = fabsf(AX.vel_mm_s);
+    if (v_abs * v_abs > v2_lim * cap_mul * cap_mul) {
+      float v_cap = sqrtf(v2_lim) * cap_mul;
       AX.vel_mm_s = (AX.vel_mm_s >= 0.0f) ? v_cap : -v_cap;
       if (!AX.braking) {
         reset_ramp(axis);

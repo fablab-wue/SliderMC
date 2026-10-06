@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-#define MOTION_DIAG_AXES 3
+#define MOTION_DIAG_AXES 4
 
 typedef struct {
   uint32_t underrun_count;

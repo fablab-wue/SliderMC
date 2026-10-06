@@ -14,13 +14,18 @@ extern "C" {
 #define PLANNER_PACK_MAX 64
 /*
  * Below this rate every word carries a single pulse (finest ramp resolution).
- * It must stay low enough that the 8-word TX FIFO still buffers the time
- * budget: 8 / 2500 Hz = 3.2 ms. Raising it starves the FIFO at the crossover.
+ * 8 words at this rate last 3.2 ms. Axes 3 and 4 pack from 1000 Hz so the
+ * one-pulse storm stays inside the feed task.
  */
 #define PLANNER_PACK_MIN_HZ 2500
 /* 3-axis n=1 at 2500 Hz is ~7500 word/s of soft-float; pack earlier. */
 #define PLANNER_PACK_MIN_HZ_3AXIS 1000
-#define PLANNER_FIFO_TIME_BUDGET_MS 3.0f
+/* Queued step time the filler tries to keep ahead of the PIO. */
+#define PLANNER_FIFO_HORIZON_MS 6.0f
+/* Longest single word. Several words then cover the horizon, so a pull
+ * does not empty the FIFO down to one burst. */
+#define PLANNER_FIFO_WORD_MS 2.0f
+#define PLANNER_FIFO_TIME_BUDGET_MS PLANNER_FIFO_WORD_MS
 
 /** Max |v| (mm/s) that can stop within dist_mm: d = π v² / (4 a). */
 float planner_vmax_for_distance(float dist_mm, float accel_mm_s2);

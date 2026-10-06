@@ -58,6 +58,10 @@
 #define PIN_SW_LIMIT_L_3 15
 #define PIN_SW_LIMIT_R_3 14
 
+/* Optional 4th STEP/DIR axis (motors>=4). Takes EXT_3 and EXT_4. Servo 3 stays on GP23. */
+#define PIN_DRV_STEP_4 19
+#define PIN_DRV_DIR_4 20
+
 #define PIN_DRV_ERROR_1 9
 #define PIN_DRV_ERROR_2 10
 #define PIN_DRV_ERROR_3 11
@@ -72,6 +76,7 @@
 
 #define PIN_AXIS2_SUPPORTED 1
 #define PIN_AXIS3_SUPPORTED 1
+#define PIN_AXIS4_SUPPORTED 1
 #define PIN_DBG_OVERLAPS_AXIS2 0
 #define PIN_DBG_OVERLAPS_EXT 1
 #define PIN_DBG_OVERLAPS_AXIS3 0
@@ -121,6 +126,10 @@
 #define PIN_SW_LIMIT_L_3 10
 #define PIN_SW_LIMIT_R_3 11
 
+/* Optional 4th STEP/DIR axis (motors>=4). Takes EXT_3, EXT_4, and servo 3 (GP18). */
+#define PIN_DRV_STEP_4 19
+#define PIN_DRV_DIR_4 18
+
 #define PIN_DRV_ERROR_1 12
 #define PIN_DRV_ERROR_2 13
 #define PIN_DRV_ERROR_3 14
@@ -135,6 +144,7 @@
 
 #define PIN_AXIS2_SUPPORTED 1
 #define PIN_AXIS3_SUPPORTED 1
+#define PIN_AXIS4_SUPPORTED 1
 #define PIN_DBG_OVERLAPS_AXIS2 0
 #define PIN_DBG_OVERLAPS_EXT 0
 #define PIN_DBG_OVERLAPS_AXIS3 1
@@ -181,6 +191,15 @@
 #endif
 #ifndef PIN_AXIS3_SUPPORTED
 #define PIN_AXIS3_SUPPORTED 0
+#endif
+#ifndef PIN_AXIS4_SUPPORTED
+#define PIN_AXIS4_SUPPORTED 0
+#endif
+#ifndef PIN_DRV_STEP_4
+#define PIN_DRV_STEP_4 (-1)
+#endif
+#ifndef PIN_DRV_DIR_4
+#define PIN_DRV_DIR_4 (-1)
 #endif
 #ifndef PIN_DBG_OVERLAPS_AXIS2
 #define PIN_DBG_OVERLAPS_AXIS2 0

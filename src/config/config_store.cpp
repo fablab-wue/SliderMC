@@ -128,14 +128,36 @@ static void init_axis3_defaults(void) {
   g_cfg.max_accel_mm_s2_3 = CFG_DEFAULT_MAX_ACCEL_MM_S2;
 }
 
+static void init_axis4_defaults(void) {
+  g_cfg.steps_per_unit_4 = CFG_DEFAULT_STEPS_PER_UNIT;
+  g_cfg.drv_dir_active_4 = CFG_DEFAULT_DRV_DIR_ACTIVE;
+  g_cfg.home_mode_4 = CFG_DEFAULT_HOME_MODE;
+  g_cfg.home_move_out_mm_4 = CFG_DEFAULT_HOME_MOVE_OUT_MM;
+  g_cfg.home_speed_mm_s_4 = CFG_DEFAULT_HOME_SPEED_MM_S;
+  g_cfg.home_accel_mm_s2_4 = CFG_DEFAULT_HOME_ACCEL_MM_S2;
+  g_cfg.max_speed_mm_s_4 = CFG_DEFAULT_MAX_SPEED_MM_S;
+  g_cfg.max_accel_mm_s2_4 = CFG_DEFAULT_MAX_ACCEL_MM_S2;
+}
+
 static int axis_board_max(void) {
-#if PIN_AXIS3_SUPPORTED
+#if PIN_AXIS4_SUPPORTED
+  return 4;
+#elif PIN_AXIS3_SUPPORTED
   return 3;
 #elif PIN_AXIS2_SUPPORTED
   return 2;
 #else
   return 1;
 #endif
+}
+
+/** Servo 3 is unavailable when motor 4's STEP or DIR pin is the servo 3 GPIO. */
+static int servo_count_cap(void) {
+  if (g_cfg.motors >= 4 &&
+      (PIN_SERVO_3 == PIN_DRV_STEP_4 || PIN_SERVO_3 == PIN_DRV_DIR_4)) {
+    return 2;
+  }
+  return SERVO_MAX;
 }
 
 static void clamp_cfg_counts(void) {
@@ -149,8 +171,9 @@ static void clamp_cfg_counts(void) {
   if (g_cfg.servos < 0) {
     g_cfg.servos = 0;
   }
-  if (g_cfg.servos > SERVO_MAX) {
-    g_cfg.servos = SERVO_MAX;
+  int scap = servo_count_cap();
+  if (g_cfg.servos > scap) {
+    g_cfg.servos = scap;
   }
   int n = g_cfg.motors + g_cfg.servos;
   if (n < 1) {
@@ -212,6 +235,7 @@ static void config_apply_defaults(void) {
   g_cfg.home_accel_mm_s2 = CFG_DEFAULT_HOME_ACCEL_MM_S2;
   init_axis2_defaults();
   init_axis3_defaults();
+  init_axis4_defaults();
   g_cfg.ramp_start_speed = CFG_DEFAULT_RAMP_START_SPEED;
   g_cfg.stop_approach_speed = CFG_DEFAULT_STOP_APPROACH_SPEED;
   g_cfg.dir_change_pause_s = CFG_DEFAULT_DIR_CHANGE_PAUSE_S;
@@ -259,6 +283,8 @@ bool config_axis2_enabled(void) { return config_motor_count() >= 2; }
 
 bool config_axis3_enabled(void) { return config_motor_count() >= 3; }
 
+bool config_axis4_enabled(void) { return config_motor_count() >= 4; }
+
 int config_path_per_axis_max(void) {
   int n = config_axis_count();
   if (n < 1) {
@@ -269,6 +295,11 @@ int config_path_per_axis_max(void) {
 
 bool config_ext_available(int index0) {
   if (index0 < 0 || index0 >= PIN_EXT_COUNT) {
+    return false;
+  }
+  static const int k_ext[PIN_EXT_COUNT] = {PIN_EXT_1, PIN_EXT_2, PIN_EXT_3, PIN_EXT_4};
+  if (config_motor_count() >= 4 &&
+      (k_ext[index0] == PIN_DRV_STEP_4 || k_ext[index0] == PIN_DRV_DIR_4)) {
     return false;
   }
 #if PIN_SERVO3_STEALS_EXT4
@@ -529,7 +560,11 @@ static bool match_kind_n_field(const char *key, const char *kind, const char *fi
     return false;
   }
   ++i;
-  if (key[i] < '1' || key[i] > '3') {
+  char digit_hi = '3';
+  if ((kind[0] == 'M' || kind[0] == 'm') && (kind[1] == 'O' || kind[1] == 'o')) {
+    digit_hi = (char)('0' + MOTOR_MAX);
+  }
+  if (key[i] < '1' || key[i] > digit_hi) {
     return false;
   }
   int n = key[i] - '1';
@@ -610,7 +645,7 @@ static const char *config_channel_unit(int ch) {
   return g_cfg.servo_unit[s];
 }
 
-/* axis_min_N / axis_max_N / soft_min_N / soft_max_N, N=1..6 */
+/* axis_min_N / axis_max_N / soft_min_N / soft_max_N, N=1..MC_CH_MAX */
 static bool match_synth_env(const char *key, bool *is_min, int *idx0) {
   const char *p = key;
   if (key_is(p, "axis_min_1", nullptr) || false) {
@@ -635,7 +670,7 @@ static bool match_synth_env(const char *key, bool *is_min, int *idx0) {
   } else {
     return false;
   }
-  if (p[0] < '1' || p[0] > '6' || p[1] != 0) {
+  if (p[0] < '1' || p[0] > (char)('0' + MC_CH_MAX) || p[1] != 0) {
     return false;
   }
   *idx0 = p[0] - '1';
@@ -704,7 +739,8 @@ static const char *config_legacy_key(const char *key, char *buf, size_t buflen) 
     fold[n] = c;
   }
   fold[n] = 0;
-  if (strncmp(fold, "motor_", 6) != 0 || fold[6] < '1' || fold[6] > '3' || fold[7] != '_') {
+  if (strncmp(fold, "motor_", 6) != 0 || fold[6] < '1' || fold[6] > (char)('0' + MOTOR_MAX) ||
+      fold[7] != '_') {
     return key;
   }
   const char nd = fold[6];
@@ -915,7 +951,7 @@ bool config_set_key(const char *key, const char *value) {
     return false; /* slider_min_* / slider_max_* rejected */
   }
   if (icmp(key, "motors") == 0) {
-    if (!parse_int(value, &i) || i < 1 || i > 3) {
+    if (!parse_int(value, &i) || i < 1 || i > 4) {
       return false;
     }
     if (i > axis_board_max()) {
@@ -936,7 +972,7 @@ bool config_set_key(const char *key, const char *value) {
     return true;
   }
   if (icmp(key, "servos") == 0) {
-    if (!parse_int(value, &i) || i < 0 || i > SERVO_MAX) {
+    if (!parse_int(value, &i) || i < 0 || i > servo_count_cap()) {
       return false;
     }
     if (i != g_cfg.servos) {
@@ -1148,6 +1184,58 @@ bool config_set_key(const char *key, const char *value) {
       return false;
     }
     g_cfg.home_accel_mm_s2_3 = f;
+    return true;
+  }
+  if (icmp(key, "max_speed_4") == 0) {
+    if (!parse_float(value, &f) || f <= 0.0f) {
+      return false;
+    }
+    g_cfg.max_speed_mm_s_4 = f;
+    return true;
+  }
+  if (icmp(key, "max_accel_4") == 0) {
+    if (!parse_float(value, &f) || f <= 0.0f) {
+      return false;
+    }
+    g_cfg.max_accel_mm_s2_4 = f;
+    return true;
+  }
+  if (key_is(key, "steps_per_unit_4", "steps_per_mm_4")) {
+    if (!parse_float(value, &f) || f <= 0.0f) {
+      return false;
+    }
+    g_cfg.steps_per_unit_4 = f;
+    return true;
+  }
+  if (icmp(key, "DRV_DIR_4_active") == 0) {
+    return set_01(value, &g_cfg.drv_dir_active_4);
+  }
+  if (icmp(key, "home_mode_4") == 0) {
+    if (!parse_int(value, &i) || i < 0 || i > 4) {
+      return false;
+    }
+    g_cfg.home_mode_4 = i;
+    return true;
+  }
+  if (icmp(key, "home_move_out_4") == 0) {
+    if (!parse_float(value, &f) || f < 0.0f) {
+      return false;
+    }
+    g_cfg.home_move_out_mm_4 = f;
+    return true;
+  }
+  if (icmp(key, "home_speed_4") == 0) {
+    if (!parse_float(value, &f) || f <= 0.0f) {
+      return false;
+    }
+    g_cfg.home_speed_mm_s_4 = f;
+    return true;
+  }
+  if (icmp(key, "home_accel_4") == 0) {
+    if (!parse_float(value, &f) || f <= 0.0f) {
+      return false;
+    }
+    g_cfg.home_accel_mm_s2_4 = f;
     return true;
   }
   if (icmp(key, "ramp_start_speed") == 0) {
@@ -1520,6 +1608,38 @@ bool config_get_key(const char *key, char *out, size_t out_len) {
     protocol_format_num(out, out_len, c->home_accel_mm_s2_3);
     return true;
   }
+  if (icmp(key, "max_speed_4") == 0) {
+    protocol_format_num(out, out_len, c->max_speed_mm_s_4);
+    return true;
+  }
+  if (icmp(key, "max_accel_4") == 0) {
+    protocol_format_num(out, out_len, c->max_accel_mm_s2_4);
+    return true;
+  }
+  if (key_is(key, "steps_per_unit_4", "steps_per_mm_4")) {
+    protocol_format_num(out, out_len, c->steps_per_unit_4);
+    return true;
+  }
+  if (icmp(key, "DRV_DIR_4_active") == 0) {
+    snprintf(out, out_len, "%d", c->drv_dir_active_4);
+    return true;
+  }
+  if (icmp(key, "home_mode_4") == 0) {
+    snprintf(out, out_len, "%d", c->home_mode_4);
+    return true;
+  }
+  if (icmp(key, "home_move_out_4") == 0) {
+    protocol_format_num(out, out_len, c->home_move_out_mm_4);
+    return true;
+  }
+  if (icmp(key, "home_speed_4") == 0) {
+    protocol_format_num(out, out_len, c->home_speed_mm_s_4);
+    return true;
+  }
+  if (icmp(key, "home_accel_4") == 0) {
+    protocol_format_num(out, out_len, c->home_accel_mm_s2_4);
+    return true;
+  }
   return false;
 }
 
@@ -1588,6 +1708,17 @@ void config_foreach(config_foreach_fn fn, void *ctx) {
       "motor_3_min",
       "motor_3_steps_per_unit",
       "motor_3_unit",
+      "motor_4_dir_active",
+      "motor_4_home_accel",
+      "motor_4_home_backoff",
+      "motor_4_home_mode",
+      "motor_4_home_speed",
+      "motor_4_max",
+      "motor_4_max_accel",
+      "motor_4_max_speed",
+      "motor_4_min",
+      "motor_4_steps_per_unit",
+      "motor_4_unit",
       "motor_count",
       "motor_enable_active",
       "name",

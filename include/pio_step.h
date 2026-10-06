@@ -13,9 +13,9 @@ extern "C" {
  * Word = delay[25:0] | (repeat[5:0] << 26); repeat R → R+1 pulses.
  * High phase ~3.8 µs @ 50 MHz SM clock (clk_sys / clkdiv). Max ≈ 259 kHz.
  * Polarity programs (active-high / active-low) are shared across SMs.
- * Axis 3 STEP polarity follows axis 2.
+ * Axis 3 and 4 STEP polarity follows axis 2.
  *
- * axis: 0 = primary, 1/2 = optional extras when config axis >= 2/3.
+ * axis: 0 = primary, 1/2/3 = optional extras when motors >= 2/3/4.
  */
 
 #define PIO_STEP_REPEAT_SHIFT 26
@@ -58,8 +58,19 @@ bool pio_step_is_running(int axis);
 void pio_step_stop_hard(int axis);
 void pio_step_stop_soft(int axis);
 
+/**
+ * Hold the PIO lock across one planner_fill_fifo burst so put/pending do not
+ * take it again per word. Nested begin is counted. The planner tick still
+ * locks when it reads pending outside a batch.
+ */
+void pio_step_batch_begin(void);
+void pio_step_batch_end(void);
+
 /** Non-blocking put; false if TX full. Advances shadow bookkeeping. */
 bool pio_step_put_word(int axis, uint32_t delay_cycles, uint8_t n_pulses);
+
+/** Sum of step periods still sitting in the TX FIFO, in SM clock cycles. */
+uint32_t pio_step_queued_cycles(int axis);
 
 unsigned pio_step_tx_level(int axis);
 unsigned pio_step_tx_room(int axis);

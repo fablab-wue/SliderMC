@@ -53,22 +53,23 @@ static bool any_fifo_low(void) {
 #endif
 
 #if PLANNER_FEED_LOWEST_FIFO
-/* Among axes that want words and have TX room, pick the driest FIFO.
- * Equal levels keep a rotating tie-break so axis 0 is not always first.
+/* Among axes that want words and have TX room, pick the least queued time.
+ * A short one-pulse word is more urgent than a deep FIFO of long cruise words.
+ * Equal times keep a rotating tie-break so axis 0 is not always first.
  * `skip` is per-axis for this wake (time-budget / nothing to emit). */
 static int feed_pick_lowest_fifo(int n, int tie_from, const bool *skip) {
   int best = -1;
-  unsigned best_lvl = 0xffffffffu;
+  uint32_t best_cyc = 0xffffffffu;
   int best_rr = 0;
   for (int a = 0; a < n; ++a) {
     if (skip[a] || !planner_feed_active_axis(a) || pio_step_tx_room(a) == 0) {
       continue;
     }
-    unsigned lvl = pio_step_tx_level(a);
+    uint32_t cyc = pio_step_queued_cycles(a);
     int rr = (a - tie_from + n) % n;
-    if (best < 0 || lvl < best_lvl || (lvl == best_lvl && rr < best_rr)) {
+    if (best < 0 || cyc < best_cyc || (cyc == best_cyc && rr < best_rr)) {
       best = a;
-      best_lvl = lvl;
+      best_cyc = cyc;
       best_rr = rr;
     }
   }
@@ -102,7 +103,13 @@ static void task_motion_feed(void *arg) {
       /* Re-pick the driest FIFO after every fill. 32*n matches the old
        * 32-pass × n-axis word budget. */
       int passes = (n > 0) ? (32 * n) : 0;
-      bool skip[3] = {false, false, false};
+      bool skip[MOTOR_MAX];
+      for (int s = 0; s < MOTOR_MAX; ++s) {
+        skip[s] = false;
+      }
+      if (n > MOTOR_MAX) {
+        n = MOTOR_MAX;
+      }
       for (int i = 0; i < passes; ++i) {
         int a = feed_pick_lowest_fifo(n, rr, skip);
         if (a < 0) {

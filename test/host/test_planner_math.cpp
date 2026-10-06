@@ -51,6 +51,14 @@ int main(void) {
   expect_true("pack 3-axis min at 2000 Hz > 1",
               planner_pack_n_min(2000.0f, 100, 0, PLANNER_PACK_MIN_HZ_3AXIS) > 1);
   expect_true("pack 1-axis min at 2000 Hz is 1", planner_pack_n(2000.0f, 100, 0) == 1);
+  {
+    int n_cross = planner_pack_n_min(1000.0f, 1000, 0, PLANNER_PACK_MIN_HZ_3AXIS);
+    int horizon = (int)(1000.0f * PLANNER_FIFO_HORIZON_MS / 1000.0f);
+    expect_true("crossover word does not consume the horizon",
+                n_cross >= 1 && n_cross * 2 <= horizon);
+    expect_true("horizon already queued emits nothing",
+                planner_pack_n_min(1000.0f, 1000, horizon, PLANNER_PACK_MIN_HZ_3AXIS) == 0);
+  }
   int n = planner_pack_n(50000.0f, 100, 0);
   expect_true("pack high hz bounded", n >= 1 && n <= 64 && n <= 100);
   expect_true("pack never past rem", planner_pack_n(50000.0f, 3, 0) <= 3);

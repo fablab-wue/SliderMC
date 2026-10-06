@@ -302,14 +302,17 @@ int motion_path_fill_fifo(void) {
 
   while (g_path_active && scan_budget--) {
     if (g_slice_drain_wait) {
-      bool drained = true;
+      /* Keep a few words queued. Waiting for empty opened a gap the filler
+       * could not close before the next burst, which is an underrun on a
+       * mixed slice (common once a fourth axis is often idle). */
+      bool low_enough = true;
       for (int a = 0; a < n; ++a) {
-        if (g_slice_had_steps[a] && !pio_step_tx_empty(a)) {
-          drained = false;
+        if (g_slice_had_steps[a] && pio_step_tx_level(a) > PIO_STEP_START_MIN_LEVEL) {
+          low_enough = false;
           break;
         }
       }
-      if (!drained) {
+      if (!low_enough) {
         break;
       }
       g_slice_drain_wait = false;

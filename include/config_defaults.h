@@ -23,11 +23,11 @@
 #define CFG_DEFAULT_INIT_TERMINAL 0
 #define CFG_DEFAULT_INIT_DEBUG_LEVEL 3
 #define CFG_DEFAULT_WDT_USE 1
-#define CFG_DEFAULT_MOTORS 1 /* 1|2|3 live STEP/DIR axes */
-#define CFG_DEFAULT_SERVOS 0 /* 0..3 RC servos */
-#define MOTOR_MAX 3
+#define CFG_DEFAULT_MOTORS 1 /* 1|2|3|4 live STEP/DIR axes */
+#define CFG_DEFAULT_SERVOS 0 /* 0..3 RC servos; 2 max when motor 4 claims the servo 3 pin */
+#define MOTOR_MAX 4
 #define SERVO_MAX 3
-#define MC_CH_MAX 6 /* packed motors then servos */
+#define MC_CH_MAX 7 /* packed motors then servos; Zero 4+3, Pico 4+2 */
 #define CFG_NAME_MAX 32 /* device name for welcome banner (incl. NUL) */
 #define CFG_UNIT_NAME_MAX 8 /* unit label for UIC, e.g. "mm" / "deg" (incl. NUL) */
 #define CFG_DEFAULT_MOTOR_UNIT "mm"
@@ -58,7 +58,7 @@
 #define CFG_DEFAULT_DIR_CHANGE_PAUSE_S 0.1f
 
 /* Path (PC/PD/PG/PN/PS): one int16 pool split by live axis count.
- * 65536 samples ≈ 128 KB. 1 axis uses all; 2 axes split in half; 3 in thirds.
+ * 65536 samples ≈ 128 KB. Split across the live packed channel count (1..7).
  * path_buffer_size is the per-axis logical limit (<= pool / n_axes). */
 #define PATH_POOL_SAMPLES 65536
 #define PATH_BUFFER_MAX PATH_POOL_SAMPLES

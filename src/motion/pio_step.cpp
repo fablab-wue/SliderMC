@@ -22,7 +22,7 @@
 
 #define SHADOW_MAX 8
 #define PROG_LEN 14
-#define AXIS_MAX 3
+#define AXIS_MAX 4
 
 typedef struct {
   bool have;
@@ -37,9 +37,12 @@ typedef struct {
   bool active_high;
   bool running;
   PioStepWord shadow[SHADOW_MAX];
+  unsigned shadow_head;
   unsigned shadow_n;
   int pending_steps;
 } PioAxis;
+
+static int g_batch_depth;
 
 static PIO g_pio = pio0;
 static PioAxis g_ax[AXIS_MAX];
@@ -67,6 +70,30 @@ static void pio_lock(void) {
 static void pio_unlock(void) {
   if (g_pio_mu) {
     xSemaphoreGiveRecursive(g_pio_mu);
+  }
+}
+
+static void pio_lock_outer(void) {
+  if (g_batch_depth == 0) {
+    pio_lock();
+  }
+}
+
+static void pio_unlock_outer(void) {
+  if (g_batch_depth == 0) {
+    pio_unlock();
+  }
+}
+
+void pio_step_batch_begin(void) {
+  if (g_batch_depth++ == 0) {
+    pio_lock();
+  }
+}
+
+void pio_step_batch_end(void) {
+  if (g_batch_depth > 0 && --g_batch_depth == 0) {
+    pio_unlock();
   }
 }
 
@@ -254,6 +281,7 @@ void pio_step_init(void) {
   g_sm_clkdiv = pio_sm_clkdiv_now();
   for (int i = 0; i < AXIS_MAX; ++i) {
     g_ax[i].sm = -1;
+    g_ax[i].shadow_head = 0;
     g_ax[i].shadow_n = 0;
     g_ax[i].pending_steps = 0;
     g_ax[i].running = false;
@@ -314,6 +342,7 @@ void pio_step_stop_hard(int axis) {
     g_pio->fdebug = 1u << (PIO_FDEBUG_TXSTALL_LSB + (uint)a->sm);
   }
   a->running = false;
+  a->shadow_head = 0;
   a->shadow_n = 0;
   a->pending_steps = 0;
   if (axis == 0) {
@@ -336,6 +365,7 @@ void pio_step_stop_soft(int axis) {
     g_pio->fdebug = 1u << (PIO_FDEBUG_TXSTALL_LSB + (uint)a->sm);
   }
   a->running = false;
+  a->shadow_head = 0;
   a->shadow_n = 0;
   a->pending_steps = 0;
   if (axis == 0) {
@@ -354,19 +384,19 @@ static void sync_shadow_to_fifo(int axis) {
     dbg_hw_set(PIN_DBG_FIFO, 0);
   }
   while (a->shadow_n > lvl) {
-    a->pending_steps -= (int)a->shadow[0].steps;
+    a->pending_steps -= (int)a->shadow[a->shadow_head].steps;
     if (a->pending_steps < 0) {
       a->pending_steps = 0;
     }
-    memmove(&a->shadow[0], &a->shadow[1], (a->shadow_n - 1) * sizeof(a->shadow[0]));
+    a->shadow_head = (a->shadow_head + 1u) % SHADOW_MAX;
     --a->shadow_n;
   }
 }
 
 bool pio_step_put_word(int axis, uint32_t delay_cycles, uint8_t n_pulses) {
-  pio_lock();
+  pio_lock_outer();
   if (!axis_ok(axis) || n_pulses < 1) {
-    pio_unlock();
+    pio_unlock_outer();
     return n_pulses < 1;
   }
   PioAxis *a = &g_ax[axis];
@@ -375,7 +405,7 @@ bool pio_step_put_word(int axis, uint32_t delay_cycles, uint8_t n_pulses) {
   }
   sync_shadow_to_fifo(axis);
   if (pio_sm_is_tx_fifo_full(g_pio, (uint)a->sm)) {
-    pio_unlock();
+    pio_unlock_outer();
     return false;
   }
   uint32_t delay = delay_cycles & PIO_STEP_DELAY_MASK;
@@ -394,17 +424,39 @@ bool pio_step_put_word(int axis, uint32_t delay_cycles, uint8_t n_pulses) {
   }
 
   if (a->shadow_n < SHADOW_MAX) {
-    a->shadow[a->shadow_n].steps = n_pulses;
-    a->shadow[a->shadow_n].delay = delay;
+    unsigned slot = (a->shadow_head + a->shadow_n) % SHADOW_MAX;
+    a->shadow[slot].steps = n_pulses;
+    a->shadow[slot].delay = delay;
     ++a->shadow_n;
     a->pending_steps += n_pulses;
   } else {
-    pio_unlock();
+    pio_unlock_outer();
     return false;
   }
   motion_diag_note_fifo_level(axis, pio_sm_get_tx_fifo_level(g_pio, (uint)a->sm));
-  pio_unlock();
+  pio_unlock_outer();
   return true;
+}
+
+uint32_t pio_step_queued_cycles(int axis) {
+  if (!axis_ok(axis)) {
+    return 0;
+  }
+  pio_lock_outer();
+  sync_shadow_to_fifo(axis);
+  PioAxis *a = &g_ax[axis];
+  uint64_t sum = 0;
+  unsigned idx = a->shadow_head;
+  for (unsigned i = 0; i < a->shadow_n; ++i) {
+    sum += (uint64_t)a->shadow[idx].steps *
+           ((uint64_t)a->shadow[idx].delay + (uint64_t)PIO_STEP_PERIOD_FIXED);
+    idx = (idx + 1u) % SHADOW_MAX;
+  }
+  pio_unlock_outer();
+  if (sum > 0xffffffffull) {
+    return 0xffffffffu;
+  }
+  return (uint32_t)sum;
 }
 
 unsigned pio_step_tx_level(int axis) {
@@ -469,12 +521,12 @@ int pio_step_pending_steps(int axis) {
   if (axis < 0 || axis >= AXIS_MAX) {
     return 0;
   }
-  pio_lock();
+  pio_lock_outer();
   if (g_ax[axis].sm >= 0) {
     sync_shadow_to_fifo(axis);
   }
   int pending = g_ax[axis].pending_steps;
-  pio_unlock();
+  pio_unlock_outer();
   return pending;
 }
 
@@ -497,45 +549,49 @@ uint32_t pio_step_sysclk_hz(void) {
 
 #else /* HOST_TEST */
 
-static unsigned g_level[3];
-static int g_pending[3];
-static bool g_running[3];
-static int g_naxes = 1;
+static unsigned g_level[MOTOR_MAX];
+static int g_pending[MOTOR_MAX];
+static bool g_running[MOTOR_MAX];
+
+static bool host_axis(int axis) {
+  return axis >= 0 && axis < MOTOR_MAX && axis < config_motor_count();
+}
 
 void pio_step_init(void) {
-  g_level[0] = g_level[1] = g_level[2] = 0;
-  g_pending[0] = g_pending[1] = g_pending[2] = 0;
-  g_running[0] = g_running[1] = g_running[2] = false;
-  g_naxes = config_axis_count();
+  for (int i = 0; i < MOTOR_MAX; ++i) {
+    g_level[i] = 0;
+    g_pending[i] = 0;
+    g_running[i] = false;
+  }
 }
-bool pio_step_reconfigure(void) {
-  g_naxes = config_axis_count();
-  return true;
-}
+bool pio_step_reconfigure(void) { return true; }
 bool pio_step_ok(void) { return true; }
 
+void pio_step_batch_begin(void) {}
+void pio_step_batch_end(void) {}
+
 void pio_step_start(int axis) {
-  if (axis >= 0 && axis < 3) {
+  if (host_axis(axis)) {
     g_running[axis] = true;
   }
 }
 void pio_step_start_if_ready(int axis) {
-  if (axis >= 0 && axis < 3 && g_level[axis] >= PIO_STEP_START_MIN_LEVEL) {
+  if (host_axis(axis) && g_level[axis] >= PIO_STEP_START_MIN_LEVEL) {
     g_running[axis] = true;
   }
 }
 bool pio_step_is_running(int axis) {
-  return axis >= 0 && axis < 3 && g_running[axis];
+  return host_axis(axis) && g_running[axis];
 }
 void pio_step_stop_hard(int axis) {
-  if (axis >= 0 && axis < 3) {
+  if (host_axis(axis)) {
     g_level[axis] = 0;
     g_pending[axis] = 0;
     g_running[axis] = false;
   }
 }
 void pio_step_stop_soft(int axis) {
-  if (axis >= 0 && axis < 3) {
+  if (host_axis(axis)) {
     g_level[axis] = 0;
     g_pending[axis] = 0;
     g_running[axis] = false;
@@ -543,7 +599,7 @@ void pio_step_stop_soft(int axis) {
 }
 bool pio_step_put_word(int axis, uint32_t delay_cycles, uint8_t n_pulses) {
   (void)delay_cycles;
-  if (axis < 0 || axis >= g_naxes) {
+  if (!host_axis(axis)) {
     return n_pulses < 1;
   }
   if (n_pulses < 1) {
@@ -556,14 +612,20 @@ bool pio_step_put_word(int axis, uint32_t delay_cycles, uint8_t n_pulses) {
   g_pending[axis] += n_pulses;
   return true;
 }
+uint32_t pio_step_queued_cycles(int axis) {
+  if (!host_axis(axis)) {
+    return 0;
+  }
+  return (uint32_t)g_pending[axis] * (PIO_STEP_PERIOD_FIXED + 1u);
+}
 unsigned pio_step_tx_level(int axis) {
-  return (axis >= 0 && axis < 3) ? g_level[axis] : 0;
+  return host_axis(axis) ? g_level[axis] : 0;
 }
 unsigned pio_step_tx_room(int axis) {
-  return (axis >= 0 && axis < 3) ? (8u - g_level[axis]) : 0;
+  return host_axis(axis) ? (8u - g_level[axis]) : 0;
 }
 bool pio_step_tx_empty(int axis) {
-  return (axis < 0 || axis >= 3) || g_level[axis] == 0;
+  return !host_axis(axis) || g_level[axis] == 0;
 }
 bool pio_step_is_stalled(int axis) {
   (void)axis;
@@ -571,7 +633,7 @@ bool pio_step_is_stalled(int axis) {
 }
 void pio_step_clear_stall(int axis) { (void)axis; }
 int pio_step_pending_steps(int axis) {
-  return (axis >= 0 && axis < 3) ? g_pending[axis] : 0;
+  return host_axis(axis) ? g_pending[axis] : 0;
 }
 void pio_step_set_dir(int axis, int sign_pos) {
   (void)axis;
