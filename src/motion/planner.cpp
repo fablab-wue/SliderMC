@@ -26,7 +26,7 @@
 #define HOME_EN_PULSE_S 0.20f
 #define HOME_STALL_CLEAR_S 2.0f
 #define HOME_STALL_IGNORE_S 0.05f
-#define AXIS_MAX 3
+#define AXIS_MAX MOTOR_MAX
 
 typedef enum {
   HOME_IDLE = 0,

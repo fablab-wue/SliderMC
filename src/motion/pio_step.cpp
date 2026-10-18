@@ -22,7 +22,7 @@
 
 #define SHADOW_MAX 8
 #define PROG_LEN 14
-#define AXIS_MAX 3
+#define AXIS_MAX MOTOR_MAX
 
 typedef struct {
   bool have;
@@ -558,48 +558,49 @@ uint32_t pio_step_sysclk_hz(void) {
 
 #else /* HOST_TEST */
 
-static unsigned g_level[3];
-static int g_pending[3];
-static bool g_running[3];
-static int g_naxes = 1;
+static unsigned g_level[MOTOR_MAX];
+static int g_pending[MOTOR_MAX];
+static bool g_running[MOTOR_MAX];
+
+static bool host_axis(int axis) {
+  return axis >= 0 && axis < MOTOR_MAX && axis < config_motor_count();
+}
 
 void pio_step_init(void) {
-  g_level[0] = g_level[1] = g_level[2] = 0;
-  g_pending[0] = g_pending[1] = g_pending[2] = 0;
-  g_running[0] = g_running[1] = g_running[2] = false;
-  g_naxes = config_axis_count();
+  for (int i = 0; i < MOTOR_MAX; ++i) {
+    g_level[i] = 0;
+    g_pending[i] = 0;
+    g_running[i] = false;
+  }
 }
-bool pio_step_reconfigure(void) {
-  g_naxes = config_axis_count();
-  return true;
-}
+bool pio_step_reconfigure(void) { return true; }
 bool pio_step_ok(void) { return true; }
 
 void pio_step_batch_begin(void) {}
 void pio_step_batch_end(void) {}
 
 void pio_step_start(int axis) {
-  if (axis >= 0 && axis < 3) {
+  if (host_axis(axis)) {
     g_running[axis] = true;
   }
 }
 void pio_step_start_if_ready(int axis) {
-  if (axis >= 0 && axis < 3 && g_level[axis] >= PIO_STEP_START_MIN_LEVEL) {
+  if (host_axis(axis) && g_level[axis] >= PIO_STEP_START_MIN_LEVEL) {
     g_running[axis] = true;
   }
 }
 bool pio_step_is_running(int axis) {
-  return axis >= 0 && axis < 3 && g_running[axis];
+  return host_axis(axis) && g_running[axis];
 }
 void pio_step_stop_hard(int axis) {
-  if (axis >= 0 && axis < 3) {
+  if (host_axis(axis)) {
     g_level[axis] = 0;
     g_pending[axis] = 0;
     g_running[axis] = false;
   }
 }
 void pio_step_stop_soft(int axis) {
-  if (axis >= 0 && axis < 3) {
+  if (host_axis(axis)) {
     g_level[axis] = 0;
     g_pending[axis] = 0;
     g_running[axis] = false;
@@ -607,7 +608,7 @@ void pio_step_stop_soft(int axis) {
 }
 bool pio_step_put_word(int axis, uint32_t delay_cycles, uint8_t n_pulses) {
   (void)delay_cycles;
-  if (axis < 0 || axis >= g_naxes) {
+  if (!host_axis(axis)) {
     return n_pulses < 1;
   }
   if (n_pulses < 1) {
@@ -621,19 +622,19 @@ bool pio_step_put_word(int axis, uint32_t delay_cycles, uint8_t n_pulses) {
   return true;
 }
 uint32_t pio_step_queued_cycles(int axis) {
-  if (axis < 0 || axis >= 3) {
+  if (!host_axis(axis)) {
     return 0;
   }
   return (uint32_t)g_pending[axis] * (PIO_STEP_PERIOD_FIXED + 1u);
 }
 unsigned pio_step_tx_level(int axis) {
-  return (axis >= 0 && axis < 3) ? g_level[axis] : 0;
+  return host_axis(axis) ? g_level[axis] : 0;
 }
 unsigned pio_step_tx_room(int axis) {
-  return (axis >= 0 && axis < 3) ? (8u - g_level[axis]) : 0;
+  return host_axis(axis) ? (8u - g_level[axis]) : 0;
 }
 bool pio_step_tx_empty(int axis) {
-  return (axis < 0 || axis >= 3) || g_level[axis] == 0;
+  return !host_axis(axis) || g_level[axis] == 0;
 }
 bool pio_step_is_stalled(int axis) {
   (void)axis;
@@ -641,7 +642,7 @@ bool pio_step_is_stalled(int axis) {
 }
 void pio_step_clear_stall(int axis) { (void)axis; }
 int pio_step_pending_steps(int axis) {
-  return (axis >= 0 && axis < 3) ? g_pending[axis] : 0;
+  return host_axis(axis) ? g_pending[axis] : 0;
 }
 void pio_step_set_dir(int axis, int sign_pos) {
   (void)axis;

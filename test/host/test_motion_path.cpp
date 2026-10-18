@@ -77,6 +77,9 @@ int main(void) {
     expect_true("clear for triple", motion_path_clear());
     expect_true("add3", motion_path_add3(1, 2, 3));
     expect_true("count after add3", motion_path_count() == 1);
+    config_set_key("motors", "4");
+    expect_true("4-axis path cap is pool/4",
+                config_path_per_axis_max() == PATH_POOL_SAMPLES / 4);
     config_set_key("motors", "3");
     expect_true("3-axis path cap is pool/3",
                 config_path_per_axis_max() == PATH_POOL_SAMPLES / 3);

@@ -85,7 +85,13 @@ static void task_motion_feed(void *arg) {
       /* Re-pick the driest FIFO after every fill. 32*n matches the old
        * 32-pass × n-axis word budget. */
       int passes = (n > 0) ? (32 * n) : 0;
-      bool skip[3] = {false, false, false};
+      bool skip[MOTOR_MAX];
+      for (int s = 0; s < MOTOR_MAX; ++s) {
+        skip[s] = false;
+      }
+      if (n > MOTOR_MAX) {
+        n = MOTOR_MAX;
+      }
       for (int i = 0; i < passes; ++i) {
         int a = feed_pick_lowest_fifo(n, rr, skip);
         if (a < 0) {

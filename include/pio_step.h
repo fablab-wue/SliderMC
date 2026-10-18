@@ -13,9 +13,9 @@ extern "C" {
  * Word = delay[25:0] | (repeat[5:0] << 26); repeat R → R+1 pulses.
  * High phase ~3.8 µs @ 50 MHz SM clock (clk_sys / clkdiv). Max ≈ 259 kHz.
  * Polarity programs (active-high / active-low) are shared across SMs.
- * Axis 3 STEP polarity follows axis 2.
+ * Axis 3 and 4 STEP polarity follows axis 2.
  *
- * axis: 0 = primary, 1/2 = optional extras when config axis >= 2/3.
+ * axis: 0 = primary, 1/2/3 = optional extras when motors >= 2/3/4.
  */
 
 #define PIO_STEP_REPEAT_SHIFT 26

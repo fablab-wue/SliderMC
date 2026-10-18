@@ -2369,6 +2369,55 @@ int main(void) {
   expect_contains("ID lists four underrun counters", "underrun=0,0,0,0 peak_hz=");
   expect_contains("ID lists four fifo_min counters", "fifo_min=0,0,0,0");
 
+  /* Live 4-motor packed commands. Default stays 1 motor after this block. */
+  reset_out();
+  feed("CS motors 4\nCS servos 0\n");
+  expect_empty("CS motors 4 live");
+  reset_out();
+  feed("IA\n");
+  expect_contains("IA after motors 4", "IA:4");
+  reset_out();
+  protocol_send_banner();
+  expect_contains("banner 4+0 axis", "- 4+0 axis");
+  reset_out();
+  feed("MS\n");
+  feed("SP 0 0 0 0\n");
+  expect_empty("SP quad origin");
+  reset_out();
+  feed("IP\n");
+  expect_contains("IP quad origin", "IP:0 | 0 | 0 | 0");
+  reset_out();
+  feed("MT 100 50 25 12.5\n");
+  expect_empty("MT quad absolute");
+  {
+    float v0 = motion_host_axis_cruise(0);
+    float v1 = motion_host_axis_cruise(1);
+    float v2 = motion_host_axis_cruise(2);
+    float v3 = motion_host_axis_cruise(3);
+    expect_true("quad MT cruise ratio 0.5", std::fabs(v1 - v0 * 0.5f) < 0.01f);
+    expect_true("quad MT cruise ratio 0.25", std::fabs(v2 - v0 * 0.25f) < 0.01f);
+    expect_true("quad MT cruise ratio 0.125", std::fabs(v3 - v0 * 0.125f) < 0.01f);
+  }
+  reset_out();
+  feed("MS\n");
+  feed("SP 0 0 0 0\n");
+  feed("PC\n");
+  feed("PD 10 20 30 40\n");
+  expect_empty("PD quad sample");
+  reset_out();
+  feed("PN\n");
+  expect_contains("PN after quad sample", "PN:1");
+  reset_out();
+  feed("MH 4\n");
+  expect_empty("MH axis 4");
+  reset_out();
+  feed("PC\n");
+  feed("CS motors 1\nCS servos 0\n");
+  expect_empty("restore motors 1 after live 4");
+  reset_out();
+  feed("IA\n");
+  expect_contains("IA restored 1 after motors 4", "IA:1");
+
   if (g_fail) {
     std::fprintf(stderr, "\n%d test(s) failed\n", g_fail);
     return 1;
