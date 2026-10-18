@@ -58,20 +58,19 @@
 #define PIN_SW_LIMIT_L_3 15
 #define PIN_SW_LIMIT_R_3 14
 
-/* Optional 4th STEP/DIR axis (motors>=4). Takes EXT_3 and EXT_4. Servo 3 stays on GP23. */
-#define PIN_DRV_STEP_4 19
-#define PIN_DRV_DIR_4 20
+/* Optional 4th STEP/DIR axis (motors>=4). Takes EXT_3 and EXT_4. Servos stay on GP21–23. */
+#define PIN_DRV_STEP_4 20
+#define PIN_DRV_DIR_4 19
 
 #define PIN_DRV_ERROR_1 9
 #define PIN_DRV_ERROR_2 10
 #define PIN_DRV_ERROR_3 11
+
 #define PIN_DRV_ENABLE 0
 
-#define PIN_CAMERA_CTRL 25
-
-#define PIN_SERVO_1 21
+#define PIN_SERVO_1 23
 #define PIN_SERVO_2 22
-#define PIN_SERVO_3 23
+#define PIN_SERVO_3 21
 #define PIN_SERVO3_STEALS_EXT4 0
 
 #define PIN_AXIS2_SUPPORTED 1
@@ -89,8 +88,10 @@
 #ifndef PIN_NEOPIXEL
 #define PIN_NEOPIXEL 16 /* onboard WS2812 status */
 #endif
-#define PIN_LED 29 /* external status LED (blinks in parallel with NeoPixel) */
+
+#define PIN_CAMERA_CTRL 29
 #define PIN_BUZZER 28
+#define PIN_LED 25 /* external status LED (blinks in parallel with NeoPixel) */
 
 #ifdef DEBUG_HW
 #define PIN_DBG_FIFO 23
