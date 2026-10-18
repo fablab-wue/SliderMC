@@ -8,7 +8,7 @@
 
 This is a **DIY project with pro-grade motion firmware**. Live retarget, mm-based API, and open protocol put you on par with many closed commercial controllers for **features and transparency** — paired with SliderCtrl for operator UX on set. Rail quality, motor choice, and mechanical build remain yours.
 
-The same motion firmware is the **electronics half of the construction kit**: one STEP/DIR axis with homing and limits — linear slider rail, mini-dolly, rotating head, or turntable depending on your mechanics and `mc.ini` setup.
+The same motion firmware is the **electronics half of the construction kit**: one STEP/DIR axis with homing and limits by default, up to four motors plus RC servos — linear slider rail, mini-dolly, rotating head, or turntable depending on your mechanics and `mc.ini` setup.
 
 Docs and manuals: **[SliderDoc](https://github.com/fablab-wue/SliderDoc)**.
 
@@ -25,16 +25,16 @@ Docs and manuals: **[SliderDoc](https://github.com/fablab-wue/SliderDoc)**.
 - **Live retarget** during movement — change target or speed without stopping the shoot  
 - **Sine ramp** acceleration and deceleration — smooth starts and stops; `SA` can set a different stop ramp (`SA <accel> [decel]`) 
 - **Homing**, soft travel limits, hard-limit alarms, **`DRV_ERROR` / EMO** interlock  
-- **1–3 STEP/DIR motors** (`CS motors`) plus **0–3 RC servos** (`CS servos`); banner `{motors}+{servos} axis`; `IA` / `CG axis` = packed sum. **`CS axis` is rejected** — do not send it  
+- **1–4 STEP/DIR motors** (`CS motors`) plus **0–3 RC servos** (`CS servos`); banner `{motors}+{servos} axis`; `IA` / `CG axis` = packed sum (Zero 4+3, Pico 4+2). **`CS axis` is rejected** — do not send it  
 - **Path playback** — host-authored motion paths for advanced moves  
-- **Joystick hold (`MJ`)** — signed % of session speed, 1- or 2-axis  
+- **Joystick hold (`MJ`)** — signed % of session speed on packed channels  
 - **API units:** mm, mm/s, mm/s² (steps handled internally)
 
 ### Maker / pro transparency
 
 - **Open ASCII protocol** on UART + USB CDC CLI — bench-test and script without a panel  
 - **Persistent config** (`mc.ini` on LittleFS) · host-side protocol tests in `test/host/`  
-- **10 extender outputs** for accessories · UI load fully isolated on the UIC Pico  
+- **4 extender outputs** for accessories · UI load fully isolated on the UIC Pico  
 - **Replaceable UIC** — same motion board, different panel firmware or fork  
 
 ### Step timing limits (theoretical)
@@ -94,7 +94,8 @@ Details: [mc/build.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/buil
 | Build / flash | [mc/build.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/build.md) |
 | Protocol | [contract/protocol.md](https://github.com/fablab-wue/SliderDoc/blob/main/contract/protocol.md) |
 | Config keys | [mc/config.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/config.md) |
-| GPIO map | [mc/pins.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/pins.md) |
+| GPIO map (Pico / Zero, 1–4 motors) | [mc/pins.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/pins.md) |
+| Extra motors | [mc/dual-movement.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/dual-movement.md) |
 | Motion / planner | [mc/motion.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/motion.md) |
 | Joystick (`MJ`) | [mc/motion-joy.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/motion-joy.md) |
 | Working window (`SL`/`SR`) | [mc/working-window.md](https://github.com/fablab-wue/SliderDoc/blob/main/mc/working-window.md) |
@@ -131,7 +132,7 @@ powershell -File scripts/run_host_tests.ps1
 
 | Area | State |
 |------|--------|
-| Protocol (2-letter cmds, X/Y/Z args, `#` status, `!`/ESC, `CT`) | Implemented |
+| Protocol (2-letter cmds, X/Y/Z + motor 4 positional, `#` status, `!`/ESC, `CT`) | Implemented |
 | FreeRTOS tasks (feed / plan / proto) + heartbeat/WDT | Implemented |
 | PIO STEP + sine planner (live retarget, soft/hard stop) | Implemented |
 | Soft/hard limits, homing, EMO/`DRV_ERROR` | Implemented |

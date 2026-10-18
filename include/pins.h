@@ -34,8 +34,8 @@
 
 #if defined(BOARD_RP2040_ZERO)
 
-/* Waveshare RP2040-Zero — see SliderDoc mc/pins.md / assets/img/rp2040zero_pinout_mc.png
- * axis 2 and 3 are supported; DBG (if DEBUG_HW) overlaps EXT_2..4. */
+/* Waveshare RP2040-Zero — see SliderDoc mc/pins.md / assets/img/MC_RP2040zero_pinout.png
+ * motors 2–4 are supported; DBG (if DEBUG_HW) overlaps EXT_2..4. */
 #define PIN_EXT_1 17
 #define PIN_EXT_2 18
 #define PIN_EXT_3 19

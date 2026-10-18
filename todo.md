@@ -26,5 +26,5 @@ Recommendations deferred from the experimental 3rd-axis plan. Stay on Pico / Zer
 Firmware is **VP:1**: welcome `# MC V1 - …`, `CS motors` / `CS servos` (not `CS axis`), `MOTOR_*` / `SERVO_*` envelopes, packed `IA` / `CG axis` = motors+servos, banner `{motors}+{servos} axis`. Clients must not send `CS axis` or `CS slider_*`.
 
 - [ ] **`CAMERA_CTRL` command.** Pin is reserved and inited inactive (`IX`/`VG` may list it). No protocol yet — add with docs and clients.
-- [ ] **SliderDoc** pinouts, protocol tables, cheatsheets — keep in lockstep with VP:3 (motors/servos, servo PWM GP26/27/18 Pico).
+- [ ] **SliderDoc** pinouts, protocol tables, cheatsheets — keep in lockstep with VP:1 (1–4 motors, packed 1..7, Pico GP19/18 motor 4, Zero GP20/19 motor 4).
 - [ ] Config key rename already shipped (`MOTOR_N_*` / `SERVO_N_*`; no `slider_*` / `axis` writes). Clients and docs must use the new names.
