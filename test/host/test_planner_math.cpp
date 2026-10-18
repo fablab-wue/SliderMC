@@ -51,6 +51,9 @@ int main(void) {
   expect_true("pack 3-axis min at 2000 Hz > 1",
               planner_pack_n_min(2000.0f, 100, 0, PLANNER_PACK_MIN_HZ_3AXIS) > 1);
   expect_true("pack 1-axis min at 2000 Hz is 1", planner_pack_n(2000.0f, 100, 0) == 1);
+  /* 10 kHz × 6 ms = 60 steps (was 30 at 3 ms). */
+  expect_true("6 ms budget packs 60 steps at 10 kHz",
+              planner_pack_n(10000.0f, 1000, 0) == 60);
   int n = planner_pack_n(50000.0f, 100, 0);
   expect_true("pack high hz bounded", n >= 1 && n <= 64 && n <= 100);
   expect_true("pack never past rem", planner_pack_n(50000.0f, 3, 0) <= 3);

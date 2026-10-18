@@ -20,7 +20,8 @@ extern "C" {
 #define PLANNER_PACK_MIN_HZ 2500
 /* 3-axis n=1 at 2500 Hz is ~7500 word/s of soft-float; pack earlier. */
 #define PLANNER_PACK_MIN_HZ_3AXIS 1000
-#define PLANNER_FIFO_TIME_BUDGET_MS 3.0f
+/* Queued step time one packed word may cover. */
+#define PLANNER_FIFO_TIME_BUDGET_MS 6.0f
 
 /** Max |v| (mm/s) that can stop within dist_mm: d = π v² / (4 a). */
 float planner_vmax_for_distance(float dist_mm, float accel_mm_s2);
