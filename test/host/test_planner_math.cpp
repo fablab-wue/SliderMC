@@ -93,6 +93,21 @@ int main(void) {
   expect_near("sine phi1", planner_sine_vel(0.0f, 10.0f, 1.0f), 10.0f, 1e-5f);
   float mid = planner_sine_vel(0.0f, 10.0f, 0.5f);
   expect_near("sine mid", mid, 5.0f, 0.05f);
+  expect_near("brake unit 0", planner_sinf_unit_quarter(0.0f), 0.0f, 1e-6f);
+  expect_near("brake unit 1", planner_sinf_unit_quarter(1.0f), 1.0f, 1e-6f);
+  expect_near("brake unit mid", planner_sinf_unit_quarter(0.5f), 0.707106781f, 1e-6f);
+  {
+    float max_err = 0.0f;
+    for (int i = 0; i <= 64; ++i) {
+      float phi = (float)i / 64.0f;
+      float w = 0.5f * (1.0f - std::cos((float)M_PI * phi));
+      float e = std::fabs(planner_sine_vel(0.0f, 1.0f, phi) - w);
+      if (e > max_err) {
+        max_err = e;
+      }
+    }
+    expect_true("raised cosine knots match libm", max_err < 1e-5f);
+  }
 
   /* LUT trig: endpoints exact, lerp stays within linear-interp bound vs libm */
   expect_near("lut sin 0", planner_sinf(0.0f), 0.0f, 1e-6f);
@@ -119,12 +134,12 @@ int main(void) {
     float v1 = 50.0f;
     float a = 200.0f;
     float step_hz = 16000.0f; /* above PLANNER_PACK_MIN_HZ */
-    double dt1 = 1.0 / (double)step_hz;
-    double dtn = 64.0 / (double)step_hz;
-    double phi1 = planner_sine_advance_phi(0.0, v0, v1, a, dt1);
-    double phin = planner_sine_advance_phi(0.0, v0, v1, a, dtn);
-    expect_true("pack-dt n advances more than 1", phin > phi1 * 10.0);
-    expect_true("pack-dt n not instantly done", phin < 1.0);
+    float dt1 = 1.0f / step_hz;
+    float dtn = 64.0f / step_hz;
+    float phi1 = planner_sine_advance_phi(0.0f, v0, v1, a, dt1);
+    float phin = planner_sine_advance_phi(0.0f, v0, v1, a, dtn);
+    expect_true("pack-dt n advances more than 1", phin > phi1 * 10.0f);
+    expect_true("pack-dt n not instantly done", phin < 1.0f);
   }
 
   /* reverse_decel helpers */

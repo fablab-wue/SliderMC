@@ -174,13 +174,14 @@ class Sim:
             return 0
         if step_hz < PACK_MIN_HZ:
             return 1
-        word_ms = max(0.5, WORD_MS)
-        horizon_ms = HORIZON_MS if HORIZON_MS >= word_ms else word_ms
-        horizon_steps = max(1, int(step_hz * horizon_ms / 1000.0))
-        room = horizon_steps - pending
+        hz_i = int(step_hz)
+        if hz_i < 1:
+            hz_i = 1
+        horizon = max(1, hz_i * int(HORIZON_MS) // 1000)
+        room = horizon - pending
         if room < 1:
             return 0
-        n = max(1, int(step_hz * word_ms / 1000.0))
+        n = max(1, hz_i * int(WORD_MS) // 1000)
         n = min(n, room, PACK_MAX, rem)
         return min(n, max(1, rem // 5))
 

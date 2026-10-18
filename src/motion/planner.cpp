@@ -60,6 +60,7 @@ typedef struct {
   float acc_meas;
   bool braking;
   int brake_d;
+  float brake_inv_d; /* 1/brake_d while a brake arc is committed; else 0 */
   int64_t brake_pos0;
   float brake_v0;
   float spmm;
@@ -118,6 +119,7 @@ static PlannerServo g_sv[SERVO_MAX];
 
 #define AX (g_ax[axis])
 
+static void set_brake_span(int axis, int d);
 static void reset_ramp(int axis);
 static void begin_ramp(int axis, float v_cmd);
 static void home_restore_speeds(int axis);
@@ -850,7 +852,7 @@ static void home_start_move_sign(int axis, int sign, float dist_mm) {
   AX.fill_wants_more = true;
   AX.acc_meas = 0.0f;
   AX.braking = false;
-  AX.brake_d = 0;
+  set_brake_span(axis, 0);
   pio_step_clear_stall(axis); /* stale flag from the previous idle gap */
   pio_step_kick_feed();
 }
@@ -1068,6 +1070,11 @@ static void home_poll_fsm(int axis, float dt_s) {
   }
 }
 
+static void set_brake_span(int axis, int d) {
+  AX.brake_d = d;
+  AX.brake_inv_d = (d > 0) ? (1.0f / (float)d) : 0.0f;
+}
+
 static void reset_ramp(int axis) {
   AX.ramp_active = false;
   AX.ramp_v0 = AX.vel_mm_s;
@@ -1240,7 +1247,7 @@ static void settle_idle_at_pose(int axis) {
   AX.stopping = false;
   AX.fill_wants_more = false;
   AX.braking = false;
-  AX.brake_d = 0;
+  set_brake_span(axis, 0);
   AX.target_steps = AX.pos_steps;
   reset_ramp(axis);
   pio_step_stop_soft(axis);
@@ -1343,6 +1350,7 @@ int planner_fill_fifo(int axis) {
   }
   float inv_sysclk = 1.0f / (float)sysclk;
   int pack_min = (nax >= 3) ? PLANNER_PACK_MIN_HZ_3AXIS : PLANNER_PACK_MIN_HZ;
+  float inv_spmm = (AX.spmm > 1e-3f) ? (1.0f / AX.spmm) : 1.0f;
   /* 3-axis moves are the tightest case: keep a slightly larger per-call burst so
    * we do not spend a full interrupt/service cycle on every 1-2 word refill.
    * The extra headroom is small, but it reduces the chance of a low-water stall
@@ -1351,6 +1359,7 @@ int planner_fill_fifo(int axis) {
                              ? 8u
                              : ((nax >= 3) ? 3u : (nax >= 2) ? 4u : 6u);
   while (room_budget-- && pio_step_tx_room(axis) > 0) {
+    int stop_rem = planner_stop_rem_steps(AX.vel_mm_s, AX.decel_mm_s2, AX.spmm);
     int64_t err = AX.target_steps - AX.pos_steps;
     int sign;
     if (AX.stopping) {
@@ -1369,8 +1378,7 @@ int planner_fill_fifo(int axis) {
          axis at stop_approach_speed, so that speed also counts as arrived —
          otherwise the trailing decel would issue steps beyond the target. */
       float v_stop = stop_v;
-      if (fabsf(AX.vel_mm_s) <= v_stop + 1e-3f ||
-          planner_stop_rem_steps(AX.vel_mm_s, AX.decel_mm_s2, AX.spmm) <= 4) {
+      if (fabsf(AX.vel_mm_s) <= v_stop + 1e-3f || stop_rem <= 4) {
         AX.vel_mm_s = 0.0f;
         AX.fill_wants_more = false;
         break;
@@ -1389,7 +1397,7 @@ int planner_fill_fifo(int axis) {
 
     int rem;
     if (AX.stopping || err == 0 || reverse_decel) {
-      rem = planner_stop_rem_steps(AX.vel_mm_s, AX.decel_mm_s2, AX.spmm);
+      rem = stop_rem;
     } else {
       rem = remaining_steps_for_sign(axis, sign);
     }
@@ -1406,7 +1414,7 @@ int planner_fill_fifo(int axis) {
       AX.vel_mm_s = 0.0f;
       reset_ramp(axis);
       AX.braking = false;
-      AX.brake_d = 0;
+      set_brake_span(axis, 0);
       AX.fill_wants_more = false;
       break;
     }
@@ -1415,7 +1423,7 @@ int planner_fill_fifo(int axis) {
      * rem<=4, which aborted 1–4 step MT (FRAME_NEXT) with fill_wants_more=false
      * and left the axis in M at v=0 with the target still ahead. */
     bool need_brake = !AX.stopping && !reverse_decel && fabsf(AX.vel_mm_s) > 0.01f &&
-                      rem <= planner_stop_rem_steps(fabsf(AX.vel_mm_s), AX.decel_mm_s2, AX.spmm) + 4;
+                      rem <= stop_rem + 4;
     /*
      * Ramp target is either cruise or 0. Feeding it min(cruise, vmax) would
      * move the target every word as rem shrinks, restart the sine phase, and
@@ -1445,7 +1453,7 @@ int planner_fill_fifo(int axis) {
          A soft-stop rem is re-derived from v every word and would drift; keyed
          on distance the profile lands on the target by construction. */
       if (AX.brake_d <= 0) {
-        AX.brake_d = rem;
+        set_brake_span(axis, rem);
         AX.brake_pos0 = AX.pos_steps;
         AX.brake_v0 = fabsf(AX.vel_mm_s);
       }
@@ -1454,19 +1462,19 @@ int planner_fill_fifo(int axis) {
         AX.vel_mm_s = 0.0f;
         reset_ramp(axis);
         AX.braking = false;
-        AX.brake_d = 0;
+        set_brake_span(axis, 0);
         AX.fill_wants_more = false;
         break;
       }
       if (AX.brake_v0 <= 0.01f) {
         /* Committed brake with no speed: remaining distance is a crawl. */
         AX.braking = false;
-        AX.brake_d = 0;
+        set_brake_span(axis, 0);
         decel = false;
         v_cmd = (float)sign * cruise;
       }
     } else {
-      AX.brake_d = 0;
+      set_brake_span(axis, 0);
     }
 
     /* Direction change at zero crossing */
@@ -1478,7 +1486,7 @@ int planner_fill_fifo(int axis) {
         AX.vel_mm_s = 0.0f;
         reset_ramp(axis);
         AX.braking = false;
-        AX.brake_d = 0;
+        set_brake_span(axis, 0);
         AX.fill_wants_more = false;
         protocol_debug(4, "D:dir_pause %.3f\n", (double)pause);
         break;
@@ -1574,8 +1582,8 @@ int planner_fill_fifo(int axis) {
       if (r_after_est <= 0) {
         v_end_est = v_app_est;
       } else {
-        float frac_est = (float)M_PI * (float)r_after_est / (2.0f * (float)AX.brake_d);
-        v_end_est = v_app_est + dv_est * planner_sinf(frac_est);
+        float unit_est = (float)r_after_est * AX.brake_inv_d;
+        v_end_est = v_app_est + dv_est * planner_sinf_unit_quarter(unit_est);
       }
       float step_hz_est2 = fabsf(v_end_est) * AX.spmm;
       if (step_hz_est2 < 1.0f) {
@@ -1622,8 +1630,8 @@ int planner_fill_fifo(int axis) {
       if (r_after <= 0) {
         AX.vel_mm_s = (float)sign * v_app;
       } else {
-        float frac = (float)M_PI * (float)r_after / (2.0f * (float)AX.brake_d);
-        AX.vel_mm_s = (float)sign * (v_app + dv * planner_sinf(frac));
+        float unit = (float)r_after * AX.brake_inv_d;
+        AX.vel_mm_s = (float)sign * (v_app + dv * planner_sinf_unit_quarter(unit));
       }
     } else {
       if (AX.ramp_inv_t <= 0.0f) {
@@ -1644,7 +1652,7 @@ int planner_fill_fifo(int axis) {
     /* Clamp to stop distance. While braking this is only an outer safety cap,
        so the committed ramp is not torn down by it. sqrt only when |v| is over.
        Use rem after the brake commit; that is the distance this word still has. */
-    float rem_mm = (float)rem / AX.spmm;
+    float rem_mm = (float)rem * inv_spmm;
     float a_stop = AX.decel_mm_s2 < 1e-3f ? 1e-3f : AX.decel_mm_s2;
     float v2_lim = (rem_mm > 0.0f) ? (4.0f * a_stop * rem_mm / (float)M_PI) : 0.0f;
     float cap_mul = AX.braking ? 1.25f : 1.0f;
@@ -1709,7 +1717,7 @@ int planner_fill_fifo(int axis) {
         AX.vel_mm_s = 0.0f;
         reset_ramp(axis);
         AX.braking = false;
-        AX.brake_d = 0;
+        set_brake_span(axis, 0);
         AX.fill_wants_more = false;
         break;
       }
@@ -1864,7 +1872,7 @@ void planner_request_move_to(int axis, float mm) {
   AX.fill_wants_more = true;
   AX.acc_meas = 0.0f;
   AX.braking = false;
-  AX.brake_d = 0;
+  set_brake_span(axis, 0);
   pio_step_clear_stall(axis);
   pio_step_kick_feed();
   refresh_state(axis);
@@ -1925,7 +1933,7 @@ static void planner_request_joy(int axis, float signed_v) {
   AX.fill_wants_more = true;
   AX.acc_meas = 0.0f;
   AX.braking = false;
-  AX.brake_d = 0;
+  set_brake_span(axis, 0);
   begin_ramp(axis, (float)sign * cruise_cap(axis));
   pio_step_clear_stall(axis);
   pio_step_kick_feed();
