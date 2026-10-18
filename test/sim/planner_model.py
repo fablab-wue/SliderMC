@@ -15,7 +15,9 @@ COORD_RATIO = 1.0
 DIR_PAUSE_S = 0.1
 PACK_MIN_HZ = 2500
 PACK_MAX = 64
-BUDGET_MS = 6.0
+HORIZON_MS = 6.0
+WORD_MS = 2.0
+BUDGET_MS = WORD_MS
 FIFO_MAX = 8
 SOFT_MIN_MM = 0.0
 SOFT_MAX_MM = 600.0
@@ -172,11 +174,14 @@ class Sim:
             return 0
         if step_hz < PACK_MIN_HZ:
             return 1
-        bs = max(1, int(step_hz * BUDGET_MS / 1000.0))
-        room = bs - pending
+        word_ms = max(0.5, WORD_MS)
+        horizon_ms = HORIZON_MS if HORIZON_MS >= word_ms else word_ms
+        horizon_steps = max(1, int(step_hz * horizon_ms / 1000.0))
+        room = horizon_steps - pending
         if room < 1:
             return 0
-        n = min(room, PACK_MAX, rem)
+        n = max(1, int(step_hz * word_ms / 1000.0))
+        n = min(n, room, PACK_MAX, rem)
         return min(n, max(1, rem // 5))
 
     def reset_ramp(self):
