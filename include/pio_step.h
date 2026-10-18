@@ -58,6 +58,14 @@ bool pio_step_is_running(int axis);
 void pio_step_stop_hard(int axis);
 void pio_step_stop_soft(int axis);
 
+/**
+ * Nested PIO lock around a fill burst. Other tasks still take the mutex
+ * (recursive); only the owner skips the extra take. Do not hold this across
+ * USB or a feed wait — the planner tick's stop_soft takes the same mutex.
+ */
+void pio_step_batch_begin(void);
+void pio_step_batch_end(void);
+
 /** Non-blocking put; false if TX full. Advances shadow bookkeeping. */
 bool pio_step_put_word(int axis, uint32_t delay_cycles, uint8_t n_pulses);
 
