@@ -30,8 +30,8 @@ typedef struct {
   int init_terminal; /* Terminal Mode (local echo) */
   int init_debug_level;
   int wdt_use; /* 1 = arm RP2040 WDT (2 s) from protocol heartbeat */
-  int motors; /* 1|2|3 live STEP/DIR axes (clamped to board support) */
-  int servos; /* 0..3 RC servo PWM channels */
+  int motors; /* 1..4 live STEP/DIR axes (clamped to board support) */
+  int servos; /* 0..3 RC servo PWM channels; 2 when motor 4 claims the servo 3 pin */
   char name[CFG_NAME_MAX]; /* optional device name for welcome banner; empty = omit */
   char motor_unit[MOTOR_MAX][CFG_UNIT_NAME_MAX]; /* UIC label; default "mm" */
   char servo_unit[SERVO_MAX][CFG_UNIT_NAME_MAX]; /* UIC label; default "deg" */
@@ -84,6 +84,17 @@ typedef struct {
   float home_accel_mm_s2_3;
   float max_speed_mm_s_3;
   float max_accel_mm_s2_3;
+
+  /* Axis 4 mirrors (motors>=4). STEP/DIR only: no fault pin and no limits.
+   * STEP polarity follows axis 2. */
+  float steps_per_unit_4;
+  int drv_dir_active_4;
+  int home_mode_4;
+  float home_move_out_mm_4;
+  float home_speed_mm_s_4;
+  float home_accel_mm_s2_4;
+  float max_speed_mm_s_4;
+  float max_accel_mm_s2_4;
 
   float ramp_start_speed;   /* user-units/s; 0 disables the launch floor */
   float stop_approach_speed; /* user-units/s; 0 disables the approach floor */
@@ -147,7 +158,7 @@ void config_foreach(config_foreach_fn fn, void *ctx);
 bool config_slider_min_enabled(void);
 bool config_slider_max_enabled(void);
 
-/** Live STEP/DIR count 1..3 after board clamp. */
+/** Live STEP/DIR count 1..4 after board clamp. */
 int config_motor_count(void);
 /** Live RC servo count 0..3. */
 int config_servo_count(void);
@@ -157,10 +168,13 @@ int config_axis_count(void);
 bool config_axis2_enabled(void);
 /** True if motors >= 3 (and board supports axis 3). */
 bool config_axis3_enabled(void);
+/** True if motors >= 4 (and board supports axis 4). */
+bool config_axis4_enabled(void);
 /** Packed-channel envelope (motors then servos). */
 float config_channel_min(int ch);
 float config_channel_max(int ch);
-/** True if EXT index 0..3 is available (false for EXT_4 on Pico when servos>=3). */
+/** True if EXT index 0..3 is available.
+ * False for an EXT line whose GPIO motor 4 claims, and for EXT_4 on Pico when servos>=3. */
 bool config_ext_available(int index0);
 /** Per-channel path sample cap: PATH_POOL_SAMPLES / n_channels. */
 int config_path_per_axis_max(void);

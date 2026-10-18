@@ -411,7 +411,8 @@ static bool parse_bool_arg_or_toggle(const char *rest, bool current, bool *out) 
 }
 
 static void reply_query(const char *tag, const char *value) {
-  char buf[96];
+  /* ID with four underrun and fifo_min counters does not fit in 96. */
+  char buf[192];
   snprintf(buf, sizeof(buf), "%s:%s\n", tag, value);
   protocol_write(buf);
 }
@@ -638,7 +639,7 @@ static const HelpRow k_help_rows[] = {
     {"MF", "Move For, ms ramp_ms then absolute"},
     {"MB", "Move By, relative mm"},
     {"MJ", "Move Joy, % of SS signed"},
-    {"MH", "Move Home, cycle 1|2|3"},
+    {"MH", "Move Home, cycle 1|2|3|4"},
     {"MS", "Move Stop, soft decelerate"},
     {"ME", "Move E-Stop, Halt; EN off"},
     {"PC", "Path Clear, empty buffer"},
@@ -713,9 +714,15 @@ static void cmd_pinout_index(void) {
     }                                                                          \
   } while (0)
 
-  PIN_IX_ADD(PIN_EXT_1, "EXT_1", "Extender output 1 (EO1)");
-  PIN_IX_ADD(PIN_EXT_2, "EXT_2", "Extender output 2 (EO2)");
-  PIN_IX_ADD(PIN_EXT_3, "EXT_3", "Extender output 3 (EO3)");
+  if (config_ext_available(0)) {
+    PIN_IX_ADD(PIN_EXT_1, "EXT_1", "Extender output 1 (EO1)");
+  }
+  if (config_ext_available(1)) {
+    PIN_IX_ADD(PIN_EXT_2, "EXT_2", "Extender output 2 (EO2)");
+  }
+  if (config_ext_available(2)) {
+    PIN_IX_ADD(PIN_EXT_3, "EXT_3", "Extender output 3 (EO3)");
+  }
   if (config_ext_available(3)) {
     PIN_IX_ADD(PIN_EXT_4, "EXT_4", "Extender output 4 (EO4)");
   }
@@ -747,6 +754,10 @@ static void cmd_pinout_index(void) {
     PIN_IX_ADD(PIN_DRV_ERROR_3, "DRV_ERROR_3", "Fault / E-stop axis3");
     PIN_IX_ADD(PIN_SW_LIMIT_L_3, "SW_LIMIT_L_3", "Hard limit left axis3");
     PIN_IX_ADD(PIN_SW_LIMIT_R_3, "SW_LIMIT_R_3", "Hard limit right axis3");
+  }
+  if (config_axis4_enabled()) {
+    PIN_IX_ADD(PIN_DRV_STEP_4, "DRV_STEP_4", "STEP axis4");
+    PIN_IX_ADD(PIN_DRV_DIR_4, "DRV_DIR_4", "DIR axis4");
   }
 #ifdef PIN_CAMERA_CTRL
   PIN_IX_ADD(PIN_CAMERA_CTRL, "CAMERA_CTRL", "Camera OC sink (CT) / listen, low-active");
@@ -1127,9 +1138,9 @@ bool protocol_exec_command(const char *cmd) {
     }
     int axis = 1;
     if (*rest) {
-      if (!parse_int_arg(rest, &axis) || axis < 1 || axis > 3 ||
+      if (!parse_int_arg(rest, &axis) || axis < 1 || axis > MOTOR_MAX ||
           axis > config_motor_count()) {
-        protocol_error("parse", "MH 1|2|3");
+        protocol_error("parse", "MH 1..motors");
         return false;
       }
     }
@@ -1518,24 +1529,20 @@ bool protocol_exec_command(const char *cmd) {
   if (match_any(cmd, &rest, "ID", "IsDiag", nullptr)) {
     MotionDiag d;
     motion_diag_get(&d);
-    char buf[128];
-    unsigned f0 = d.fifo_min_axis[0];
-    unsigned f1 = d.fifo_min_axis[1];
-    unsigned f2 = d.fifo_min_axis[2];
-    if (f0 == 0xFFFFFFFFu) {
-      f0 = 0;
-    }
-    if (f1 == 0xFFFFFFFFu) {
-      f1 = 0;
-    }
-    if (f2 == 0xFFFFFFFFu) {
-      f2 = 0;
+    char buf[192];
+    unsigned fifo_min[MOTION_DIAG_AXES];
+    for (int i = 0; i < MOTION_DIAG_AXES; ++i) {
+      fifo_min[i] = d.fifo_min_axis[i];
+      if (fifo_min[i] == 0xFFFFFFFFu) {
+        fifo_min[i] = 0;
+      }
     }
     snprintf(buf, sizeof(buf),
-             "underrun=%lu,%lu,%lu peak_hz=%.0f overshoot=%ld fifo_min=%u,%u,%u",
+             "underrun=%lu,%lu,%lu,%lu peak_hz=%.0f overshoot=%ld fifo_min=%u,%u,%u,%u",
              (unsigned long)d.underrun_axis[0], (unsigned long)d.underrun_axis[1],
-             (unsigned long)d.underrun_axis[2], (double)d.peak_step_hz,
-             (long)d.overshoot_steps, f0, f1, f2);
+             (unsigned long)d.underrun_axis[2], (unsigned long)d.underrun_axis[3],
+             (double)d.peak_step_hz, (long)d.overshoot_steps, fifo_min[0], fifo_min[1],
+             fifo_min[2], fifo_min[3]);
     reply_query("ID", buf);
     return false;
   }
@@ -1656,16 +1663,28 @@ bool protocol_exec_command(const char *cmd) {
       snprintf(line, sizeof(line), "VG:PIN_SW_LIMIT_R_3=%d", PIN_SW_LIMIT_R_3);
       protocol_writeln(line);
     }
+    if (config_axis4_enabled()) {
+      snprintf(line, sizeof(line), "VG:PIN_DRV_STEP_4=%d", PIN_DRV_STEP_4);
+      protocol_writeln(line);
+      snprintf(line, sizeof(line), "VG:PIN_DRV_DIR_4=%d", PIN_DRV_DIR_4);
+      protocol_writeln(line);
+    }
 #ifdef PIN_CAMERA_CTRL
     snprintf(line, sizeof(line), "VG:PIN_CAMERA_CTRL=%d", PIN_CAMERA_CTRL);
     protocol_writeln(line);
 #endif
-    snprintf(line, sizeof(line), "VG:PIN_EXT_1=%d", PIN_EXT_1);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_EXT_2=%d", PIN_EXT_2);
-    protocol_writeln(line);
-    snprintf(line, sizeof(line), "VG:PIN_EXT_3=%d", PIN_EXT_3);
-    protocol_writeln(line);
+    if (config_ext_available(0)) {
+      snprintf(line, sizeof(line), "VG:PIN_EXT_1=%d", PIN_EXT_1);
+      protocol_writeln(line);
+    }
+    if (config_ext_available(1)) {
+      snprintf(line, sizeof(line), "VG:PIN_EXT_2=%d", PIN_EXT_2);
+      protocol_writeln(line);
+    }
+    if (config_ext_available(2)) {
+      snprintf(line, sizeof(line), "VG:PIN_EXT_3=%d", PIN_EXT_3);
+      protocol_writeln(line);
+    }
     if (config_ext_available(3)) {
       snprintf(line, sizeof(line), "VG:PIN_EXT_4=%d", PIN_EXT_4);
       protocol_writeln(line);

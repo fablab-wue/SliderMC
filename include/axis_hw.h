@@ -10,10 +10,19 @@
 extern "C" {
 #endif
 
-/** Number of active STEP/DIR axes (1..3). */
+/** Number of active STEP/DIR axes (1..4). */
 static inline int axis_hw_count(void) { return config_motor_count(); }
 
+/** Motor 4 is STEP/DIR only: no fault input and no limit switches. */
+static inline bool axis_hw_has_fault(int axis) { return axis >= 0 && axis <= 2; }
+static inline bool axis_hw_has_limits(int axis) { return axis >= 0 && axis <= 2; }
+
 static inline int axis_hw_step_pin(int axis) {
+#if PIN_AXIS4_SUPPORTED
+  if (axis == 3) {
+    return PIN_DRV_STEP_4;
+  }
+#endif
 #if PIN_AXIS3_SUPPORTED
   if (axis == 2) {
     return PIN_DRV_STEP_3;
@@ -29,6 +38,11 @@ static inline int axis_hw_step_pin(int axis) {
 }
 
 static inline int axis_hw_dir_pin(int axis) {
+#if PIN_AXIS4_SUPPORTED
+  if (axis == 3) {
+    return PIN_DRV_DIR_4;
+  }
+#endif
 #if PIN_AXIS3_SUPPORTED
   if (axis == 2) {
     return PIN_DRV_DIR_3;
@@ -49,6 +63,9 @@ static inline int axis_hw_en_pin(int axis) {
 }
 
 static inline int axis_hw_error_pin(int axis) {
+  if (!axis_hw_has_fault(axis)) {
+    return -1;
+  }
 #if PIN_AXIS3_SUPPORTED
   if (axis == 2) {
     return PIN_DRV_ERROR_3;
@@ -64,6 +81,9 @@ static inline int axis_hw_error_pin(int axis) {
 }
 
 static inline int axis_hw_limit_l_pin(int axis) {
+  if (!axis_hw_has_limits(axis)) {
+    return -1;
+  }
 #if PIN_AXIS3_SUPPORTED
   if (axis == 2) {
     return PIN_SW_LIMIT_L_3;
@@ -79,6 +99,9 @@ static inline int axis_hw_limit_l_pin(int axis) {
 }
 
 static inline int axis_hw_limit_r_pin(int axis) {
+  if (!axis_hw_has_limits(axis)) {
+    return -1;
+  }
 #if PIN_AXIS3_SUPPORTED
   if (axis == 2) {
     return PIN_SW_LIMIT_R_3;
@@ -95,12 +118,15 @@ static inline int axis_hw_limit_r_pin(int axis) {
 
 static inline int axis_hw_step_active(int axis) {
   const McConfig *c = config_get();
-  /* Axis 3 STEP polarity follows axis 2. */
+  /* Axes 2..4 share one STEP polarity program with axis 2. */
   return (axis >= 1) ? c->drv_step_active_2 : c->drv_step_active;
 }
 
 static inline int axis_hw_dir_active(int axis) {
   const McConfig *c = config_get();
+  if (axis == 3) {
+    return c->drv_dir_active_4;
+  }
   if (axis == 2) {
     return c->drv_dir_active_3;
   }
@@ -114,6 +140,9 @@ static inline int axis_hw_en_active(int axis) {
 
 static inline int axis_hw_error_active(int axis) {
   const McConfig *c = config_get();
+  if (!axis_hw_has_fault(axis)) {
+    return 0;
+  }
   if (axis == 2) {
     return c->drv_error_active_3;
   }
@@ -122,6 +151,9 @@ static inline int axis_hw_error_active(int axis) {
 
 static inline int axis_hw_limit_l_active(int axis) {
   const McConfig *c = config_get();
+  if (!axis_hw_has_limits(axis)) {
+    return 0;
+  }
   if (axis == 2) {
     return c->sw_limit_l_active_3;
   }
@@ -130,6 +162,9 @@ static inline int axis_hw_limit_l_active(int axis) {
 
 static inline int axis_hw_limit_r_active(int axis) {
   const McConfig *c = config_get();
+  if (!axis_hw_has_limits(axis)) {
+    return 0;
+  }
   if (axis == 2) {
     return c->sw_limit_r_active_3;
   }
@@ -137,6 +172,9 @@ static inline int axis_hw_limit_r_active(int axis) {
 }
 
 static inline int axis_hw_limit_l_use(int axis) {
+  if (!axis_hw_has_limits(axis)) {
+    return 0;
+  }
   const McConfig *c = config_get();
   if (axis == 2) {
     return c->sw_limit_l_use_3;
@@ -145,6 +183,9 @@ static inline int axis_hw_limit_l_use(int axis) {
 }
 
 static inline int axis_hw_limit_r_use(int axis) {
+  if (!axis_hw_has_limits(axis)) {
+    return 0;
+  }
   const McConfig *c = config_get();
   if (axis == 2) {
     return c->sw_limit_r_use_3;
@@ -154,6 +195,9 @@ static inline int axis_hw_limit_r_use(int axis) {
 
 static inline float axis_hw_steps_per_unit(int axis) {
   const McConfig *c = config_get();
+  if (axis == 3) {
+    return c->steps_per_unit_4;
+  }
   if (axis == 2) {
     return c->steps_per_unit_3;
   }
@@ -188,6 +232,9 @@ static inline float axis_hw_window_max(int axis) {
 
 static inline int axis_hw_home_mode(int axis) {
   const McConfig *c = config_get();
+  if (axis == 3) {
+    return c->home_mode_4;
+  }
   if (axis == 2) {
     return c->home_mode_3;
   }
@@ -196,6 +243,9 @@ static inline int axis_hw_home_mode(int axis) {
 
 static inline float axis_hw_home_move_out(int axis) {
   const McConfig *c = config_get();
+  if (axis == 3) {
+    return c->home_move_out_mm_4;
+  }
   if (axis == 2) {
     return c->home_move_out_mm_3;
   }
@@ -204,6 +254,9 @@ static inline float axis_hw_home_move_out(int axis) {
 
 static inline float axis_hw_home_speed(int axis) {
   const McConfig *c = config_get();
+  if (axis == 3) {
+    return c->home_speed_mm_s_4;
+  }
   if (axis == 2) {
     return c->home_speed_mm_s_3;
   }
@@ -212,6 +265,9 @@ static inline float axis_hw_home_speed(int axis) {
 
 static inline float axis_hw_home_accel(int axis) {
   const McConfig *c = config_get();
+  if (axis == 3) {
+    return c->home_accel_mm_s2_4;
+  }
   if (axis == 2) {
     return c->home_accel_mm_s2_3;
   }
@@ -220,6 +276,9 @@ static inline float axis_hw_home_accel(int axis) {
 
 static inline float axis_hw_max_speed(int axis) {
   const McConfig *c = config_get();
+  if (axis == 3) {
+    return c->max_speed_mm_s_4;
+  }
   if (axis == 2) {
     return c->max_speed_mm_s_3;
   }
@@ -228,6 +287,9 @@ static inline float axis_hw_max_speed(int axis) {
 
 static inline float axis_hw_max_accel(int axis) {
   const McConfig *c = config_get();
+  if (axis == 3) {
+    return c->max_accel_mm_s2_4;
+  }
   if (axis == 2) {
     return c->max_accel_mm_s2_3;
   }

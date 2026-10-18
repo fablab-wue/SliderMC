@@ -8,7 +8,7 @@
 #include <Arduino.h>
 #endif
 
-#define DIAG_MAGIC 0x4D444742u /* 'MDGB' — per-axis underrun / fifo_min */
+#define DIAG_MAGIC 0x4D444743u /* 'MDGC' — 4-axis underrun / fifo_min */
 
 static MotionDiag g_diag;
 
@@ -104,35 +104,36 @@ void motion_diag_note_overshoot(int steps) {
 }
 
 void motion_diag_note_fifo_level(int axis, unsigned level) {
+  bool changed = false;
   if (level < g_diag.fifo_min_level) {
     g_diag.fifo_min_level = level;
+    changed = true;
   }
   if (axis >= 0 && axis < MOTION_DIAG_AXES && level < g_diag.fifo_min_axis[axis]) {
     g_diag.fifo_min_axis[axis] = level;
+    changed = true;
   }
-  diag_persist();
+  if (changed) {
+    diag_persist();
+  }
 }
 
 void motion_diag_boot_report(void) {
   if (!g_restored_from_noinit || config_get()->init_debug_level < 2) {
     return;
   }
-  unsigned f0 = g_diag.fifo_min_axis[0];
-  unsigned f1 = g_diag.fifo_min_axis[1];
-  unsigned f2 = g_diag.fifo_min_axis[2];
-  if (f0 == 0xFFFFFFFFu) {
-    f0 = 0;
+  unsigned fifo_min[MOTION_DIAG_AXES];
+  for (int i = 0; i < MOTION_DIAG_AXES; ++i) {
+    fifo_min[i] = g_diag.fifo_min_axis[i];
+    if (fifo_min[i] == 0xFFFFFFFFu) {
+      fifo_min[i] = 0;
+    }
   }
-  if (f1 == 0xFFFFFFFFu) {
-    f1 = 0;
-  }
-  if (f2 == 0xFFFFFFFFu) {
-    f2 = 0;
-  }
-  protocol_debug(2, "D:diag_restored underrun=%lu,%lu,%lu peak_hz=%.0f overshoot=%ld fifo_min=%u,%u,%u\n",
+  protocol_debug(2, "D:diag_restored underrun=%lu,%lu,%lu,%lu peak_hz=%.0f overshoot=%ld fifo_min=%u,%u,%u,%u\n",
                  (unsigned long)g_diag.underrun_axis[0], (unsigned long)g_diag.underrun_axis[1],
-                 (unsigned long)g_diag.underrun_axis[2], (double)g_diag.peak_step_hz,
-                 (long)g_diag.overshoot_steps, f0, f1, f2);
+                 (unsigned long)g_diag.underrun_axis[2], (unsigned long)g_diag.underrun_axis[3],
+                 (double)g_diag.peak_step_hz, (long)g_diag.overshoot_steps, fifo_min[0], fifo_min[1],
+                 fifo_min[2], fifo_min[3]);
 #ifndef HOST_TEST
   if (rp2040.getResetReason() == RP2040::WDT_RESET) {
     protocol_debug(2, "D:reset=wdt\n");

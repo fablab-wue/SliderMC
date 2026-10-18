@@ -118,7 +118,9 @@ static void init_axis_gpio(int axis) {
   digitalWrite(dir, LOW);
   gpio_set_drive_strength(dir, GPIO_DRIVE_STRENGTH_8MA);
 
-  pinMode(err, INPUT_PULLUP);
+  if (axis_hw_has_fault(axis)) {
+    pinMode(err, INPUT_PULLUP);
+  }
 
   if (axis_hw_limit_l_use(axis)) {
     pinMode(axis_hw_limit_l_pin(axis), INPUT_PULLUP);

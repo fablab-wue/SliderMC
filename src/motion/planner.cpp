@@ -527,6 +527,9 @@ static bool read_limit_raw(int axis, bool left) {
 }
 
 static bool read_drv_error_raw(int axis) {
+  if (!axis_hw_has_fault(axis)) {
+    return false;
+  }
 #ifndef HOST_TEST
   int level = digitalRead(axis_hw_error_pin(axis)) ? 1 : 0;
   return config_pin_asserted(level, axis_hw_error_active(axis));
@@ -729,6 +732,12 @@ static void debounce_side(int axis, bool left, float dt_s) {
 }
 
 static void debounce_drv_error(int axis, float dt_s) {
+  if (!axis_hw_has_fault(axis)) {
+    AX.drv_err_stable = false;
+    AX.drv_err_raw_prev = false;
+    AX.drv_err_timer_s = 0.0f;
+    return;
+  }
 #ifndef HOST_TEST
   pinMode(axis_hw_error_pin(axis), INPUT_PULLUP);
 #endif

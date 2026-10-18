@@ -5,6 +5,9 @@
 #include "board.h"
 #include "servo_pwm.h"
 #include "config_defaults.h"
+#include "pins.h"
+#include "axis_hw.h"
+#include "motion_diag.h"
 
 #include <cmath>
 #include <cstdio>
@@ -2231,6 +2234,140 @@ int main(void) {
   feed("CS verbose_rate_hz 10\n");
   protocol_poll(5);
   expect_empty("restore terminal verbose rate");
+
+  /* Motor 4 pin mux. motors 1..3 keep the compiled pin map. motors 4 claims
+   * STEP/DIR and only the EXT lines on those GPIOs. Servo 3 drops only when
+   * its pin is one of those two. */
+  reset_out();
+  feed("CS motors 1\nCS servos 0\n");
+  expect_empty("pinout baseline motors 1 servos 0");
+  reset_out();
+  feed("VG\n");
+  {
+    char line[64];
+    std::snprintf(line, sizeof(line), "VG:PIN_DRV_STEP_1=%d", PIN_DRV_STEP_1);
+    expect_contains("motors 1 keeps STEP_1", line);
+    std::snprintf(line, sizeof(line), "VG:PIN_DRV_DIR_1=%d", PIN_DRV_DIR_1);
+    expect_contains("motors 1 keeps DIR_1", line);
+    expect_not_contains("motors 1 hides STEP_4", "DRV_STEP_4");
+    const int ext_pins[4] = {PIN_EXT_1, PIN_EXT_2, PIN_EXT_3, PIN_EXT_4};
+    for (int i = 0; i < 4; ++i) {
+      std::snprintf(line, sizeof(line), "VG:PIN_EXT_%d=%d", i + 1, ext_pins[i]);
+      if (ext_pins[i] == PIN_DRV_STEP_4 || ext_pins[i] == PIN_DRV_DIR_4) {
+        expect_contains("motors 1 still publishes overlapping EXT", line);
+      }
+    }
+  }
+  reset_out();
+  feed("CS motors 3\n");
+  expect_empty("CS motors 3 before pin steal");
+  reset_out();
+  feed("VG\n");
+  {
+    char line[64];
+    std::snprintf(line, sizeof(line), "VG:PIN_DRV_STEP_1=%d", PIN_DRV_STEP_1);
+    expect_contains("motors 3 keeps STEP_1", line);
+    expect_not_contains("motors 3 hides STEP_4", "DRV_STEP_4");
+    const int ext_pins[4] = {PIN_EXT_1, PIN_EXT_2, PIN_EXT_3, PIN_EXT_4};
+    for (int i = 0; i < 4; ++i) {
+      if (ext_pins[i] == PIN_DRV_STEP_4 || ext_pins[i] == PIN_DRV_DIR_4) {
+        std::snprintf(line, sizeof(line), "VG:PIN_EXT_%d=%d", i + 1, ext_pins[i]);
+        expect_contains("motors 3 still publishes EXT later taken by motor 4", line);
+      }
+    }
+  }
+  reset_out();
+  feed("CS servos 3\n");
+  expect_empty("CS servos 3 while motors 3");
+  reset_out();
+  feed("VG\n");
+  {
+    char line[64];
+    std::snprintf(line, sizeof(line), "VG:PIN_SERVO_3=%d", PIN_SERVO_3);
+    expect_contains("motors 3 shows servo 3", line);
+  }
+  reset_out();
+  feed("CS motors 4\n");
+  expect_empty("CS motors 4");
+  expect_true("motor 4 step pin", axis_hw_step_pin(3) == PIN_DRV_STEP_4);
+  expect_true("motor 4 dir pin", axis_hw_dir_pin(3) == PIN_DRV_DIR_4);
+  expect_true("motor 4 has no fault pin", !axis_hw_has_fault(3));
+  expect_true("motor 4 has no limit pins", !axis_hw_has_limits(3));
+  reset_out();
+  feed("CG servos\n");
+  {
+    const bool servo3_claimed =
+        (PIN_SERVO_3 == PIN_DRV_STEP_4 || PIN_SERVO_3 == PIN_DRV_DIR_4);
+    if (servo3_claimed) {
+      expect_contains("motors 4 clamps servo 3", "CG:servos=2");
+    } else {
+      expect_contains("motors 4 keeps servo 3", "CG:servos=3");
+    }
+  }
+  reset_out();
+  feed("VG\n");
+  {
+    char line[64];
+    std::snprintf(line, sizeof(line), "VG:PIN_DRV_STEP_4=%d", PIN_DRV_STEP_4);
+    expect_contains("motors 4 step gpio", line);
+    std::snprintf(line, sizeof(line), "VG:PIN_DRV_DIR_4=%d", PIN_DRV_DIR_4);
+    expect_contains("motors 4 dir gpio", line);
+    std::snprintf(line, sizeof(line), "VG:PIN_DRV_STEP_1=%d", PIN_DRV_STEP_1);
+    expect_contains("motors 4 keeps STEP_1", line);
+    const int ext_pins[4] = {PIN_EXT_1, PIN_EXT_2, PIN_EXT_3, PIN_EXT_4};
+    for (int i = 0; i < 4; ++i) {
+      std::snprintf(line, sizeof(line), "VG:PIN_EXT_%d=%d", i + 1, ext_pins[i]);
+      if (ext_pins[i] == PIN_DRV_STEP_4 || ext_pins[i] == PIN_DRV_DIR_4) {
+        expect_not_contains("motors 4 hides claimed EXT", line);
+      } else {
+        expect_contains("motors 4 keeps other EXT", line);
+      }
+    }
+    const bool servo3_claimed =
+        (PIN_SERVO_3 == PIN_DRV_STEP_4 || PIN_SERVO_3 == PIN_DRV_DIR_4);
+    std::snprintf(line, sizeof(line), "VG:PIN_SERVO_3=%d", PIN_SERVO_3);
+    if (servo3_claimed) {
+      expect_not_contains("motors 4 hides servo 3", line);
+    } else {
+      expect_contains("motors 4 keeps servo 3 pin", line);
+    }
+  }
+  reset_out();
+  feed("CS servos 3\n");
+  if (PIN_SERVO_3 == PIN_DRV_STEP_4 || PIN_SERVO_3 == PIN_DRV_DIR_4) {
+    expect_contains("servos 3 rejected while motor 4 owns the pin", "!E:cfg");
+  } else {
+    expect_empty("servos 3 allowed when motor 4 does not own the pin");
+  }
+  reset_out();
+  feed("CS motors 3\n");
+  expect_empty("CS motors 3 restores extender pins");
+  reset_out();
+  feed("CG servos\n");
+  if (PIN_SERVO_3 == PIN_DRV_STEP_4 || PIN_SERVO_3 == PIN_DRV_DIR_4) {
+    expect_contains("leaving motors 4 does not raise servos", "CG:servos=2");
+  }
+  reset_out();
+  feed("VG\n");
+  {
+    char line[64];
+    const int ext_pins[4] = {PIN_EXT_1, PIN_EXT_2, PIN_EXT_3, PIN_EXT_4};
+    for (int i = 0; i < 4; ++i) {
+      if (ext_pins[i] == PIN_DRV_STEP_4 || ext_pins[i] == PIN_DRV_DIR_4) {
+        std::snprintf(line, sizeof(line), "VG:PIN_EXT_%d=%d", i + 1, ext_pins[i]);
+        expect_contains("motors 3 publishes EXT again", line);
+      }
+    }
+    expect_not_contains("motors 3 hides STEP_4 again", "DRV_STEP_4");
+  }
+  reset_out();
+  feed("CS motors 1\nCS servos 0\n");
+  expect_empty("restore motors 1 servos 0 after pinout");
+  motion_diag_reset();
+  reset_out();
+  feed("ID\n");
+  expect_contains("ID lists four underrun counters", "underrun=0,0,0,0 peak_hz=");
+  expect_contains("ID lists four fifo_min counters", "fifo_min=0,0,0,0");
 
   if (g_fail) {
     std::fprintf(stderr, "\n%d test(s) failed\n", g_fail);
