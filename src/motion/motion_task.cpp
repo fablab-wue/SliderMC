@@ -26,24 +26,6 @@ static bool any_tx_full(void) {
   return false;
 }
 
-static bool any_fifo_low(void) {
-  int n = config_motor_count();
-  for (int a = 0; a < n; ++a) {
-    if (!planner_feed_active_axis(a)) {
-      continue;
-    }
-    unsigned lvl = pio_step_tx_level(a);
-    /* Keep a margin above the SM prefill threshold and react before the FIFO
-     * reaches the stall edge. The 3-axis case drains faster than a single 1 ms
-     * sleep budget can recover, so refill must happen as soon as a lane drops
-     * back toward the startup buffer. */
-    if (lvl <= PIO_STEP_START_MIN_LEVEL + 2u) {
-      return true;
-    }
-  }
-  return false;
-}
-
 /*
  * Fill policy. 1 = lowest TX FIFO first (trial). 0 = previous round-robin
  * (the block in the #else below is the pre-trial source; flip this to revert).
@@ -148,21 +130,9 @@ static void task_motion_feed(void *arg) {
       if (any_tx_full()) {
         pio_step_arm_tx_irq();
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1));
-      } else if (any_fifo_low()) {
-        /* Keep the IRQ armed while we are in the low-water region and immediately
-         * re-check the queue after each wake so the refill loop is driven by the
-         * actual FIFO occupancy, not by the nominal 1 ms scheduling tick. */
-        pio_step_arm_tx_irq();
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1));
-        continue;
-      } else if (planner_feed_active()) {
-        /* 3-axis startup and handoff is the tightest edge: keep the refill loop
-         * awake during the first packets of each move so the FIFO never waits for
-         * the later low-water wake before the next burst is scheduled. */
-        pio_step_arm_tx_irq();
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1));
-        continue;
       } else {
+        /* Room in every FIFO: a TXNFULL wait would never fire and would starve
+         * protocol/WDT once several SMs are busy. Poll again in 1 ms. */
         pio_step_disarm_tx_irq();
         vTaskDelay(pdMS_TO_TICKS(1));
       }
