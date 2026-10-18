@@ -61,6 +61,9 @@ void pio_step_stop_soft(int axis);
 /** Non-blocking put; false if TX full. Advances shadow bookkeeping. */
 bool pio_step_put_word(int axis, uint32_t delay_cycles, uint8_t n_pulses);
 
+/** Sum of step periods still sitting in the TX FIFO, in SM clock cycles. */
+uint32_t pio_step_queued_cycles(int axis);
+
 unsigned pio_step_tx_level(int axis);
 unsigned pio_step_tx_room(int axis);
 bool pio_step_tx_empty(int axis);

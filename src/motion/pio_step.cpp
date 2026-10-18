@@ -407,6 +407,25 @@ bool pio_step_put_word(int axis, uint32_t delay_cycles, uint8_t n_pulses) {
   return true;
 }
 
+uint32_t pio_step_queued_cycles(int axis) {
+  if (!axis_ok(axis)) {
+    return 0;
+  }
+  pio_lock();
+  sync_shadow_to_fifo(axis);
+  PioAxis *a = &g_ax[axis];
+  uint64_t sum = 0;
+  for (unsigned i = 0; i < a->shadow_n; ++i) {
+    sum += (uint64_t)a->shadow[i].steps *
+           ((uint64_t)a->shadow[i].delay + (uint64_t)PIO_STEP_PERIOD_FIXED);
+  }
+  pio_unlock();
+  if (sum > 0xffffffffull) {
+    return 0xffffffffu;
+  }
+  return (uint32_t)sum;
+}
+
 unsigned pio_step_tx_level(int axis) {
   if (!axis_ok(axis)) {
     return 0;
@@ -555,6 +574,12 @@ bool pio_step_put_word(int axis, uint32_t delay_cycles, uint8_t n_pulses) {
   ++g_level[axis];
   g_pending[axis] += n_pulses;
   return true;
+}
+uint32_t pio_step_queued_cycles(int axis) {
+  if (axis < 0 || axis >= 3) {
+    return 0;
+  }
+  return (uint32_t)g_pending[axis] * (PIO_STEP_PERIOD_FIXED + 1u);
 }
 unsigned pio_step_tx_level(int axis) {
   return (axis >= 0 && axis < 3) ? g_level[axis] : 0;
